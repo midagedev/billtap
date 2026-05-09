@@ -21,6 +21,10 @@ Stripe testmode is useful, but routine billing tests often need a different trad
 
 Billtap makes billing flows reproducible before they reach real payment infrastructure.
 
+For the exact supported surface, see `docs/COMPATIBILITY.md`. Anything not
+listed there should be treated as unsupported until it has fixture-backed tests
+and documentation.
+
 ## Recommended Adoption Model
 
 Use two lanes instead of forcing one tool to satisfy every billing test:
@@ -62,7 +66,7 @@ Recommended strategy:
 
 Billtap is optimized around test ergonomics, not full payment-provider emulation:
 
-- webhook ordering and retry behavior are explicit scenario inputs
+- webhook replay, duplicate delivery, delay, and out-of-order controls are explicit Billtap operations
 - fixture packs can seed customers, catalog entries, subscriptions, and expected assertions
 - reports are structured for CI failures
 - dashboard and API evidence is redacted by default where secrets can appear
@@ -154,6 +158,8 @@ Fixture-applied subscriptions use the normal checkout-completion path so invoice
 | SaaS profile | Generic workspace billing profile | Plans, seats, members, export quota, extra export, payment history, support bundle, platform/connect-style webhook evidence |
 | Release state | Source-only | Local Docker image builds; no published image/package yet |
 
+Detailed compatibility matrix: `docs/COMPATIBILITY.md`.
+
 ## Known Limitations
 
 - This is not full Stripe compatibility.
@@ -186,9 +192,11 @@ go run ./cmd/billtap scenario run examples/saas-adoption-contract.yml
 - Documentation index: `docs/README.md`
 - Product goal: `docs/FINAL_GOAL.md`
 - Architecture: `docs/ARCHITECTURE.md`
+- Compatibility: `docs/COMPATIBILITY.md`
 - SaaS profile: `docs/SAAS_PROFILE.md`
 - Testing: `docs/TESTING.md`
 - Production boundaries: `docs/PRODUCTION_BOUNDARIES.md`
+- Release process: `docs/RELEASE.md`
 - Release checklist: `docs/RELEASE_CHECKLIST.md`
 - Roadmap: `docs/ROADMAP.md`
 - Scenario contract: `specs/000-product/contracts/scenario.md`
@@ -208,14 +216,17 @@ Public reports and examples must be sanitized. Do not include real card data, li
 
 ## Release Process
 
-Maintainer checklist for a public release:
+Public release procedure: `docs/RELEASE.md`.
+
+Maintainer checklist summary:
 
 1. Run the development commands above.
 2. Run the scenario smoke commands above.
 3. Build and smoke the local Docker image.
-4. Confirm the public-surface scan is clean and `.private/` is ignored.
-5. Tag the release as `vX.Y.Z`.
-6. Publish the Docker image or package only after release automation is explicitly added.
+4. Confirm `docs/COMPATIBILITY.md` matches the implemented API surface.
+5. Confirm the public-surface scan is clean and `.private/` is ignored.
+6. Tag the release as `vX.Y.Z`.
+7. Publish the Docker image or package only after release automation is explicitly added.
 
 ## License
 

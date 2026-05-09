@@ -7,6 +7,7 @@ This directory contains the public product, architecture, testing, and release n
 - `../README.md`: project overview, adoption model, quick start, and release state
 - `FINAL_GOAL.md`: product north star and final release definition
 - `ARCHITECTURE.md`: runtime components and module boundaries
+- `COMPATIBILITY.md`: supported and unsupported Stripe-like behavior
 - `TESTING.md`: verification strategy and scenario coverage
 - `PRODUCTION_BOUNDARIES.md`: real-payment and relay-mode safety boundaries
 
@@ -20,6 +21,7 @@ This directory contains the public product, architecture, testing, and release n
 
 - `runbooks/local-dev.md`: local development workflow
 - `runbooks/production-boundary.md`: controlled relay and staging-adjacent guidance
+- `RELEASE.md`: public release procedure for v0.1.0 and later pre-1.0 releases
 - `RELEASE_CHECKLIST.md`: checks to run before publishing a release
 - `GATE_STATUS.md`: public gate snapshot
 

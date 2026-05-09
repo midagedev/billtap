@@ -1,6 +1,8 @@
 # API Contract
 
 Billtap exposes a Stripe-like API subset under `/v1` and Billtap-specific dashboard APIs under `/api`.
+The public compatibility snapshot in `docs/COMPATIBILITY.md` is the release
+source of truth for supported and unsupported provider behavior.
 
 Webhook event shape, signature, retry, duplicate, delay, out-of-order, and replay behavior are defined in [webhooks.md](webhooks.md).
 
@@ -28,6 +30,7 @@ Storage and worker readiness.
 - `POST /v1/products`
 - `GET /v1/products/{id}`
 - `GET /v1/products`
+- `GET /v1/products/search`
 
 ### Prices
 
@@ -39,6 +42,7 @@ Storage and worker readiness.
 
 - `POST /v1/checkout/sessions`
 - `GET /v1/checkout/sessions/{id}`
+- `GET /v1/checkout/sessions`
 
 Response includes:
 
@@ -50,7 +54,6 @@ Response includes:
 
 ### Subscriptions
 
-- `POST /v1/subscriptions`
 - `GET /v1/subscriptions/{id}`
 - `GET /v1/subscriptions`
 - `POST /v1/subscriptions/{id}`
@@ -60,16 +63,30 @@ Response includes:
 
 - `GET /v1/invoices/{id}`
 - `GET /v1/invoices`
-- `POST /v1/invoices/{id}/finalize`
-- `POST /v1/invoices/{id}/pay`
-- `POST /v1/invoices/{id}/void`
+- `POST /v1/invoices/create_preview`
+
+Direct invoice create, finalize, pay, and void operations are not part of the
+current release-compatible subset.
 
 ### Payment Intents
 
-- `POST /v1/payment_intents`
 - `GET /v1/payment_intents/{id}`
 - `GET /v1/payment_intents`
-- `POST /v1/payment_intents/{id}/confirm`
+
+Direct payment intent create and confirm operations are not part of the current
+release-compatible subset.
+
+### Payment Methods
+
+- `GET /v1/payment_methods?customer={id}&type=card`
+
+Returns deterministic sandbox card projections for known customers.
+
+### Billing Portal Sessions
+
+- `POST /v1/billing_portal/sessions`
+
+Returns a Billtap hosted portal URL for a known customer.
 
 ### Webhook Endpoints
 
