@@ -92,6 +92,10 @@ func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := validateCustomerCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		customer, err := h.billing.CreateCustomer(r.Context(), billing.Customer{
 			ID:       p.string("id"),
 			Email:    p.string("email"),
@@ -152,6 +156,10 @@ func (h *Handler) handleProducts(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := validateProductCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		product, err := h.billing.CreateProduct(r.Context(), billing.Product{
 			ID:          p.string("id"),
 			Name:        p.string("name"),
@@ -199,6 +207,10 @@ func (h *Handler) handleProduct(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := validateProductUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		product, err := h.billing.UpdateProduct(r.Context(), id, billing.Product{
 			Name:        p.string("name"),
 			Description: p.string("description"),
@@ -217,6 +229,14 @@ func (h *Handler) handlePrices(w http.ResponseWriter, r *http.Request) {
 		p, err := parseParams(r)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validatePriceCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateProductExists(h.billing.GetProduct(r.Context(), p.first("product", "product_id"))); err != nil {
+			writeResult(w, nil, err)
 			return
 		}
 		price, err := h.billing.CreatePrice(r.Context(), billing.Price{
@@ -279,6 +299,20 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := validateCheckoutSessionCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateCustomerExists(h.billing.GetCustomer(r.Context(), p.first("customer", "customer_id"))); err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		for _, item := range p.lineItems() {
+			if err := validatePriceExists(h.billing.GetPrice(r.Context(), item.PriceID)); err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+		}
 		session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
 			CustomerID: p.first("customer", "customer_id"),
 			Mode:       p.stringDefault("mode", "subscription"),
@@ -335,11 +369,11 @@ func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	customerID := p.first("customer", "customer_id")
-	if customerID == "" {
-		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: customer is required", billing.ErrInvalidInput))
+	if err := validateBillingPortalSessionCreate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	customerID := p.first("customer", "customer_id")
 	if _, err := h.billing.GetCustomer(r.Context(), customerID); err != nil {
 		writeResult(w, nil, err)
 		return
@@ -596,6 +630,10 @@ func (h *Handler) handleWebhookEndpoints(w http.ResponseWriter, r *http.Request)
 	case http.MethodPost:
 		p, err := parseParams(r)
 		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateWebhookEndpointCreate(p); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}

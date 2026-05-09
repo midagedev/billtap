@@ -274,8 +274,8 @@ func TestStripeLikeAPIErrorEnvelope(t *testing.T) {
 		if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "name" {
 			t.Fatalf("error=%#v, want missing name invalid_request_error", errBody.Error)
 		}
-		if errBody.Error.Message != "product name is required" {
-			t.Fatalf("message=%q, want public validation message", errBody.Error.Message)
+		if errBody.Error.Message != "Missing required param: name." {
+			t.Fatalf("message=%q, want structured validation message", errBody.Error.Message)
 		}
 	})
 
@@ -318,6 +318,157 @@ func TestStripeLikeAPIErrorEnvelope(t *testing.T) {
 		}
 		if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "line_items" {
 			t.Fatalf("error=%#v, want line_items parameter_missing", errBody.Error)
+		}
+	})
+}
+
+func TestSupportedEndpointRequestValidation(t *testing.T) {
+	handler := newTestHandler(t)
+
+	t.Run("unknown product parameter", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/products", url.Values{
+			"name":     {"Team"},
+			"nickname": {"unused"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_unknown" || errBody.Error.Param != "nickname" {
+			t.Fatalf("error=%#v, want unknown nickname", errBody.Error)
+		}
+	})
+
+	t.Run("invalid price amount type", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/prices", url.Values{
+			"product":     {"prod_missing"},
+			"currency":    {"usd"},
+			"unit_amount": {"not-an-int"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "unit_amount" {
+			t.Fatalf("error=%#v, want invalid unit_amount", errBody.Error)
+		}
+	})
+
+	t.Run("missing price product", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/prices", url.Values{
+			"currency":    {"usd"},
+			"unit_amount": {"9900"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "product" {
+			t.Fatalf("error=%#v, want missing product", errBody.Error)
+		}
+	})
+
+	t.Run("price product must exist", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/prices", url.Values{
+			"product":     {"prod_missing"},
+			"currency":    {"usd"},
+			"unit_amount": {"9900"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusNotFound {
+			t.Fatalf("status=%d body=%s, want 404", status, body)
+		}
+		if errBody.Error.Code != "resource_missing" {
+			t.Fatalf("error=%#v, want resource_missing", errBody.Error)
+		}
+	})
+
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Validated Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"validator@example.test"}})
+
+	t.Run("checkout line item price required", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                {customer.ID},
+			"line_items[0][quantity]": {"2"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "line_items[0][price]" {
+			t.Fatalf("error=%#v, want missing line item price", errBody.Error)
+		}
+	})
+
+	t.Run("checkout customer must exist", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":             {"cus_missing"},
+			"line_items[0][price]": {price.ID},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusNotFound {
+			t.Fatalf("status=%d body=%s, want 404", status, body)
+		}
+		if errBody.Error.Code != "resource_missing" {
+			t.Fatalf("error=%#v, want resource_missing", errBody.Error)
+		}
+	})
+
+	t.Run("checkout price must exist", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":             {customer.ID},
+			"line_items[0][price]": {"price_missing"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusNotFound {
+			t.Fatalf("status=%d body=%s, want 404", status, body)
+		}
+		if errBody.Error.Code != "resource_missing" {
+			t.Fatalf("error=%#v, want resource_missing", errBody.Error)
+		}
+	})
+
+	t.Run("checkout quantity must be positive", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                {customer.ID},
+			"line_items[0][price]":    {price.ID},
+			"line_items[0][quantity]": {"0"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "line_items[0][quantity]" {
+			t.Fatalf("error=%#v, want invalid line item quantity", errBody.Error)
+		}
+	})
+
+	t.Run("portal customer required", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/billing_portal/sessions", url.Values{})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "customer" {
+			t.Fatalf("error=%#v, want missing customer", errBody.Error)
+		}
+	})
+
+	t.Run("webhook url required", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/webhook_endpoints", url.Values{
+			"enabled_events": {"invoice.*"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "url" {
+			t.Fatalf("error=%#v, want missing url", errBody.Error)
 		}
 	})
 }

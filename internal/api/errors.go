@@ -36,6 +36,16 @@ func writeStripeError(w http.ResponseWriter, status int, apiErr stripeAPIError) 
 }
 
 func stripeErrorFor(status int, err error) stripeAPIError {
+	var validationErr *validationError
+	if errors.As(err, &validationErr) {
+		return stripeAPIError{
+			Type:    stripeErrorInvalidReq,
+			Message: validationErr.Message,
+			Param:   validationErr.Param,
+			Code:    validationErr.Code,
+		}
+	}
+
 	message := publicErrorMessage(err)
 	apiErr := stripeAPIError{
 		Type:    stripeErrorType(status),
