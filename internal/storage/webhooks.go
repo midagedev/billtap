@@ -257,6 +257,14 @@ func (s *SQLiteStore) ApplyRetention(ctx context.Context, cutoff time.Time) (web
 		return result, err
 	}
 	result.DeliveryAttemptsRedacted, _ = attempts.RowsAffected()
+
+	traces, err := s.db.ExecContext(ctx, `UPDATE request_traces SET request_body = '', response_body = '' WHERE created_at < ? AND (request_body <> '' OR response_body <> '')`, encodeTime(cutoff))
+	if err != nil && !strings.Contains(err.Error(), "no such table") {
+		return result, err
+	}
+	if err == nil {
+		result.RequestTracesRedacted, _ = traces.RowsAffected()
+	}
 	return result, nil
 }
 

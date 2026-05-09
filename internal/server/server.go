@@ -10,6 +10,7 @@ import (
 	"github.com/hckim/billtap/internal/api"
 	"github.com/hckim/billtap/internal/billing"
 	"github.com/hckim/billtap/internal/config"
+	"github.com/hckim/billtap/internal/diagnostics"
 	"github.com/hckim/billtap/internal/storage"
 	"github.com/hckim/billtap/internal/webhooks"
 )
@@ -49,7 +50,11 @@ func (s *Server) routes() {
 				SignatureHeaderName: s.cfg.WebhookSignatureHeader,
 			})
 		}
-		handler := api.New(api.Options{Billing: billing.NewService(repo), Webhooks: webhookService})
+		var diagnosticsService *diagnostics.Service
+		if diagnosticsRepo, ok := s.store.(diagnostics.Repository); ok {
+			diagnosticsService = diagnostics.NewService(diagnosticsRepo)
+		}
+		handler := api.New(api.Options{Billing: billing.NewService(repo), Webhooks: webhookService, Diagnostics: diagnosticsService})
 		s.mux.Handle("/v1/", handler)
 		s.mux.Handle("/api/", handler)
 	}

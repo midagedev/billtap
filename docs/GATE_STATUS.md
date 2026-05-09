@@ -8,7 +8,7 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G1 Runtime Contract | Passed | Go server, config loading, SQLite storage, in-memory test storage, health endpoints |
 | G2 Checkout MVP | Passed | Customer/product/price/checkout APIs, checkout UI, checkout completion state |
 | G3 Webhook Reliability | Passed | Signed delivery, attempts, retry, duplicate, delay, out-of-order, replay |
-| G4 Debuggability | Passed | Dashboard objects, timeline, webhook detail, app response evidence, debug bundle |
+| G4 Debuggability | Passed | Dashboard objects, request traces, timeline, webhook detail, app response evidence, diagnostic/debug bundles |
 | G5 CI Contract | Passed | YAML scenario runner, local clock, app assertions, JSON/Markdown reports, exit codes |
 | G6 Portal Coverage | Passed | Portal UI, plan change, seat change, cancellation, resume, payment-method simulation, invoice history |
 | G7 SaaS Workspace Profile | Passed | Generic `saas` scenario pack for workspace plans, seats, members, export quota, extra export payment, payment history, support bundle, and webhook evidence |

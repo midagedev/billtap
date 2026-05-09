@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/hckim/billtap/internal/billing"
+	"github.com/hckim/billtap/internal/diagnostics"
 	"github.com/hckim/billtap/internal/fixtures"
 	"github.com/hckim/billtap/internal/scenarios"
 	"github.com/hckim/billtap/internal/security"
@@ -877,13 +878,14 @@ func TestDashboardObjectsAndDebugBundle(t *testing.T) {
 	}
 
 	bundle := postJSON[struct {
-		ID               string                  `json:"id"`
-		Object           string                  `json:"object"`
-		Target           map[string]string       `json:"target"`
-		Filters          map[string]string       `json:"filters"`
-		Timeline         []billing.TimelineEntry `json:"timeline"`
-		WebhookEvents    []webhooks.Event        `json:"webhook_events"`
-		DeliveryAttempts []map[string]any        `json:"delivery_attempts"`
+		ID               string                     `json:"id"`
+		Object           string                     `json:"object"`
+		Target           map[string]string          `json:"target"`
+		Filters          map[string]string          `json:"filters"`
+		Timeline         []billing.TimelineEntry    `json:"timeline"`
+		RequestTraces    []diagnostics.RequestTrace `json:"request_traces"`
+		WebhookEvents    []webhooks.Event           `json:"webhook_events"`
+		DeliveryAttempts []map[string]any           `json:"delivery_attempts"`
 	}](t, handler, "/api/debug-bundles", map[string]string{
 		"object_type": "checkoutSessions",
 		"object_id":   session.ID,
@@ -897,8 +899,76 @@ func TestDashboardObjectsAndDebugBundle(t *testing.T) {
 	if len(bundle.Timeline) == 0 {
 		t.Fatal("debug bundle timeline is empty")
 	}
+	if len(bundle.RequestTraces) == 0 {
+		t.Fatal("debug bundle request_traces is empty")
+	}
 	if len(bundle.WebhookEvents) == 0 || len(bundle.DeliveryAttempts) == 0 {
 		t.Fatalf("bundle webhook_events=%d delivery_attempts=%d, want webhook evidence", len(bundle.WebhookEvents), len(bundle.DeliveryAttempts))
+	}
+}
+
+func TestRequestTraceRecordsStripeCalls(t *testing.T) {
+	handler := newTestHandler(t)
+
+	status, _ := postFormStatusWithHeaders(t, handler, "/v1/customers", url.Values{
+		"email": {"trace@example.test"},
+	}, map[string]string{
+		"Authorization":   "Bearer sk_test_secret",
+		"Idempotency-Key": "trace-key",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("create customer status = %d, want 200", status)
+	}
+	errorStatus, _ := postFormStatus(t, handler, "/v1/products", url.Values{})
+	if errorStatus != http.StatusBadRequest {
+		t.Fatalf("create product status = %d, want 400", errorStatus)
+	}
+	_ = getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/customers?email=trace@example.test&api_key=secret")
+
+	traces := getJSON[struct {
+		Object string                     `json:"object"`
+		Data   []diagnostics.RequestTrace `json:"data"`
+	}](t, handler, "/api/request-traces?limit=10")
+	if traces.Object != "list" || len(traces.Data) != 3 {
+		t.Fatalf("request traces = %#v, want three traces", traces)
+	}
+
+	var customerTrace, customerQueryTrace, errorTrace *diagnostics.RequestTrace
+	for i := range traces.Data {
+		trace := &traces.Data[i]
+		switch trace.Path {
+		case "/v1/customers":
+			if trace.Method == http.MethodPost {
+				customerTrace = trace
+			} else {
+				customerQueryTrace = trace
+			}
+		case "/v1/products":
+			errorTrace = trace
+		}
+	}
+	if customerTrace == nil || customerTrace.Status != http.StatusOK || customerTrace.ResponseObject != "customer" || customerTrace.ResponseObjectID == "" {
+		t.Fatalf("customer trace = %#v, want successful customer response evidence", customerTrace)
+	}
+	if customerTrace.IdempotencyKey != "trace-key" || customerTrace.RequestHeaders["Authorization"] != security.MaskedValue {
+		t.Fatalf("customer trace headers = %#v idempotency=%q, want masked authorization and idempotency key", customerTrace.RequestHeaders, customerTrace.IdempotencyKey)
+	}
+	if customerQueryTrace == nil || customerQueryTrace.Query != "api_key=%2A%2A%2A%2A&email=trace%40example.test" {
+		t.Fatalf("customer query trace = %#v, want masked api_key", customerQueryTrace)
+	}
+	if errorTrace == nil || errorTrace.Status != http.StatusBadRequest || errorTrace.ErrorCode != "parameter_missing" || errorTrace.ErrorParam != "name" {
+		t.Fatalf("error trace = %#v, want structured Stripe error evidence", errorTrace)
+	}
+
+	diagnostic := getJSON[struct {
+		Object        string                     `json:"object"`
+		Summary       map[string]int             `json:"summary"`
+		RequestTraces []diagnostics.RequestTrace `json:"request_traces"`
+	}](t, handler, "/api/diagnostics?limit=10")
+	if diagnostic.Object != "diagnostic_bundle" || diagnostic.Summary["request_traces"] != 3 || len(diagnostic.RequestTraces) != 3 {
+		t.Fatalf("diagnostic bundle = %#v, want request trace summary and data", diagnostic)
 	}
 }
 
@@ -1391,7 +1461,7 @@ func newTestHandler(t *testing.T) http.Handler {
 			t.Fatalf("close store: %v", err)
 		}
 	})
-	return New(Options{Billing: billing.NewService(store), Webhooks: webhooks.NewService(store)})
+	return New(Options{Billing: billing.NewService(store), Webhooks: webhooks.NewService(store), Diagnostics: diagnostics.NewService(store)})
 }
 
 func postForm[T any](t *testing.T, handler http.Handler, path string, values url.Values) T {
