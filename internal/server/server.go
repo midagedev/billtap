@@ -54,7 +54,12 @@ func (s *Server) routes() {
 		if diagnosticsRepo, ok := s.store.(diagnostics.Repository); ok {
 			diagnosticsService = diagnostics.NewService(diagnosticsRepo)
 		}
-		handler := api.New(api.Options{Billing: billing.NewService(repo), Webhooks: webhookService, Diagnostics: diagnosticsService})
+		handler := api.New(api.Options{
+			Billing:       billing.NewService(repo),
+			Webhooks:      webhookService,
+			Diagnostics:   diagnosticsService,
+			PublicBaseURL: s.cfg.PublicBaseURL,
+		})
 		s.mux.Handle("/v1/", handler)
 		s.mux.Handle("/api/", handler)
 	}
@@ -63,7 +68,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/healthz", s.handleHealth)
 	s.mux.HandleFunc("/readyz", s.handleReady)
 	s.mux.HandleFunc("/app/", s.handleApp)
+	s.mux.HandleFunc("/checkout", s.handleHostedCheckout)
 	s.mux.HandleFunc("/checkout/", s.handleHostedCheckout)
+	s.mux.HandleFunc("/portal", s.handleHostedPortal)
 	s.mux.HandleFunc("/portal/", s.handleHostedPortal)
 	s.mux.HandleFunc("/assets/", s.handleAssets)
 }
@@ -145,10 +152,12 @@ func (s *Server) handleHostedCheckout(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.StaticDir != "" && serveFileIfExists(w, r, filepath.Join(s.cfg.StaticDir, "checkout", "index.html")) {
 		return
 	}
-	sessionID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/checkout/"), "/")
+	sessionID := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/checkout"), "/"), "/")
 	target := "/app/checkout/"
 	if sessionID != "" {
 		target += "?session_id=" + sessionID
+	} else if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
 	}
 	http.Redirect(w, r, target, http.StatusFound)
 }
@@ -161,10 +170,12 @@ func (s *Server) handleHostedPortal(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.StaticDir != "" && serveFileIfExists(w, r, filepath.Join(s.cfg.StaticDir, "portal", "index.html")) {
 		return
 	}
-	customerID := strings.Trim(strings.TrimPrefix(r.URL.Path, "/portal/"), "/")
+	customerID := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/portal"), "/"), "/")
 	target := "/app/portal/"
 	if customerID != "" {
 		target += "?customer_id=" + customerID
+	} else if r.URL.RawQuery != "" {
+		target += "?" + r.URL.RawQuery
 	}
 	http.Redirect(w, r, target, http.StatusFound)
 }

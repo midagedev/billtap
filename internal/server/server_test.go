@@ -77,6 +77,31 @@ func TestReactAssetPathStub(t *testing.T) {
 	}
 }
 
+func TestHostedRoutesWithoutTrailingSlashRedirectToApps(t *testing.T) {
+	handler := New(Options{
+		Config: config.Config{Addr: ":0", DatabaseURL: ":memory:", StaticDir: "web/dist", Environment: "test"},
+		Store:  storage.NewMemoryStore(),
+	})
+
+	for _, tt := range []struct {
+		path string
+		want string
+	}{
+		{path: "/checkout?session_id=cs_test_123", want: "/app/checkout/?session_id=cs_test_123"},
+		{path: "/portal?customer_id=cus_test_123", want: "/app/portal/?customer_id=cus_test_123"},
+	} {
+		req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("%s status = %d, want %d", tt.path, rec.Code, http.StatusFound)
+		}
+		if got := rec.Header().Get("Location"); got != tt.want {
+			t.Fatalf("%s Location = %q, want %q", tt.path, got, tt.want)
+		}
+	}
+}
+
 func TestBuiltReactAppServing(t *testing.T) {
 	staticDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(staticDir, "dashboard"), 0o755); err != nil {

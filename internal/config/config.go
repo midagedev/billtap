@@ -13,6 +13,7 @@ const (
 	envAddr                   = "BILLTAP_ADDR"
 	envDatabaseURL            = "BILLTAP_DATABASE_URL"
 	envStaticDir              = "BILLTAP_STATIC_DIR"
+	envPublicBaseURL          = "BILLTAP_PUBLIC_BASE_URL"
 	envEnvironment            = "BILLTAP_ENV"
 	envRelayMode              = "BILLTAP_RELAY_MODE"
 	envRawPayloadStorage      = "BILLTAP_RAW_PAYLOAD_STORAGE"
@@ -31,6 +32,7 @@ type Config struct {
 	Addr                   string `json:"addr"`
 	DatabaseURL            string `json:"database_url"`
 	StaticDir              string `json:"static_dir"`
+	PublicBaseURL          string `json:"public_base_url"`
 	Environment            string `json:"environment"`
 	RelayMode              bool   `json:"relay_mode"`
 	RawPayloadStorage      string `json:"raw_payload_storage"`
@@ -83,6 +85,9 @@ func LoadWithLookup(path string, lookup LookupFunc) (Config, error) {
 	}
 	if value, ok := lookup(envStaticDir); ok {
 		cfg.StaticDir = value
+	}
+	if value, ok := lookup(envPublicBaseURL); ok {
+		cfg.PublicBaseURL = value
 	}
 	if value, ok := lookup(envEnvironment); ok {
 		cfg.Environment = value
@@ -165,6 +170,9 @@ func merge(base Config, override Config) Config {
 	}
 	if override.StaticDir != "" {
 		base.StaticDir = override.StaticDir
+	}
+	if override.PublicBaseURL != "" {
+		base.PublicBaseURL = override.PublicBaseURL
 	}
 	if override.Environment != "" {
 		base.Environment = override.Environment

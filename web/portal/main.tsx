@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AppShell,
@@ -22,6 +22,34 @@ import {
 } from "../shared/api";
 import { billingSnapshot, invoices, portalPlans } from "../shared/data";
 import "../shared/styles.css";
+
+const securePaymentFrame = `<!doctype html>
+<html>
+  <head>
+    <style>
+      body { margin: 0; font: 14px system-ui, sans-serif; color: #172033; }
+      .grid { display: grid; gap: 8px; }
+      .row { display: grid; grid-template-columns: 1fr 0.6fr; gap: 8px; }
+      input { width: 100%; min-height: 38px; box-sizing: border-box; border: 1px solid #cbd5e1; border-radius: 8px; padding: 0 10px; font: inherit; }
+    </style>
+  </head>
+  <body>
+    <div class="grid">
+      <input name="number" autocomplete="cc-number" placeholder="4242 4242 4242 4242" />
+      <div class="row">
+        <input name="expiry" autocomplete="cc-exp" placeholder="12/34" />
+        <input name="cvc" autocomplete="cc-csc" placeholder="123" />
+      </div>
+    </div>
+    <script>
+      const post = () => parent.postMessage({
+        type: 'billtap-card-input',
+        number: document.querySelector('input[name="number"]').value
+      }, '*');
+      document.addEventListener('input', post);
+    </script>
+  </body>
+</html>`;
 
 const fixturePortalData: PortalData = {
   subscription: {
@@ -59,6 +87,8 @@ function PortalApp() {
   const [actionStatus, setActionStatus] = useState("Ready");
   const [busyAction, setBusyAction] = useState<string>();
   const [draftSeats, setDraftSeats] = useState(fixturePortalData.subscription.seats);
+  const [isEditingPaymentMethod, setIsEditingPaymentMethod] = useState(false);
+  const [portalCardNumber, setPortalCardNumber] = useState("4242424242424242");
 
   useEffect(() => {
     let active = true;
@@ -72,6 +102,17 @@ function PortalApp() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const listener = (event: MessageEvent) => {
+      const data = event.data as { type?: string; number?: string };
+      if (data?.type === "billtap-card-input" && typeof data.number === "string") {
+        setPortalCardNumber(data.number);
+      }
+    };
+    window.addEventListener("message", listener);
+    return () => window.removeEventListener("message", listener);
   }, []);
 
   async function runAction(label: string, operation: () => Promise<{ data: PortalData; source: DataSource; message: string; error?: string }>) {
@@ -92,19 +133,33 @@ function PortalApp() {
 
   const subscription = portal.subscription;
   const cancelMode = subscription.status === "canceled" ? "immediate" : subscription.cancelAtPeriodEnd ? "period" : "none";
+  const returnUrl = getPortalReturnUrl();
+
+  async function handlePortalPaymentSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const outcome = portalPaymentOutcomeForCard(portalCardNumber);
+    await runAction("payment method", () => updatePortalPaymentMethod(portal, outcome));
+    setIsEditingPaymentMethod(false);
+  }
 
   return (
     <AppShell active="portal">
-      <SurfaceHeader
-        eyebrow="Hosted billing portal"
-        title="Subscription management"
-        meta={`${subscription.workspace} · ${subscription.owner}`}
-        actions={
-          <a className="button secondary" href="/app/dashboard/">
-            View evidence
-          </a>
-        }
-      />
+      <div data-testid="page-container-main">
+        <SurfaceHeader
+          eyebrow="Hosted billing portal"
+          title="Subscription management"
+          meta={`${subscription.workspace} · ${subscription.owner}`}
+          actions={
+            <div className="confirmation-strip">
+              <a className="button secondary" data-testid="return-to-business-link" href={returnUrl}>
+                Return to business
+              </a>
+              <a className="button secondary" href="/app/dashboard/">
+                View evidence
+              </a>
+            </div>
+          }
+        />
 
       <div className="status-strip">
         <StatusPill tone={source === "api" ? "good" : "warning"}>
@@ -188,6 +243,51 @@ function PortalApp() {
 
         <aside className="subscription-stack">
           <Panel title="Payment method update">
+            <div className="stripe-portal-payment">
+              <div className="stripe-portal-card">
+                <div>
+                  <span className="section-kicker">Current payment method</span>
+                  <strong>{portal.paymentMethod.status === "failed" ? "Payment method failed" : "Visa ending 4242"}</strong>
+                  <span>{portal.paymentMethod.label}</span>
+                </div>
+                <div className="stripe-portal-actions">
+                  <button type="button" onClick={() => setIsEditingPaymentMethod(true)}>
+                    Edit
+                  </button>
+                  <a role="button" aria-label="Change saved payment method" onClick={() => setIsEditingPaymentMethod(true)}>
+                    <svg viewBox="0 0 20 20" aria-hidden="true">
+                      <path d="M4 13.5V16h2.5l7.4-7.4-2.5-2.5L4 13.5Zm11.7-6.7a.9.9 0 0 0 0-1.3l-1.2-1.2a.9.9 0 0 0-1.3 0l-.9.9 2.5 2.5.9-.9Z" />
+                    </svg>
+                  </a>
+                </div>
+              </div>
+              {isEditingPaymentMethod ? (
+                <form className="stripe-portal-form" onSubmit={handlePortalPaymentSubmit}>
+                  <label className="stripe-radio-row" htmlFor="radio-add">
+                    <input id="radio-add" name="payment-method-choice" type="radio" defaultChecked />
+                    <span>Add payment method</span>
+                  </label>
+                  <iframe
+                    name="__privateStripeFrameBilltap"
+                    title="Secure payment input frame"
+                    srcDoc={securePaymentFrame}
+                  />
+                  <div className="confirmation-strip">
+                    <button className="button" data-testid="confirm" disabled={busyAction !== undefined} type="submit">
+                      Update
+                    </button>
+                    <button
+                      className="button secondary"
+                      data-test="cancel"
+                      onClick={() => setIsEditingPaymentMethod(false)}
+                      type="button"
+                    >
+                      Go back
+                    </button>
+                  </div>
+                </form>
+              ) : null}
+            </div>
             <div className="option-grid">
               <button
                 className={`choice-card ${portal.paymentMethod.status !== "failed" ? "active" : ""}`}
@@ -268,8 +368,22 @@ function PortalApp() {
           </Panel>
         </aside>
       </div>
+      </div>
     </AppShell>
   );
+}
+
+function getPortalReturnUrl(location: Location = window.location): string {
+  const params = new URLSearchParams(location.search);
+  return params.get("return_url") ?? params.get("returnUrl") ?? "/app/dashboard/";
+}
+
+function portalPaymentOutcomeForCard(cardNumber: string): PortalPaymentOutcome {
+  const normalized = cardNumber.replace(/\D/g, "");
+  if (normalized === "4000000000000002" || normalized === "4000000000000341") {
+    return "fails";
+  }
+  return "succeeds";
 }
 
 createRoot(document.getElementById("root")!).render(<PortalApp />);

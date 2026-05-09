@@ -22,7 +22,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -677,7 +678,9 @@ code {
 }
 
 .copy-value input,
-.text-input {
+.text-input,
+.stripe-compatible-form input,
+.stripe-compatible-form select {
   width: 100%;
   min-height: 40px;
   padding: 0 12px;
@@ -687,6 +690,86 @@ code {
   color: #1f2937;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.stripe-compatible-form {
+  display: grid;
+  gap: 12px;
+}
+
+.stripe-compatible-form label {
+  display: grid;
+  gap: 6px;
+}
+
+.stripe-compatible-form label > span,
+.stripe-radio-row span {
+  color: #64748b;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.payment-method-tab {
+  justify-self: start;
+  min-height: 38px;
+  padding: 0 14px;
+  border: 1px solid #2563eb;
+  border-radius: 8px;
+  background: #eff6ff;
+  color: #1d4ed8;
+  font-weight: 800;
+}
+
+.stripe-form-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.75fr);
+  gap: 10px;
+}
+
+.stripe-form-error {
+  padding: 10px 12px;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  background: #fef2f2;
+  color: #991b1b;
+  font-size: 13px;
+  font-weight: 800;
+}
+
+.stripe-success-shell {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  min-height: calc(100vh - 64px);
+  gap: 10px;
+  text-align: center;
+}
+
+.stripe-success-shell h1,
+.stripe-success-shell h2 {
+  margin: 0;
+}
+
+.stripe-success-shell h1 {
+  color: #0f172a;
+  font-size: 28px;
+}
+
+.stripe-success-shell h2 {
+  color: #64748b;
+  font-size: 16px;
+}
+
+.stripe-success-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  border-radius: 50%;
+  background: #dcfce7;
+  color: #166534;
+  font-weight: 900;
 }
 
 .checkout-layout,
@@ -772,6 +855,82 @@ code {
 
 .portal-card {
   padding: 16px;
+}
+
+.stripe-portal-payment,
+.stripe-portal-form {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+
+.stripe-portal-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #d8e0ea;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.stripe-portal-card > div:first-child {
+  display: grid;
+  gap: 4px;
+}
+
+.stripe-portal-card strong {
+  color: #0f172a;
+}
+
+.stripe-portal-card span:last-child {
+  color: #64748b;
+  font-size: 13px;
+}
+
+.stripe-portal-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stripe-portal-actions button,
+.stripe-portal-actions a {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #1f2937;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.stripe-portal-actions svg {
+  width: 18px;
+  height: 18px;
+  fill: currentColor;
+}
+
+.stripe-radio-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.stripe-radio-row input {
+  width: 16px;
+  height: 16px;
+}
+
+.stripe-portal-form iframe {
+  width: 100%;
+  height: 88px;
+  border: 0;
 }
 
 .portal-card h2,

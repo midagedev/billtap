@@ -29,7 +29,7 @@ func TestLoadDefaults(t *testing.T) {
 func TestLoadConfigFileThenEnvOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "billtap.json")
-	body := `{"addr":":9000","database_url":"file.db","static_dir":"static","environment":"test","raw_payload_storage":"metadata_only","retention_days":7,"webhook_signature_header":"Billtap-Signature"}`
+	body := `{"addr":":9000","database_url":"file.db","static_dir":"static","public_base_url":"https://billtap.example.test","environment":"test","raw_payload_storage":"metadata_only","retention_days":7,"webhook_signature_header":"Billtap-Signature"}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config file: %v", err)
 	}
@@ -37,6 +37,7 @@ func TestLoadConfigFileThenEnvOverrides(t *testing.T) {
 	env := map[string]string{
 		envAddr:                   ":9100",
 		envDatabaseURL:            ":memory:",
+		envPublicBaseURL:          "http://127.0.0.1:18080",
 		envWebhookSignatureHeader: "Stripe-Signature",
 	}
 	cfg, err := LoadWithLookup(path, func(key string) (string, bool) {
@@ -55,6 +56,9 @@ func TestLoadConfigFileThenEnvOverrides(t *testing.T) {
 	}
 	if cfg.StaticDir != "static" {
 		t.Fatalf("StaticDir = %q, want file value", cfg.StaticDir)
+	}
+	if cfg.PublicBaseURL != "http://127.0.0.1:18080" {
+		t.Fatalf("PublicBaseURL = %q, want env override", cfg.PublicBaseURL)
 	}
 	if cfg.RawPayloadStorage != RawPayloadMetadataOnly || cfg.RetentionDays != 7 {
 		t.Fatalf("boundary config raw=%q retention=%d", cfg.RawPayloadStorage, cfg.RetentionDays)

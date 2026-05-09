@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { createRoot } from "react-dom/client";
 import {
   AppShell,
@@ -15,10 +15,16 @@ import {
   type CheckoutSessionSummary,
   type DataSource,
 } from "../shared/api";
-import { checkoutSession as fixtureCheckoutSession, outcomeOptions, type StatusTone } from "../shared/data";
+import {
+  checkoutSession as fixtureCheckoutSession,
+  outcomeOptions,
+  type CheckoutOutcomeId,
+  type StatusTone,
+} from "../shared/data";
 import "../shared/styles.css";
 
 const paymentMethods = ["4242 sandbox card", "3DS challenge card", "Bank debit pending"];
+const checkoutSuccessMessage = "Your payment has been processed successfully.";
 
 function CheckoutApp() {
   const [outcome, setOutcome] = useState(outcomeOptions[0]);
@@ -29,6 +35,12 @@ function CheckoutApp() {
   const [completion, setCompletion] = useState<CheckoutCompletion>();
   const [isLoading, setIsLoading] = useState(true);
   const [isCompleting, setIsCompleting] = useState(false);
+  const [cardNumber, setCardNumber] = useState("4242424242424242");
+  const [cardExpiry, setCardExpiry] = useState("12/34");
+  const [cardCvc, setCardCvc] = useState("123");
+  const [billingName, setBillingName] = useState("Jane Doe");
+  const [billingCountry, setBillingCountry] = useState("US");
+  const [formMessage, setFormMessage] = useState<string>();
   const sessionId = useMemo(() => getCheckoutSessionId(), []);
 
   useEffect(() => {
@@ -57,14 +69,52 @@ function CheckoutApp() {
 
   const statusTone = completion ? toneForState(completion.session.paymentIntentStatus) : outcome.tone;
   const apiTone: StatusTone = source === "api" ? "good" : "warning";
+  const paymentSucceeded = completion ? isSuccessfulCompletion(completion) : false;
+
+  useEffect(() => {
+    if (!paymentSucceeded || !window.opener) return;
+    window.opener.postMessage({ success: true, data: "결제성공" }, "*");
+    window.opener.focus?.();
+  }, [paymentSucceeded]);
 
   async function handleCompleteCheckout() {
     setIsCompleting(true);
+    setFormMessage(undefined);
     const result = await completeCheckout(session, outcome.id, paymentMethod);
     setCompletion(result);
     setSession(result.session);
     setSource(result.source);
     setIsCompleting(false);
+  }
+
+  async function handleStripeCompatibleSubmit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setIsCompleting(true);
+    setFormMessage(undefined);
+    const cardOutcome = checkoutOutcomeForCard(cardNumber);
+    const result = await completeCheckout(session, cardOutcome, paymentMethodForCard(cardNumber));
+    setCompletion(result);
+    setSession(result.session);
+    setSource(result.source);
+    setIsCompleting(false);
+    if (!isSuccessfulCompletion(result)) {
+      setFormMessage(failureMessageForOutcome(cardOutcome));
+    }
+  }
+
+  if (paymentSucceeded) {
+    return (
+      <AppShell active="checkout">
+        <section className="stripe-success-shell" aria-live="polite">
+          <span className="stripe-success-icon" aria-hidden="true">OK</span>
+          <h1>Payment successful</h1>
+          <h2>{checkoutSuccessMessage}</h2>
+          <a className="button secondary" href={session.returnUrl}>
+            Return to app
+          </a>
+        </section>
+      </AppShell>
+    );
   }
 
   return (
@@ -119,19 +169,71 @@ function CheckoutApp() {
           </Panel>
 
           <Panel title="Payment method">
-            <div className="payment-grid">
-              {paymentMethods.map((method) => (
-                <button
-                  className={`payment-card ${method === paymentMethod ? "active" : ""}`}
-                  key={method}
-                  onClick={() => setPaymentMethod(method)}
-                  type="button"
+            <form className="stripe-compatible-form" onSubmit={handleStripeCompatibleSubmit}>
+              <button className="payment-method-tab" type="button" onClick={() => setPaymentMethod(paymentMethods[0])}>
+                Card
+              </button>
+              <label>
+                <span>Email</span>
+                <input id="email" value={session.customerEmail} onChange={() => undefined} autoComplete="email" />
+              </label>
+              <label>
+                <span>Card number</span>
+                <input
+                  id="cardNumber"
+                  value={cardNumber}
+                  onChange={(event) => setCardNumber(event.target.value)}
+                  autoComplete="cc-number"
+                  inputMode="numeric"
+                />
+              </label>
+              <div className="stripe-form-row">
+                <label>
+                  <span>Expiry</span>
+                  <input
+                    id="cardExpiry"
+                    value={cardExpiry}
+                    onChange={(event) => setCardExpiry(event.target.value)}
+                    autoComplete="cc-exp"
+                  />
+                </label>
+                <label>
+                  <span>CVC</span>
+                  <input
+                    id="cardCvc"
+                    value={cardCvc}
+                    onChange={(event) => setCardCvc(event.target.value)}
+                    autoComplete="cc-csc"
+                  />
+                </label>
+              </div>
+              <label>
+                <span>Name on card</span>
+                <input
+                  name="billingName"
+                  value={billingName}
+                  onChange={(event) => setBillingName(event.target.value)}
+                  autoComplete="cc-name"
+                />
+              </label>
+              <label>
+                <span>Country</span>
+                <select
+                  name="billingCountry"
+                  value={billingCountry}
+                  onChange={(event) => setBillingCountry(event.target.value)}
                 >
-                  <strong>{method}</strong>
-                  <span>Sandbox instrument</span>
-                </button>
-              ))}
-            </div>
+                  <option value="US">United States</option>
+                  <option value="KR">South Korea</option>
+                  <option value="JP">Japan</option>
+                  <option value="GB">United Kingdom</option>
+                </select>
+              </label>
+              {formMessage ? <div className="stripe-form-error" role="alert">{formMessage}</div> : null}
+              <button className="button" disabled={isLoading || isCompleting} type="submit">
+                {isCompleting ? "Processing..." : "Pay"}
+              </button>
+            </form>
           </Panel>
         </div>
       </div>
@@ -211,6 +313,48 @@ function toneForState(state: string): StatusTone {
     return "warning";
   }
   return "neutral";
+}
+
+function checkoutOutcomeForCard(cardNumber: string): CheckoutOutcomeId {
+  const normalized = cardNumber.replace(/\D/g, "");
+  switch (normalized) {
+    case "4000000000000002":
+      return "declined";
+    case "4000000000009995":
+      return "funds";
+    case "4000000000000069":
+      return "expired";
+    case "4000000000003220":
+      return "action";
+    default:
+      return "success";
+  }
+}
+
+function paymentMethodForCard(cardNumber: string): string {
+  const normalized = cardNumber.replace(/\D/g, "");
+  switch (normalized) {
+    case "4000000000000002":
+      return "pm_card_visa_chargeDeclined";
+    case "4000000000009995":
+      return "pm_card_visa_chargeDeclinedInsufficientFunds";
+    case "4000000000003220":
+      return "pm_card_threeDSecure2Required";
+    default:
+      return "pm_card_visa";
+  }
+}
+
+function failureMessageForOutcome(outcome: CheckoutOutcomeId): string {
+  if (outcome === "funds") return "Your card has insufficient funds.";
+  if (outcome === "expired") return "Your card has expired.";
+  if (outcome === "action") return "Payment failed because authentication is required.";
+  return "Your card was declined.";
+}
+
+function isSuccessfulCompletion(completion: CheckoutCompletion): boolean {
+  const status = `${completion.session.paymentStatus} ${completion.session.paymentIntentStatus}`.toLowerCase();
+  return status.includes("paid") || status.includes("succeeded");
 }
 
 createRoot(document.getElementById("root")!).render(<CheckoutApp />);

@@ -37,9 +37,14 @@ curl http://localhost:8080/readyz
 BILLTAP_ADDR=127.0.0.1:18080 \
 BILLTAP_DATABASE_URL=:memory: \
 BILLTAP_ENV=smoke \
+BILLTAP_PUBLIC_BASE_URL=http://127.0.0.1:18080 \
 BILLTAP_STATIC_DIR=dist/app \
 go run ./cmd/billtap
 ```
+
+`BILLTAP_PUBLIC_BASE_URL` is optional. Set it when the app under test calls
+Billtap from a container or private network name, but the browser needs checkout
+and portal URLs that resolve from the host.
 
 ## Docker
 
