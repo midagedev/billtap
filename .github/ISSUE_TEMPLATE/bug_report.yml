@@ -1,0 +1,94 @@
+name: Bug report
+description: Report reproducible behavior in the Billtap sandbox.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this for reproducible bugs in Billtap local development, CI scenarios, fixtures, webhook delivery, hosted checkout, hosted portal, or dashboard behavior.
+
+        Do not include real card data, live credentials, production customer data, or production payment payloads.
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Safety boundary
+      options:
+        - label: This report does not include real card data, live payment credentials, production customer data, or production payment payloads.
+          required: true
+        - label: I understand Billtap is a billing sandbox and not a real payment processor.
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: Billtap version or commit
+      description: Provide a release tag, commit SHA, or branch name.
+      placeholder: v0.1.0, 3f4c2a1, or main
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - API compatibility
+        - Billing state
+        - Checkout UI
+        - Portal UI
+        - Dashboard
+        - Webhooks
+        - Scenario runner
+        - Fixtures
+        - SaaS profile
+        - Production boundary
+        - Documentation
+        - Other
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - Local development
+        - CI
+        - Docker
+        - Controlled staging-adjacent relay mode
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Include commands, scenario file snippets, fixture snippets, or HTTP requests when useful. Keep all data sanitized.
+      placeholder: |
+        1. Run ...
+        2. Apply fixture ...
+        3. Open ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized evidence
+      description: Paste redacted logs, scenario reports, screenshots, or dashboard evidence. Do not include secrets or production payment data.
+      render: shell
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Runtime versions, OS, storage mode, relay-mode settings, or related issues.
