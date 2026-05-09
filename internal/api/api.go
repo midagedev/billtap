@@ -1794,20 +1794,6 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]any{
-		"error": map[string]string{
-			"message": err.Error(),
-			"type":    http.StatusText(status),
-		},
-	})
-}
-
-func methodNotAllowed(w http.ResponseWriter, allow string) {
-	w.Header().Set("Allow", allow)
-	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-}
-
 func absoluteURL(r *http.Request, path string) string {
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
 		return path

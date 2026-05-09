@@ -1,0 +1,207 @@
+# API Validation and Error Simulation Plan
+
+Status date: 2026-05-09
+
+This plan defines the public-release target for Billtap's Stripe-like request
+validation and deterministic error simulation. It is intentionally narrower than
+full Stripe parity: Billtap should help subscription apps test local billing
+flows with realistic request failures, payment failures, idempotency hazards,
+and webhook delivery problems without processing real payments.
+
+## Reference Inputs
+
+Use these references when deciding whether behavior is Stripe-compatible,
+Billtap-specific, or unsupported:
+
+| Reference | Use |
+| --- | --- |
+| [Stripe API errors](https://docs.stripe.com/api/errors) | Error envelope fields, error types, and HTTP status class guidance. |
+| [Stripe error codes](https://docs.stripe.com/error-codes) | Programmatic `code`, `decline_code`, and documentation URL conventions. |
+| [Stripe testing](https://docs.stripe.com/testing) | Sandbox payment outcomes, test PaymentMethod IDs, card declines, 3DS, and "do not use real card details" boundary. |
+| [Stripe idempotent requests](https://docs.stripe.com/api/idempotent_requests) | Idempotency replay, parameter mismatch, and conflict semantics. |
+| [Stripe webhooks](https://docs.stripe.com/webhooks) and [signature troubleshooting](https://docs.stripe.com/webhooks/signature) | Webhook duplicate delivery, signature verification, raw-body requirements, retry, and failure handling. |
+| [stripe/openapi](https://github.com/stripe/openapi) | Machine-readable endpoint, parameter, schema, fixture, and expandable-field reference. |
+| [stripe/stripe-mock](https://github.com/stripe/stripe-mock) | OpenAPI-backed request validation sanity oracle for supported routes and parameter shapes. |
+| [Stripe CLI triggers](https://docs.stripe.com/stripe-cli/triggers) and [stripe-cli fixtures](https://github.com/stripe/stripe-cli/tree/master/pkg/fixtures) | Event trigger fixture patterns for webhook scenario seeds. |
+| [stripe-samples](https://github.com/stripe-samples) | Client-adoption smoke targets for checkout and subscription examples. |
+
+Important `stripe-mock` boundary:
+
+- It validates known URLs, parameter names, and parameter types from Stripe's
+  OpenAPI spec.
+- It is stateless and returns hardcoded fixture responses.
+- It does not support testing for specific responses or errors, so Billtap must
+  own deterministic error simulation and stateful billing behavior.
+
+## JongoDB Patterns To Reuse
+
+The local JongoDB compatibility suite has several patterns that fit Billtap:
+
+| Pattern | Billtap adaptation |
+| --- | --- |
+| Code-level compatibility matrix | Keep `docs/COMPATIBILITY.md` as the public contract and require every new claim to name supported, partial, or unsupported behavior. |
+| Scorecard with `imported`, `skipped`, `unsupported`, `mismatch`, and `error` buckets | Add a Stripe compatibility scorecard for request-validation and error-simulation cases instead of a vague pass/fail test count. |
+| Differential harness against a reference implementation | Compare Billtap's supported request-validation cases against `stripe-mock` or OpenAPI-derived expectations where that reference is meaningful. |
+| Central error catalog | Move API error construction into one catalog so `invalid_request_error`, `card_error`, `idempotency_error`, and `api_error` stay consistent. |
+| Failure replay bundles | Persist mismatching validation cases with method, path, normalized params, expected error fields, and actual response. |
+| Adapter smoke tests | Run real Stripe SDK/client-style requests against Billtap for the supported subset. Start with `stripe-node` or `stripe-go`; keep this separate from unit tests. |
+
+Patterns not to copy directly:
+
+- Do not target 100% provider parity. Billtap's value is deterministic billing
+  lab behavior for a documented subset.
+- Do not make live Stripe calls in normal CI. A live Stripe testmode lane can be
+  optional and manually triggered later.
+- Do not treat `stripe-mock` as a behavioral oracle for declines, webhooks, or
+  billing state transitions.
+
+## Target Levels
+
+### L0 - Current Baseline
+
+- Billtap has a supported Stripe-like `/v1` subset and documented unsupported
+  areas.
+- Basic service validation catches some required fields and local state errors.
+- Real card data is rejected.
+- Errors are not yet consistently shaped like Stripe API errors.
+
+### L1 - Request Validation Parity For Supported Endpoints
+
+Goal: every supported `/v1` endpoint has explicit validation for the documented
+request surface.
+
+Required behavior:
+
+- Validate method, route, content type, required parameters, unknown parameters,
+  scalar types, arrays, nested objects, enum values, IDs, and resource
+  existence.
+- Start with the supported subset's public anchors:
+  - `POST /v1/products`: `name`
+  - `POST /v1/prices`: `product` or `product_data`, `currency`, amount field,
+    and recurring interval when claiming recurring-price behavior
+  - `POST /v1/checkout/sessions`: `line_items`, each item `price` or
+    `price_data`, and redirect URL rules for hosted checkout modes
+  - `POST /v1/billing_portal/sessions`: `customer`
+- Preserve Billtap's no-real-card-data boundary for JSON and form requests.
+- Return Stripe-like JSON error envelopes:
+
+```json
+{
+  "error": {
+    "type": "invalid_request_error",
+    "message": "Missing required param: name.",
+    "param": "name",
+    "code": "parameter_missing"
+  }
+}
+```
+
+Gate:
+
+- Each supported endpoint has at least one success test plus required-param,
+  unknown-param, wrong-type, and missing-resource tests where applicable.
+- `methodNotAllowed` responses are JSON, not plain text.
+
+### L2 - Deterministic Error Simulation
+
+Goal: apps can intentionally exercise Stripe-like failure paths without real
+payment processing.
+
+Required behavior:
+
+- Payment outcomes can produce `card_error` responses or payment-intent
+  `last_payment_error` objects with stable `code`, `decline_code`, and message.
+- Prefer Stripe's documented test PaymentMethod IDs as semantic aliases in
+  server-side tests and fixtures instead of raw card numbers:
+  - `pm_card_visa`
+  - `pm_card_visa_chargeDeclined`
+  - `pm_card_visa_chargeDeclinedInsufficientFunds`
+  - `pm_card_chargeCustomerFail`
+  - `pm_card_threeDSecure2Required`
+- Checkout and scenario inputs can select outcomes such as success, card
+  declined, insufficient funds, expired card, incorrect CVC, authentication
+  required, processing error, and payment method missing.
+- Idempotency simulation can cover replayed success, replayed failure,
+  parameter mismatch, and concurrent conflict.
+- Webhook simulations cover duplicate delivery, delayed delivery, out-of-order
+  delivery, endpoint 4xx/5xx failure, timeout, and signature mismatch evidence.
+
+Gate:
+
+- Error-simulation cases have deterministic fixture names, JSON reports, and
+  Markdown summaries.
+- No error simulation stores PAN, CVC, or real credentials.
+
+### L3 - Compatibility Scorecard And Differential Harness
+
+Goal: Billtap can report how much of the planned Stripe-like validation subset
+is covered and where it diverges.
+
+Required behavior:
+
+- Define a fixture corpus of request-validation and error-simulation cases.
+- Run Billtap cases and, where useful, an oracle lane:
+  - `stripe-mock` for route/parameter/type checks.
+  - OpenAPI-derived fixtures for schema and resource shape checks.
+  - Billtap-owned expectations for stateful errors, declines, idempotency, and
+    webhooks.
+- Normalize comparison to status, error type, code, param, decline code, and
+  object state. Do not require full error-message string equality.
+- Write artifacts:
+  - `compatibility-scorecard.json`
+  - `compatibility-scorecard.md`
+  - failure replay bundle JSON files
+
+Gate:
+
+- `mismatch=0` and `error=0` for the release subset.
+- `unsupported` is allowed only when documented in `docs/COMPATIBILITY.md`.
+- Coverage cannot regress without an explicit release note.
+
+### L4 - Adoption Smoke Lanes
+
+Goal: prove common integration clients can run against Billtap's supported
+subset without custom code paths.
+
+Required behavior:
+
+- Add a real-client smoke runner with at least one official Stripe SDK.
+- Exercise customer, product, price, checkout session, event, webhook endpoint,
+  and retrieval flows.
+- Keep sample app compatibility as an optional lane so it does not block fast CI.
+
+Gate:
+
+- Fast smoke runs in CI.
+- Full adoption smoke can run locally or on a scheduled/manual workflow.
+
+## Orchestration Chunks
+
+Each chunk should use the PR -> review -> fix -> merge loop. A chunk must
+declare ownership, verification, open risks, and gate status in the PR.
+
+| Chunk | Ownership | Output | Verification |
+| --- | --- | --- | --- |
+| V0. Plan and gate lock | Docs and contracts | This plan, reference links, updated testing docs | Markdown review plus existing CI |
+| V1. Stripe-like error envelope | API error catalog and response writer | Consistent `error.type`, `message`, `param`, `code`, and JSON 405 responses | Go API tests |
+| V2. Supported endpoint validators | `/v1` request parsing and per-endpoint schemas | Required/unknown/type/enum validation for documented supported endpoints | Go table tests per endpoint |
+| V3. Payment error simulation | Checkout completion, payment-intent state, scenario outcomes | Deterministic card/payment failure catalog | Go scenario and API tests |
+| V4. Idempotency simulation | POST request idempotency storage and conflict handling | Replay/mismatch/conflict behavior for supported POST endpoints | Go API tests and scorecard cases |
+| V5. Webhook failure scenarios | Webhook delivery and scenario runner | Endpoint 4xx/5xx, timeout, duplicate, delay, out-of-order, signature mismatch evidence | Go webhook tests and scenario reports |
+| V6. Compatibility scorecard | Testkit, CLI/report artifacts | JSON/Markdown scorecard and replay bundles | CI artifact tests |
+| V7. Stripe SDK smoke | Node or Go client smoke runner | Real-client adoption report | Optional CI/manual workflow |
+
+## Release Gates
+
+A public release can claim improved validation and error simulation only when:
+
+1. `docs/COMPATIBILITY.md` names the supported endpoints and unsupported
+   provider behavior.
+2. Stripe-like error envelopes are covered for 400, 402, 404, 405, 409, 429,
+   and 5xx categories used by Billtap.
+3. Supported endpoint validation has no untested required parameters.
+4. Error-simulation scenarios cover at least one success, one request
+   validation failure, one payment failure, one idempotency conflict, and one
+   webhook delivery failure.
+5. The scorecard shows `mismatch=0` and `error=0` for release-blocking cases.
+6. Real card data and live credentials remain rejected or redacted by tests.

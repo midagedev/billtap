@@ -256,6 +256,70 @@ func TestProductionBoundaryRedactionAndAuditAPI(t *testing.T) {
 	if status != http.StatusBadRequest || !strings.Contains(body, "real card data") {
 		t.Fatalf("status=%d body=%s, want real card data rejection", status, body)
 	}
+	errBody := decodeErrorBody(t, body)
+	if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "real_card_data_not_allowed" {
+		t.Fatalf("error=%#v, want Stripe-like real-card-data error", errBody.Error)
+	}
+}
+
+func TestStripeLikeAPIErrorEnvelope(t *testing.T) {
+	handler := newTestHandler(t)
+
+	t.Run("validation failure", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/products", url.Values{})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "name" {
+			t.Fatalf("error=%#v, want missing name invalid_request_error", errBody.Error)
+		}
+		if errBody.Error.Message != "product name is required" {
+			t.Fatalf("message=%q, want public validation message", errBody.Error.Message)
+		}
+	})
+
+	t.Run("resource missing", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/v1/customers/cus_missing", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		errBody := decodeErrorBody(t, rec.Body.String())
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("status=%d body=%s, want 404", rec.Code, rec.Body.String())
+		}
+		if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "resource_missing" {
+			t.Fatalf("error=%#v, want resource_missing invalid_request_error", errBody.Error)
+		}
+	})
+
+	t.Run("method not allowed", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodPatch, "/v1/products", nil)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		errBody := decodeErrorBody(t, rec.Body.String())
+		if rec.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("status=%d body=%s, want 405", rec.Code, rec.Body.String())
+		}
+		if rec.Header().Get("Allow") != "GET, POST" {
+			t.Fatalf("Allow=%q, want GET, POST", rec.Header().Get("Allow"))
+		}
+		if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "method_not_allowed" {
+			t.Fatalf("error=%#v, want method_not_allowed invalid_request_error", errBody.Error)
+		}
+	})
+
+	t.Run("nested parameter name", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer": {"cus_missing"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "line_items" {
+			t.Fatalf("error=%#v, want line_items parameter_missing", errBody.Error)
+		}
+	})
 }
 
 func TestDashboardObjectsAndDebugBundle(t *testing.T) {
@@ -702,12 +766,40 @@ func postJSONStatus(t *testing.T, handler http.Handler, path string, body any) (
 	return rec.Code, rec.Body.String()
 }
 
+func postFormStatus(t *testing.T, handler http.Handler, path string, values url.Values) (int, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, stringsReader(values.Encode()))
+	req.Host = "billtap.test"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String()
+}
+
 func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return decodeResponse[T](t, rec)
+}
+
+type stripeAPIErrorBody struct {
+	Error struct {
+		Type    string `json:"type"`
+		Message string `json:"message"`
+		Param   string `json:"param,omitempty"`
+		Code    string `json:"code,omitempty"`
+	} `json:"error"`
+}
+
+func decodeErrorBody(t *testing.T, body string) stripeAPIErrorBody {
+	t.Helper()
+	var out stripeAPIErrorBody
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatalf("decode error body %s: %v", body, err)
+	}
+	return out
 }
 
 func decodeResponse[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
