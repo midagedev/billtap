@@ -28,6 +28,7 @@ type Handler struct {
 	billing  *billing.Service
 	webhooks *webhooks.Service
 	mux      *http.ServeMux
+	idem     *idempotencyStore
 }
 
 func New(opts Options) http.Handler {
@@ -35,13 +36,14 @@ func New(opts Options) http.Handler {
 		billing:  opts.Billing,
 		webhooks: opts.Webhooks,
 		mux:      http.NewServeMux(),
+		idem:     newIdempotencyStore(),
 	}
 	h.routes()
 	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.mux.ServeHTTP(w, r)
+	h.serveWithIdempotency(w, r)
 }
 
 func (h *Handler) routes() {
