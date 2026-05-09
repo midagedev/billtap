@@ -45,6 +45,9 @@ jobs:
       - name: Go tests
         run: go test ./...
 
+      - name: Compatibility scorecard
+        run: go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility
+
       - name: Frontend typecheck
         run: npm run typecheck
 

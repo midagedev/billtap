@@ -36,6 +36,16 @@ Request-validation and error-simulation gates are defined in
 tests for success, required parameters, unknown parameters, wrong types,
 resource-missing paths, and the Stripe-like error envelope.
 
+Generate the L3 offline compatibility scorecard and artifacts with:
+
+```bash
+go run ./cmd/billtap compatibility scorecard --output-dir dist/compatibility
+```
+
+The scorecard writes JSON and Markdown summaries, maps
+`imported`/`skipped`/`unsupported`/`mismatch`/`error` statuses, and emits replay
+bundle JSON files for mismatch or runner error cases.
+
 Fixture ergonomics for integration tests:
 
 - apply a data-driven fixture pack through `POST /api/fixtures/apply`

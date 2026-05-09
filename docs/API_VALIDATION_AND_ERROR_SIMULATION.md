@@ -152,6 +152,12 @@ Required behavior:
   - `compatibility-scorecard.md`
   - failure replay bundle JSON files
 
+Current lane:
+
+- `go run ./cmd/billtap compatibility scorecard --output-dir dist/compatibility`
+  runs the offline Billtap-owned corpus and writes JSON, Markdown, and replay
+  bundle artifacts without requiring external Stripe services.
+
 Gate:
 
 - `mismatch=0` and `error=0` for the release subset.

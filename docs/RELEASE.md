@@ -93,6 +93,7 @@ Run from the repository root:
 ```bash
 npm ci
 go test ./...
+go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility
 npm run typecheck
 npm run build
 npm run smoke:sample
