@@ -20,9 +20,10 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 
 ## Current Public Claim
 
-Billtap is a source-only local billing sandbox. It can be built, tested, run,
-and smoke-checked from this repository, but it is not yet published as a package
-or Docker image. It is licensed under Apache-2.0.
+Billtap is a source-first local billing sandbox with a GHCR container image. It
+can be built, tested, run, and smoke-checked from this repository, and adoption
+repos can pull `ghcr.io/midagedev/billtap:main` or a release tag. It is licensed
+under Apache-2.0.
 
 ## Current Compatibility Evidence
 

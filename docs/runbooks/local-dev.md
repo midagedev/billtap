@@ -48,6 +48,12 @@ docker build -t billtap:local .
 docker run --rm -p 8080:8080 -v billtap-data:/data billtap:local
 ```
 
+To use the published image instead of building locally:
+
+```bash
+docker run --rm -p 8080:8080 -v billtap-data:/data ghcr.io/midagedev/billtap:main
+```
+
 ## Configure App Under Test
 
 Set the app's Stripe base URL to:

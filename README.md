@@ -86,7 +86,8 @@ Billtap is optimized around test ergonomics, not full payment-provider emulation
 
 ## Quick Start
 
-Current distribution state: source-only. No package, Homebrew formula, or published Docker image is released yet.
+Current distribution state: source plus a GitHub Container Registry image.
+No package, Homebrew formula, or signed binary release is published yet.
 
 Requirements:
 
@@ -135,6 +136,18 @@ docker build -t billtap:local .
 docker run --rm -p 8080:8080 -v billtap-data:/data billtap:local
 ```
 
+Use the published container image:
+
+```bash
+docker run --rm -p 8080:8080 -v billtap-data:/data ghcr.io/midagedev/billtap:main
+```
+
+Image tags:
+
+- `ghcr.io/midagedev/billtap:main`: latest successful `main` build
+- `ghcr.io/midagedev/billtap:sha-<short-sha>`: immutable commit build
+- `ghcr.io/midagedev/billtap:<version>`: release tag builds such as `0.1.0`
+
 ## Fixture And Assertion APIs
 
 Billtap includes local integration-test helpers:
@@ -180,7 +193,7 @@ curl -fsS "http://localhost:8080/api/diagnostics?limit=100" \
 | Scenarios | YAML runner | Local clock, app assertions, JSON/Markdown reports, exit-code policy |
 | Fixtures | Apply/snapshot/assert APIs | JSON/YAML input, fixture metadata isolation, structured pass/fail reports |
 | SaaS profile | Generic workspace billing profile | Plans, seats, members, export quota, extra export, payment history, support bundle, platform/connect-style webhook evidence |
-| Release state | Source-only | Local Docker image builds; no published image/package yet |
+| Release state | Source plus GHCR image | Local Docker image builds and GHCR image workflow; no package/Homebrew/signed binary yet |
 
 Detailed compatibility matrix: `docs/COMPATIBILITY.md`.
 

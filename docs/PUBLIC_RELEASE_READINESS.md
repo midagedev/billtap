@@ -10,10 +10,11 @@ tests. The public claim must stay narrower than full Stripe parity.
 
 Billtap can be described as:
 
-> A source-first local billing sandbox with a documented Stripe-like API subset,
-> stateful checkout/subscription fixtures, deterministic payment-error
-> simulation, webhook reliability controls, scenario reports, and a dashboard
-> for explaining billing evidence.
+> A source-first local billing sandbox, also available as a GHCR container
+> image, with a documented Stripe-like API subset, stateful
+> checkout/subscription fixtures, deterministic payment-error simulation,
+> webhook reliability controls, scenario reports, and a dashboard for
+> explaining billing evidence.
 
 Do not describe Billtap as:
 
@@ -63,6 +64,7 @@ Every public release candidate should include:
 - `npm run smoke:web`
 - `go build -o /tmp/billtap ./cmd/billtap`
 - `docker build -t billtap:local .`
+- post-publish `docker pull ghcr.io/midagedev/billtap:<tag>` and health smoke
 - sample app scenario smoke for `examples/subscription-payment-retry.yml`
 - sample app scenario smoke for `examples/saas-adoption-contract.yml`
 
@@ -104,5 +106,5 @@ Billtap-owned tests:
 - Add a short screencast or screenshot set after dashboard UI verification.
 - Add an optional external oracle lane that runs selected route/parameter cases
   against `stripe-mock` when Docker/network access is available.
-- Add published artifact automation only when the project is ready to claim a
-  Docker image, binary, Homebrew formula, or npm package.
+- Add signed binary, Homebrew, or npm artifact automation only when the project
+  is ready to claim those distribution channels.
