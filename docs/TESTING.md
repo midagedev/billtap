@@ -54,6 +54,16 @@ Fixture ergonomics for integration tests:
 - keep fixture IDs stable for customer, product, and price setup
 - use fixture `runId`, `namespace`, `tenantId`, and `ref` metadata to isolate repeated local/CI runs
 
+Integration diagnostics for failed app runs:
+
+- capture `GET /api/diagnostics?limit=200` as a test artifact before teardown
+- use `GET /api/request-traces` to prove which Stripe-like `/v1` calls the app
+  actually made and what redacted request/response evidence Billtap returned
+- use targeted `POST /api/debug-bundles` for failing customer, checkout session,
+  subscription, invoice, or payment intent IDs
+- include `delivery_attempts` when debugging webhook handler failures, missing
+  subscriptions, entitlement drift, or retry/idempotency regressions
+
 ### Stripe SDK smoke
 
 Run the real-client adoption smoke with:

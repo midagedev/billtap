@@ -145,6 +145,30 @@ Billtap includes local integration-test helpers:
 
 Fixture-applied subscriptions use the normal checkout-completion path so invoices, payment intents, checkout sessions, and timeline evidence stay consistent.
 
+## Diagnostic APIs
+
+Billtap records every Stripe-like `/v1` API request as a redacted request trace.
+This is designed for local dev servers and isolated e2e jobs where an agent
+needs to answer whether the app was configured to call Billtap, what it asked
+for, what Billtap returned, and whether webhooks were emitted and delivered.
+
+- `GET /api/request-traces`: inspect recent `/v1` method, path, query, status,
+  idempotency key, masked headers, redacted request/response evidence, Stripe
+  error fields, and related billing object IDs
+- `GET /api/diagnostics`: export a single diagnostic bundle with object state,
+  fixture snapshot, timeline, request traces, webhook events, and delivery
+  attempts
+- `POST /api/debug-bundles`: target one customer, checkout session,
+  subscription, invoice, or payment intent; debug bundles now include matching
+  request traces as well as timeline and webhook evidence
+
+Example:
+
+```bash
+curl -fsS "http://localhost:8080/api/diagnostics?limit=100" \
+  -o billtap-diagnostics.json
+```
+
 ## Compatibility Snapshot
 
 | Area | Current level | Notes |

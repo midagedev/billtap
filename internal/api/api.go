@@ -1,17 +1,20 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/hckim/billtap/internal/billing"
+	"github.com/hckim/billtap/internal/diagnostics"
 	"github.com/hckim/billtap/internal/fixtures"
 	"github.com/hckim/billtap/internal/scenarios"
 	"github.com/hckim/billtap/internal/security"
@@ -20,29 +23,36 @@ import (
 )
 
 type Options struct {
-	Billing  *billing.Service
-	Webhooks *webhooks.Service
+	Billing     *billing.Service
+	Webhooks    *webhooks.Service
+	Diagnostics *diagnostics.Service
 }
 
 type Handler struct {
-	billing  *billing.Service
-	webhooks *webhooks.Service
-	mux      *http.ServeMux
-	idem     *idempotencyStore
+	billing     *billing.Service
+	webhooks    *webhooks.Service
+	diagnostics *diagnostics.Service
+	mux         *http.ServeMux
+	idem        *idempotencyStore
 }
 
 func New(opts Options) http.Handler {
 	h := &Handler{
-		billing:  opts.Billing,
-		webhooks: opts.Webhooks,
-		mux:      http.NewServeMux(),
-		idem:     newIdempotencyStore(),
+		billing:     opts.Billing,
+		webhooks:    opts.Webhooks,
+		diagnostics: opts.Diagnostics,
+		mux:         http.NewServeMux(),
+		idem:        newIdempotencyStore(),
 	}
 	h.routes()
 	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.diagnostics != nil && strings.HasPrefix(r.URL.Path, "/v1/") {
+		h.serveWithRequestTrace(w, r)
+		return
+	}
 	h.serveWithIdempotency(w, r)
 }
 
@@ -74,6 +84,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/api/checkout/sessions/", h.handleCheckoutCompletion)
 	h.mux.HandleFunc("/api/objects", h.handleObjects)
 	h.mux.HandleFunc("/api/debug-bundles", h.handleDebugBundles)
+	h.mux.HandleFunc("/api/diagnostics", h.handleDiagnostics)
+	h.mux.HandleFunc("/api/request-traces", h.handleRequestTraces)
 	h.mux.HandleFunc("/api/fixtures/apply", h.handleFixtureApply)
 	h.mux.HandleFunc("/api/fixtures/snapshot", h.handleFixtureSnapshot)
 	h.mux.HandleFunc("/api/fixtures/assert", h.handleFixtureAssert)
@@ -931,6 +943,7 @@ func (h *Handler) handleDebugBundles(w http.ResponseWriter, r *http.Request) {
 	}
 	targetType := p.first("objectType", "object_type", "targetType", "target_type", "type")
 	targetID := p.first("objectId", "object_id", "targetId", "target_id", "id")
+	requestTraces, _ := h.listRequestTraces(r.Context(), diagnostics.RequestTraceFilter{ObjectID: targetID, Limit: 100})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":                "dbg_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
 		"object":            "debug_bundle",
@@ -938,8 +951,66 @@ func (h *Handler) handleDebugBundles(w http.ResponseWriter, r *http.Request) {
 		"filters":           timelineFilterMap(filter),
 		"objects":           objects,
 		"timeline":          timeline,
+		"request_traces":    requestTraces,
 		"webhook_events":    events,
 		"delivery_attempts": h.deliveryAttemptResponses(r, attempts),
+		"created_at":        time.Now().UTC(),
+	})
+}
+
+func (h *Handler) handleRequestTraces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return
+	}
+	traces, err := h.listRequestTraces(r.Context(), requestTraceFilter(r))
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": traces})
+}
+
+func (h *Handler) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		methodNotAllowed(w, "GET")
+		return
+	}
+	filter := diagnosticTimelineFilter(r)
+	timeline, err := h.billing.Timeline(r.Context(), filter)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	objects, err := h.collectObjects(r)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	requestTraces, err := h.listRequestTraces(r.Context(), requestTraceFilter(r))
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	var events []webhooks.Event
+	var attempts []map[string]any
+	if h.webhooks != nil {
+		events, _ = h.webhooks.ListEvents(r.Context(), webhooks.EventFilter{})
+		rawAttempts, _ := h.webhooks.ListDeliveryAttempts(r.Context(), webhooks.DeliveryAttemptFilter{})
+		attempts = h.deliveryAttemptResponses(r, rawAttempts)
+	}
+	snapshot, _ := fixtures.NewService(h.billing).Snapshot(r.Context(), fixtureSnapshotFilter(r))
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":                "diag_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+		"object":            "diagnostic_bundle",
+		"summary":           diagnosticsSummary(objects, timeline, requestTraces, events, attempts),
+		"filters":           timelineFilterMap(filter),
+		"objects":           objects,
+		"fixture_snapshot":  snapshot,
+		"timeline":          timeline,
+		"request_traces":    requestTraces,
+		"webhook_events":    events,
+		"delivery_attempts": attempts,
 		"created_at":        time.Now().UTC(),
 	})
 }
@@ -1088,6 +1159,90 @@ func debugBundleTimelineFilter(p params) billing.TimelineFilter {
 		}
 	}
 	return filter
+}
+
+func diagnosticTimelineFilter(r *http.Request) billing.TimelineFilter {
+	q := r.URL.Query()
+	return debugBundleTimelineFilter(params{values: map[string]string{
+		"customerId":        firstValue(q, "customerId", "customer_id", "customer"),
+		"checkoutSessionId": firstValue(q, "checkoutSessionId", "checkout_session_id", "checkoutSession"),
+		"subscriptionId":    firstValue(q, "subscriptionId", "subscription_id", "subscription"),
+		"invoiceId":         firstValue(q, "invoiceId", "invoice_id", "invoice"),
+		"paymentIntentId":   firstValue(q, "paymentIntentId", "payment_intent_id", "paymentIntent"),
+		"objectType":        firstValue(q, "objectType", "object_type", "targetType", "target_type", "type"),
+		"objectId":          firstValue(q, "objectId", "object_id", "targetId", "target_id", "id"),
+	}})
+}
+
+func firstValue(values url.Values, keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(values.Get(key)); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func requestTraceFilter(r *http.Request) diagnostics.RequestTraceFilter {
+	status, _ := strconv.Atoi(r.URL.Query().Get("status"))
+	limit := queryInt(r, "limit")
+	if limit == 0 {
+		limit = 100
+	}
+	return diagnostics.RequestTraceFilter{
+		Method:         strings.ToUpper(firstQuery(r, "method")),
+		Path:           firstQuery(r, "path"),
+		Status:         status,
+		RequestID:      firstQuery(r, "requestId", "request_id"),
+		IdempotencyKey: firstQuery(r, "idempotencyKey", "idempotency_key"),
+		ObjectID:       firstQuery(r, "objectId", "object_id", "targetId", "target_id", "id"),
+		Limit:          limit,
+	}
+}
+
+func (h *Handler) listRequestTraces(ctx context.Context, filter diagnostics.RequestTraceFilter) ([]diagnostics.RequestTrace, error) {
+	if h.diagnostics == nil {
+		return []diagnostics.RequestTrace{}, nil
+	}
+	return h.diagnostics.ListRequestTraces(ctx, filter)
+}
+
+func diagnosticsSummary(objects map[string]any, timeline []billing.TimelineEntry, traces []diagnostics.RequestTrace, events []webhooks.Event, attempts []map[string]any) map[string]any {
+	summary := map[string]any{
+		"timeline":          len(timeline),
+		"request_traces":    len(traces),
+		"webhook_events":    len(events),
+		"delivery_attempts": len(attempts),
+	}
+	for _, key := range []string{"customers", "products", "prices", "checkout_sessions", "subscriptions", "invoices", "payment_intents", "webhook_endpoints"} {
+		if count, ok := diagnosticObjectCount(objects[key]); ok {
+			summary[key] = count
+		}
+	}
+	return summary
+}
+
+func diagnosticObjectCount(value any) (int, bool) {
+	switch v := value.(type) {
+	case []billing.Customer:
+		return len(v), true
+	case []billing.Product:
+		return len(v), true
+	case []billing.Price:
+		return len(v), true
+	case []billing.CheckoutSession:
+		return len(v), true
+	case []billing.Subscription:
+		return len(v), true
+	case []billing.Invoice:
+		return len(v), true
+	case []billing.PaymentIntent:
+		return len(v), true
+	case []webhooks.Endpoint:
+		return len(v), true
+	default:
+		return 0, false
+	}
 }
 
 func dashboardObjectType(value string) string {

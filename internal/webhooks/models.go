@@ -129,6 +129,7 @@ type RetentionResult struct {
 	Cutoff                   time.Time `json:"cutoff"`
 	WebhookEventsRedacted    int64     `json:"webhook_events_redacted"`
 	DeliveryAttemptsRedacted int64     `json:"delivery_attempts_redacted"`
+	RequestTracesRedacted    int64     `json:"request_traces_redacted"`
 }
 
 type EventInput struct {

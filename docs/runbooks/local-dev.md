@@ -101,3 +101,49 @@ Inspect timeline:
 ```bash
 curl -fsS "http://localhost:8080/api/timeline?checkoutSessionId=$session_id"
 ```
+
+## Capture A Diagnostic Bundle
+
+When an app under test is configured to use Billtap, capture the diagnostic
+bundle before changing settings or restarting containers:
+
+```bash
+curl -fsS "http://localhost:8080/api/diagnostics?limit=200" \
+  -o billtap-diagnostics.json
+```
+
+For a single object:
+
+```bash
+curl -fsS -X POST "http://localhost:8080/api/debug-bundles" \
+  -d object_type=checkout_session \
+  -d object_id="$session_id" \
+  -o billtap-debug-$session_id.json
+```
+
+Use the bundle as the first artifact for failed local dev or isolated e2e runs:
+
+- `request_traces`: proves whether the app called Billtap, which `/v1` path it
+  used, what query/body was sent, the status Billtap returned, and the
+  Stripe-like error code/param when validation failed
+- `fixture_snapshot`: proves whether seed data was applied and whether expected
+  fixture IDs are present
+- `timeline`: explains checkout, subscription, invoice, and payment-intent state
+  transitions
+- `webhook_events` and `delivery_attempts`: prove whether Billtap emitted a
+  webhook, where it sent it, what response the app returned, and whether a retry
+  is pending
+
+Common triage checks:
+
+```bash
+# Did the app route Stripe API calls to Billtap?
+curl -fsS "http://localhost:8080/api/request-traces?limit=50" | jq '.data[].path'
+
+# Did a specific checkout session have matching API and state evidence?
+curl -fsS "http://localhost:8080/api/diagnostics?objectId=$session_id&limit=100"
+
+# Did the webhook handler return success?
+curl -fsS "http://localhost:8080/api/delivery-attempts" \
+  | jq '.data[] | {event_id, request_url, status, response_status, error}'
+```
