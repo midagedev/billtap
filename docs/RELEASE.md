@@ -97,6 +97,7 @@ go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibi
 npm run typecheck
 npm run build
 npm run smoke:sample
+npm run smoke:sdk
 npm run smoke:web:install
 npm run smoke:web
 go build -o /tmp/billtap ./cmd/billtap
@@ -152,6 +153,7 @@ git checkout v0.1.0
 npm ci
 npm run build
 go test ./...
+npm run smoke:sdk
 docker build -t billtap:v0.1.0 .
 ```
 

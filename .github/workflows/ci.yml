@@ -57,6 +57,9 @@ jobs:
       - name: Sample app smoke
         run: npm run smoke:sample
 
+      - name: Stripe SDK smoke
+        run: npm run smoke:sdk
+
       - name: Web UI smoke
         run: npm run smoke:web
 

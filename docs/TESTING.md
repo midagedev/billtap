@@ -54,6 +54,28 @@ Fixture ergonomics for integration tests:
 - keep fixture IDs stable for customer, product, and price setup
 - use fixture `runId`, `namespace`, `tenantId`, and `ref` metadata to isolate repeated local/CI runs
 
+### Stripe SDK smoke
+
+Run the real-client adoption smoke with:
+
+```bash
+npm run smoke:sdk
+```
+
+The smoke uses the official `stripe-node` SDK against Billtap's supported
+`/v1` subset. By default it builds the Go binary, starts Billtap with an
+isolated temporary SQLite database, creates a local webhook receiver, and writes
+JSON and Markdown reports under `.billtap/sdk-smoke/`.
+
+To target an existing Billtap server instead of starting one:
+
+```bash
+BILLTAP_STRIPE_SDK_SMOKE_BASE_URL=http://127.0.0.1:8080 npm run smoke:sdk
+```
+
+Set `BILLTAP_STRIPE_SDK_SMOKE_EXPECT_DELIVERY=1` when the target server can
+reach the smoke runner's webhook receiver and delivery should be enforced.
+
 ### UI tests
 
 Browser tests for:

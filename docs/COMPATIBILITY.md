@@ -184,6 +184,14 @@ Fixture metadata is written to created objects:
 Fixtures are intended for local and CI setup. They are not migration tooling and
 must not contain real card data, live credentials, or production customer data.
 
+## Adoption Smoke Claim
+
+`npm run smoke:sdk` exercises the documented Stripe-like subset with the
+official `stripe-node` SDK. The lane covers customer, product, price, checkout
+session, event, webhook endpoint, and related retrieve/list flows against an
+isolated local Billtap server by default. It can target an existing Billtap
+server with `BILLTAP_STRIPE_SDK_SMOKE_BASE_URL`.
+
 ## Unsupported Stripe Behavior
 
 Billtap does not support or claim:

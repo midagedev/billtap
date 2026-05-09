@@ -176,6 +176,14 @@ Required behavior:
   and retrieval flows.
 - Keep sample app compatibility as an optional lane so it does not block fast CI.
 
+Current lane:
+
+- `npm run smoke:sdk` uses the official `stripe-node` SDK against Billtap. It
+  starts an isolated local Billtap server by default or targets
+  `BILLTAP_STRIPE_SDK_SMOKE_BASE_URL` when provided.
+- Reports are written to `.billtap/sdk-smoke/stripe-sdk-smoke-report.json` and
+  `.billtap/sdk-smoke/stripe-sdk-smoke-report.md`.
+
 Gate:
 
 - Fast smoke runs in CI.
