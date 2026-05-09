@@ -148,6 +148,8 @@ Image tags:
 - `ghcr.io/midagedev/billtap:sha-<short-sha>`: immutable commit build
 - `ghcr.io/midagedev/billtap:<version>`: release tag builds such as `0.1.0`
 
+Images are published for `linux/amd64` and `linux/arm64`.
+
 ## Fixture And Assertion APIs
 
 Billtap includes local integration-test helpers:
