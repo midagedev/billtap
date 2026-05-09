@@ -45,7 +45,7 @@ Do not describe Billtap as:
 
 | Blocker | Status | Resolution |
 | --- | --- | --- |
-| License | Open | Project owner must add `LICENSE` before public community release or external contributions. |
+| License | Resolved | Apache-2.0 `LICENSE` and top-level `NOTICE` are present. |
 | Public repository URL | Confirm before release | `docs/RELEASE.md` currently assumes `https://github.com/midagedev/billtap.git`. |
 | Release verification | Must pass per release | Run `docs/RELEASE_CHECKLIST.md` on the release branch or tag. |
 
@@ -79,9 +79,9 @@ Current local evidence on 2026-05-09:
 - Scorecard version: `l3-public-readiness-v2`
 - Scorecard result: `imported=28 skipped=1 unsupported=1 mismatch=0 error=0`
 - Local release checks listed in `docs/GATE_STATUS.md` passed on branch
-  `codex/public-readiness-hardening`.
-- Public community release is still blocked until the project owner adds a
-  `LICENSE`.
+  `codex/apache-license-release-readiness`.
+- Apache-2.0 `LICENSE`, `NOTICE`, `package.json`, and `package-lock.json`
+  metadata are aligned.
 
 ## Compatibility Positioning
 
@@ -101,7 +101,6 @@ Billtap-owned tests:
 
 ## Next Public-Quality Work
 
-- Add a license.
 - Add a short screencast or screenshot set after dashboard UI verification.
 - Add an optional external oracle lane that runs selected route/parameter cases
   against `stripe-mock` when Docker/network access is available.

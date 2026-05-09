@@ -16,14 +16,13 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G9 Release Candidate | Passed locally | Dockerfile, sample app, public examples, release checklist |
 | G10 Fixture Integration Smoke | Passed locally | Fixture apply/snapshot/assert APIs support deterministic integration setup |
 | G11 Assertion Ergonomics | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots |
-| G12 Public Release Readiness | Blocked on license | Public claims are tied to tests/scorecard cases; scorecard corpus has 28 release-blocking cases; owner-selected `LICENSE` is still required before community release |
+| G12 Public Release Readiness | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 28 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present |
 
 ## Current Public Claim
 
 Billtap is a source-only local billing sandbox. It can be built, tested, run,
 and smoke-checked from this repository, but it is not yet published as a package
-or Docker image. It is not ready for public community release until the project
-owner adds a `LICENSE` file.
+or Docker image. It is licensed under Apache-2.0.
 
 ## Current Compatibility Evidence
 
@@ -35,11 +34,12 @@ owner adds a `LICENSE` file.
 
 ## Last Local Verification
 
-Verified on 2026-05-09 from branch `codex/public-readiness-hardening`:
+Verified on 2026-05-09 from branch `codex/apache-license-release-readiness`:
 
 - `go test ./...`
 - `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
   - result: `imported=28 skipped=1 unsupported=1 mismatch=0 error=0`
+- `npm ci`
 - `npm run typecheck`
 - `npm run build`
 - `npm run smoke:sample`
@@ -51,7 +51,7 @@ Verified on 2026-05-09 from branch `codex/public-readiness-hardening`:
 - `/tmp/billtap scenario run examples/subscription-payment-retry.yml`
 - `/tmp/billtap scenario run examples/saas-adoption-contract.yml`
 
-The license blocker remains open despite successful local verification.
+Release verification should still be rerun on the final release branch or tag.
 
 ## Required Release Verification
 

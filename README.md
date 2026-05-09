@@ -235,4 +235,5 @@ Maintainer checklist summary:
 
 ## License
 
-License is not declared yet. This repository is not ready for public community release or external contributions until a `LICENSE` file is added by the project owner.
+Billtap is licensed under the Apache License, Version 2.0. See `LICENSE` and
+`NOTICE`.

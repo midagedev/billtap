@@ -238,7 +238,7 @@ Gate:
 - [x] T122 Add explicit validation for supported update endpoints and subscription item quantities
 - [x] T123 Expand deterministic payment-error scorecard cases for documented checkout aliases
 - [x] T124 Document source-only release state, release blockers, and public claim boundaries
-- [ ] T125 Add project-owner-selected `LICENSE` before public community release
+- [x] T125 Add project-owner-selected `LICENSE` before public community release
 
 Suggested agents:
 
@@ -248,4 +248,4 @@ Suggested agents:
 
 Gate:
 
-- [ ] G12 Public Release Readiness
+- [x] G12 Public Release Readiness
