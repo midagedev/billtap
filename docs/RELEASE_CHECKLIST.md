@@ -2,7 +2,10 @@
 
 ## Required Checks
 
-These checks are automated by the `CI / Release gate` GitHub Actions workflow and should be configured as required for PRs and protected merges.
+Most checks are automated by the `CI / Release gate` GitHub Actions workflow and
+should be configured as required for PRs and protected merges. GHCR pull/run
+checks are post-publish release checks and require the `Container Image`
+workflow to complete first.
 
 - `LICENSE` exists and matches the project owner's intended public license
 - `go test ./...`
@@ -15,6 +18,10 @@ These checks are automated by the `CI / Release gate` GitHub Actions workflow an
 - `npm run smoke:web`
 - `go build -o /tmp/billtap ./cmd/billtap`
 - `docker build -t billtap:local .`
+- `docker pull ghcr.io/midagedev/billtap:main`
+- `docker run --rm -d --name billtap-release-smoke -p 18080:8080 ghcr.io/midagedev/billtap:main`
+- `curl -fsS http://127.0.0.1:18080/healthz`
+- `docker rm -f billtap-release-smoke`
 - Start the sample app with `PORT=3300 npm --prefix examples/sample-app start`
   and wait for `http://127.0.0.1:3300/healthz`
 - `/tmp/billtap scenario run examples/subscription-payment-retry.yml`
@@ -30,6 +37,8 @@ These checks are automated by the `CI / Release gate` GitHub Actions workflow an
 - Complete checkout through `/api/checkout/sessions/{id}/complete`.
 - Verify `/api/timeline`, `/api/objects`, and `/api/delivery-attempts`.
 - Run relay mode with `BILLTAP_RELAY_MODE=true` and confirm endpoint secrets, signatures, and sensitive URL query values are masked.
+- Confirm the GHCR image tag used by downstream compose overlays is available
+  before updating adoption repos.
 
 ## Release Notes Must State
 

@@ -3,10 +3,10 @@
 This document describes the public release procedure for Billtap `v0.1.0` and
 later pre-1.0 releases.
 
-Billtap is currently a source-first project. Unless release automation is added
-in the same release, `v0.1.0` should be published as source code plus
-maintainer-verified local build instructions. Do not claim a published package,
-Homebrew formula, or official Docker image until that artifact exists.
+Billtap is currently a source-first project with an official GitHub Container
+Registry image. `v0.1.0` should be published as source code plus a GHCR image
+after the release tag workflow completes. Do not claim a published package,
+Homebrew formula, signed binary, or other artifact until that artifact exists.
 
 Billtap is licensed under Apache-2.0. The release must include the top-level
 `LICENSE` and `NOTICE` files.
@@ -18,7 +18,8 @@ The `v0.1.0` release should make three public claims:
 - Billtap is a local and CI billing sandbox, not a real payment processor.
 - Billtap supports a fixture-backed practical Stripe-like subset documented in
   `docs/COMPATIBILITY.md`.
-- Billtap can be built, tested, run, and smoke-checked from a clean checkout.
+- Billtap can be built, tested, run, smoke-checked from a clean checkout, and
+  pulled as a container image from GHCR.
 
 License requirement: keep the Apache-2.0 `LICENSE`, top-level `NOTICE`, and
 package metadata aligned before publishing the repository as a public community
@@ -81,7 +82,20 @@ Every release note must state:
    git push origin v0.1.0
    ```
 
-8. Create the GitHub release from the tag.
+8. Wait for the `Container Image` workflow on the tag to publish GHCR tags.
+
+   Expected release image tags:
+
+   - `ghcr.io/midagedev/billtap:0.1.0`
+   - `ghcr.io/midagedev/billtap:0.1`
+   - `ghcr.io/midagedev/billtap:sha-<short-sha>`
+
+   The `main` branch image is also published as:
+
+   - `ghcr.io/midagedev/billtap:main`
+   - `ghcr.io/midagedev/billtap:latest`
+
+9. Create the GitHub release from the tag.
 
    The release description should link to:
 
@@ -107,6 +121,9 @@ npm run smoke:web:install
 npm run smoke:web
 go build -o /tmp/billtap ./cmd/billtap
 docker build -t billtap:local .
+docker run --rm -d --name billtap-release-smoke -p 18080:8080 ghcr.io/midagedev/billtap:main
+curl -fsS http://127.0.0.1:18080/healthz
+docker rm -f billtap-release-smoke
 ```
 
 Run scenario smoke with the sample app assertion endpoint:
@@ -175,10 +192,10 @@ audience.
 For `v0.1.0`:
 
 - Source archive from the GitHub release is expected.
+- GHCR image publishing is expected for release tags and `main`.
 - Local binary builds are expected.
 - Local Docker image builds are expected.
-- Official Docker image publishing is optional and must not be claimed unless
-  the image is actually pushed and documented.
+- Signed binary publishing is out of scope.
 - npm package publishing is out of scope while `package.json` remains private.
 
 Future releases may add signed binaries, container provenance, SBOMs, and
@@ -204,6 +221,8 @@ After publishing:
 
 - Confirm the GitHub release page links to compatibility and production
   boundaries.
+- Confirm `docker pull ghcr.io/midagedev/billtap:<version>` succeeds for the
+  release tag.
 - Confirm issue templates and support docs route compatibility gaps and
   security reports correctly.
 - Open a follow-up issue for any release automation that was intentionally
