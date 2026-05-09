@@ -8,6 +8,8 @@ This directory contains the public product, architecture, testing, and release n
 - `FINAL_GOAL.md`: product north star and final release definition
 - `ARCHITECTURE.md`: runtime components and module boundaries
 - `COMPATIBILITY.md`: supported and unsupported Stripe-like behavior
+- `API_VALIDATION_AND_ERROR_SIMULATION.md`: Stripe-like validation and
+  deterministic error-simulation target
 - `TESTING.md`: verification strategy and scenario coverage
 - `PRODUCTION_BOUNDARIES.md`: real-payment and relay-mode safety boundaries
 

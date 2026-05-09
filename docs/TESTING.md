@@ -31,6 +31,11 @@ Fixture-backed compatibility tests for the Stripe-like API subset:
 - events
 - webhook endpoints
 
+Request-validation and error-simulation gates are defined in
+`API_VALIDATION_AND_ERROR_SIMULATION.md`. New Stripe-like API behavior should add
+tests for success, required parameters, unknown parameters, wrong types,
+resource-missing paths, and the Stripe-like error envelope.
+
 Fixture ergonomics for integration tests:
 
 - apply a data-driven fixture pack through `POST /api/fixtures/apply`
@@ -80,6 +85,7 @@ Run scenario YAML files end to end:
 - idempotency conflict
 - signature mismatch
 - app timeout
+- deterministic payment/card failure simulation
 - duplicate entitlement grant prevention
 - out-of-order subscription event does not regress workspace status
 - extra export provision retry does not double-count export quota
