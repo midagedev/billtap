@@ -411,7 +411,11 @@ func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id st
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	session, err := h.billing.CompleteCheckout(r.Context(), id, p.stringDefault("outcome", "payment_succeeded"))
+	outcome := p.first("outcome", "payment_method", "payment_method_id", "paymentMethod")
+	if outcome == "" {
+		outcome = "payment_succeeded"
+	}
+	session, err := h.billing.CompleteCheckout(r.Context(), id, outcome)
 	if err != nil {
 		writeResult(w, nil, err)
 		return
@@ -1611,6 +1615,7 @@ func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
 		"amount":             intent.Amount,
 		"currency":           intent.Currency,
 		"status":             intent.Status,
+		"payment_method":     emptyToNil(intent.PaymentMethodID),
 		"last_payment_error": paymentIntentError(intent),
 		"client_secret":      intent.ID + "_secret_billtap",
 		"created":            unix(intent.CreatedAt),
@@ -1765,10 +1770,15 @@ func paymentIntentError(intent billing.PaymentIntent) any {
 	if intent.FailureCode == "" && intent.FailureMessage == "" {
 		return nil
 	}
-	return map[string]any{
+	out := map[string]any{
+		"type":    stripeErrorCard,
 		"code":    intent.FailureCode,
 		"message": intent.FailureMessage,
 	}
+	if intent.DeclineCode != "" {
+		out["decline_code"] = intent.DeclineCode
+	}
+	return out
 }
 
 func nonNilMap(in map[string]string) map[string]string {

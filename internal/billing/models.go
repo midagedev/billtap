@@ -101,16 +101,18 @@ type Invoice struct {
 }
 
 type PaymentIntent struct {
-	ID             string    `json:"id"`
-	Object         string    `json:"object"`
-	CustomerID     string    `json:"customer"`
-	InvoiceID      string    `json:"invoice,omitempty"`
-	Amount         int64     `json:"amount"`
-	Currency       string    `json:"currency"`
-	Status         string    `json:"status"`
-	FailureCode    string    `json:"failure_code,omitempty"`
-	FailureMessage string    `json:"failure_message,omitempty"`
-	CreatedAt      time.Time `json:"created_at"`
+	ID              string    `json:"id"`
+	Object          string    `json:"object"`
+	CustomerID      string    `json:"customer"`
+	InvoiceID       string    `json:"invoice,omitempty"`
+	Amount          int64     `json:"amount"`
+	Currency        string    `json:"currency"`
+	Status          string    `json:"status"`
+	FailureCode     string    `json:"failure_code,omitempty"`
+	DeclineCode     string    `json:"decline_code,omitempty"`
+	FailureMessage  string    `json:"failure_message,omitempty"`
+	PaymentMethodID string    `json:"payment_method,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 type TimelineEntry struct {
