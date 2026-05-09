@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -186,10 +187,15 @@ func (s *Service) ReplayEvent(ctx context.Context, eventID string, opts ReplayOp
 		return nil, err
 	}
 	deliveryOpts := DeliveryOptions{
-		Duplicate:  opts.Duplicate,
-		Delay:      opts.Delay,
-		OutOfOrder: opts.OutOfOrder,
-		Replay:     true,
+		Duplicate:         opts.Duplicate,
+		Delay:             opts.Delay,
+		OutOfOrder:        opts.OutOfOrder,
+		Replay:            true,
+		ResponseStatus:    opts.ResponseStatus,
+		ResponseBody:      opts.ResponseBody,
+		SimulatedError:    opts.SimulatedError,
+		SimulatedTimeout:  opts.SimulatedTimeout,
+		SignatureMismatch: opts.SignatureMismatch,
 	}
 	attempts, err := s.createAttempts(ctx, event, endpoints, deliveryOpts)
 	if err != nil {
@@ -219,6 +225,9 @@ func (s *Service) ApplyRetention(ctx context.Context) (RetentionResult, error) {
 }
 
 func (s *Service) createAttempts(ctx context.Context, event Event, endpoints []Endpoint, opts DeliveryOptions) ([]DeliveryAttempt, error) {
+	if err := validateDeliveryOptions(opts); err != nil {
+		return nil, err
+	}
 	duplicates := opts.Duplicate
 	if duplicates <= 0 {
 		duplicates = 1
@@ -235,6 +244,13 @@ func (s *Service) createAttempts(ctx context.Context, event Event, endpoints []E
 		}
 	}
 	return attempts, nil
+}
+
+func validateDeliveryOptions(opts DeliveryOptions) error {
+	if opts.ResponseStatus != 0 && (opts.ResponseStatus < 100 || opts.ResponseStatus > 599) {
+		return fmt.Errorf("%w: response status must be between 100 and 599", ErrInvalidInput)
+	}
+	return nil
 }
 
 func (s *Service) createAttempt(ctx context.Context, event Event, endpoint Endpoint, opts DeliveryOptions, duplicateIndex int) (DeliveryAttempt, error) {
@@ -255,6 +271,23 @@ func (s *Service) createAttempt(ctx context.Context, event Event, endpoint Endpo
 	if opts.OutOfOrder {
 		metadata["out_of_order"] = "true"
 	}
+	if opts.ResponseStatus != 0 {
+		metadata["response_status"] = fmt.Sprintf("%d", opts.ResponseStatus)
+	}
+	if opts.SimulatedTimeout {
+		metadata["timeout"] = "true"
+	}
+	if opts.SimulatedError != "" {
+		metadata["error"] = opts.SimulatedError
+	}
+	if opts.SignatureMismatch {
+		metadata["signature_mismatch"] = "true"
+	}
+
+	signatureHeader := SignatureHeader(endpoint.Secret, scheduledAt, event.RawPayload)
+	if opts.SignatureMismatch {
+		signatureHeader = fmt.Sprintf("t=%d,v1=%s", scheduledAt.Unix(), strings.Repeat("0", 64))
+	}
 
 	attempt := DeliveryAttempt{
 		ID:            id("delatt"),
@@ -266,7 +299,7 @@ func (s *Service) createAttempt(ctx context.Context, event Event, endpoint Endpo
 		ScheduledAt:   scheduledAt,
 		RequestURL:    endpoint.URL,
 		RequestHeaders: map[string]string{
-			SignatureHeaderName: SignatureHeader(endpoint.Secret, scheduledAt, event.RawPayload),
+			SignatureHeaderName: signatureHeader,
 			"Content-Type":      "application/json",
 		},
 		RequestBody: event.RawPayload,
@@ -277,8 +310,43 @@ func (s *Service) createAttempt(ctx context.Context, event Event, endpoint Endpo
 	if opts.Delay > 0 {
 		return s.createDeliveryAttempt(ctx, attempt)
 	}
+	if hasSimulatedDeliveryResult(opts) {
+		return s.recordSimulatedAttempt(ctx, endpoint, attempt, opts)
+	}
 
 	return s.deliverAttempt(ctx, endpoint, attempt)
+}
+
+func hasSimulatedDeliveryResult(opts DeliveryOptions) bool {
+	return opts.ResponseStatus != 0 || opts.SimulatedError != "" || opts.SimulatedTimeout
+}
+
+func (s *Service) recordSimulatedAttempt(ctx context.Context, endpoint Endpoint, attempt DeliveryAttempt, opts DeliveryOptions) (DeliveryAttempt, error) {
+	deliveredAt := s.now()
+	attempt.DeliveredAt = &deliveredAt
+	if opts.SimulatedTimeout {
+		attempt.Status = StatusFailed
+		attempt.Error = "simulated timeout"
+		return s.recordRetry(ctx, endpoint, attempt)
+	}
+	if opts.SimulatedError != "" {
+		attempt.Status = StatusFailed
+		attempt.Error = opts.SimulatedError
+		return s.recordRetry(ctx, endpoint, attempt)
+	}
+
+	attempt.ResponseStatus = opts.ResponseStatus
+	attempt.ResponseBody = opts.ResponseBody
+	if attempt.ResponseStatus >= 200 && attempt.ResponseStatus < 300 {
+		attempt.Status = StatusSucceeded
+		return s.createDeliveryAttempt(ctx, attempt)
+	}
+	attempt.Status = StatusFailed
+	attempt.Error = http.StatusText(attempt.ResponseStatus)
+	if attempt.Error == "" {
+		attempt.Error = fmt.Sprintf("HTTP %d", attempt.ResponseStatus)
+	}
+	return s.recordRetry(ctx, endpoint, attempt)
 }
 
 func (s *Service) deliverAttempt(ctx context.Context, endpoint Endpoint, attempt DeliveryAttempt) (DeliveryAttempt, error) {
@@ -303,6 +371,8 @@ func (s *Service) deliverAttempt(ctx context.Context, endpoint Endpoint, attempt
 	defer resp.Body.Close()
 
 	attempt.ResponseStatus = resp.StatusCode
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	attempt.ResponseBody = string(body)
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
 		attempt.Status = StatusSucceeded
 		return s.createDeliveryAttempt(ctx, attempt)
@@ -410,7 +480,7 @@ func DefaultBackoff(endpoint Endpoint, attemptNumber int) time.Duration {
 }
 
 func hasDeliveryOverride(opts DeliveryOptions) bool {
-	return opts.Duplicate > 1 || opts.Delay > 0 || opts.OutOfOrder
+	return opts.Duplicate > 1 || opts.Delay > 0 || opts.OutOfOrder || hasSimulatedDeliveryResult(opts) || opts.SignatureMismatch
 }
 
 func deliveryMetadata(opts DeliveryOptions) map[string]string {
@@ -426,6 +496,18 @@ func deliveryMetadata(opts DeliveryOptions) map[string]string {
 	}
 	if opts.OutOfOrder {
 		metadata["out_of_order"] = "true"
+	}
+	if opts.ResponseStatus != 0 {
+		metadata["response_status"] = fmt.Sprintf("%d", opts.ResponseStatus)
+	}
+	if opts.SimulatedTimeout {
+		metadata["timeout"] = "true"
+	}
+	if opts.SimulatedError != "" {
+		metadata["error"] = opts.SimulatedError
+	}
+	if opts.SignatureMismatch {
+		metadata["signature_mismatch"] = "true"
 	}
 	return metadata
 }

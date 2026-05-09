@@ -223,6 +223,18 @@ func TestWebhookEndpointDeliveryAndReplay(t *testing.T) {
 	if len(events.Data) < 4 {
 		t.Fatalf("events = %d, want checkout webhook events", len(events.Data))
 	}
+	eventIDs := map[string]string{}
+	for _, event := range events.Data {
+		if eventIDs[event.Type] == "" {
+			eventIDs[event.Type] = event.ID
+		}
+	}
+	checkoutEventID := eventIDs["checkout.session.completed"]
+	invoiceCreatedEventID := eventIDs["invoice.created"]
+	invoiceFinalizedEventID := eventIDs["invoice.finalized"]
+	if checkoutEventID == "" || invoiceCreatedEventID == "" || invoiceFinalizedEventID == "" {
+		t.Fatalf("events = %#v, want checkout and invoice events", events.Data)
+	}
 
 	attempts := getJSON[struct {
 		Object string                     `json:"object"`
@@ -238,7 +250,7 @@ func TestWebhookEndpointDeliveryAndReplay(t *testing.T) {
 	replay := postJSON[struct {
 		Message string                     `json:"message"`
 		Data    []webhooks.DeliveryAttempt `json:"data"`
-	}](t, handler, "/api/events/"+events.Data[0].ID+"/replay", map[string]any{
+	}](t, handler, "/api/events/"+checkoutEventID+"/replay", map[string]any{
 		"duplicate":     2,
 		"delay_seconds": 30,
 		"out_of_order":  true,
@@ -248,6 +260,49 @@ func TestWebhookEndpointDeliveryAndReplay(t *testing.T) {
 	}
 	if replay.Data[0].Status != webhooks.StatusScheduled || replay.Data[0].Metadata["source"] != webhooks.SourceReplay || replay.Data[0].Metadata["out_of_order"] != "true" {
 		t.Fatalf("replay attempt = %#v, want scheduled replay out-of-order metadata", replay.Data[0])
+	}
+
+	failure := postJSON[struct {
+		Message string                     `json:"message"`
+		Data    []webhooks.DeliveryAttempt `json:"data"`
+	}](t, handler, "/api/events/"+checkoutEventID+"/replay", map[string]any{
+		"response_status": 500,
+		"response_body":   "receiver down",
+	})
+	if len(failure.Data) != 1 {
+		t.Fatalf("failure replay attempts = %d, want 1 failed attempt", len(failure.Data))
+	}
+	failed := failure.Data[0]
+	if failed.Status != webhooks.StatusFailed || failed.ResponseStatus != 500 || failed.ResponseBody != "receiver down" || failed.NextRetryAt == nil {
+		t.Fatalf("failure replay attempt = %#v, want failed 500 with retry evidence", failed)
+	}
+	if failed.Metadata["response_status"] != "500" {
+		t.Fatalf("failure replay metadata = %#v, want response_status evidence", failed.Metadata)
+	}
+
+	timeout := postJSON[struct {
+		Message string                     `json:"message"`
+		Data    []webhooks.DeliveryAttempt `json:"data"`
+	}](t, handler, "/api/events/"+invoiceCreatedEventID+"/replay", map[string]any{
+		"timeout": true,
+	})
+	if len(timeout.Data) != 1 || timeout.Data[0].Status != webhooks.StatusFailed || !strings.Contains(timeout.Data[0].Error, "timeout") || timeout.Data[0].NextRetryAt == nil {
+		t.Fatalf("timeout replay = %#v, want failed timeout with retry evidence", timeout.Data)
+	}
+
+	signatureMismatch := postJSON[struct {
+		Message string                     `json:"message"`
+		Data    []webhooks.DeliveryAttempt `json:"data"`
+	}](t, handler, "/api/events/"+invoiceFinalizedEventID+"/replay", map[string]any{
+		"signature_mismatch": true,
+		"response_status":    400,
+		"response_body":      "bad signature",
+	})
+	if len(signatureMismatch.Data) != 1 || signatureMismatch.Data[0].Metadata["signature_mismatch"] != "true" {
+		t.Fatalf("signature replay = %#v, want signature mismatch evidence", signatureMismatch.Data)
+	}
+	if signature, _ := signatureMismatch.Data[0].RequestHeaders[webhooks.SignatureHeaderName]; !strings.Contains(signature, "v1=****") {
+		t.Fatalf("signature replay header = %q, want masked signature evidence", signature)
 	}
 }
 

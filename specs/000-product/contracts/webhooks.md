@@ -194,6 +194,19 @@ webhooks:
 
 Action-level knobs may override scenario defaults for `webhook.replay`, `webhook.deliver_duplicate`, and `webhook.deliver_out_of_order`.
 
+`webhook.replay` accepts deterministic failure evidence knobs:
+
+- `responseStatus` or `response_status`: records a simulated endpoint HTTP
+  status and response body without calling the endpoint.
+- `responseBody` or `response_body`: response evidence for the simulated
+  endpoint status.
+- `timeout`: records a failed delivery attempt with timeout evidence and retry
+  scheduling.
+- `error` or `simulatedError`: records a failed transport error and retry
+  scheduling.
+- `signatureMismatch` or `signature_mismatch`: signs the delivery with an
+  intentionally invalid HMAC while preserving masked signature evidence.
+
 ## Compatibility Boundaries
 
 - Billtap does not claim full Stripe event coverage.

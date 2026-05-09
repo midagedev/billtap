@@ -12,6 +12,7 @@ import (
 
 	"github.com/hckim/billtap/internal/billing"
 	"github.com/hckim/billtap/internal/storage"
+	"github.com/hckim/billtap/internal/webhooks"
 )
 
 func TestRunnerResolvesReferencesAndCheckoutAliases(t *testing.T) {
@@ -134,6 +135,84 @@ steps:
 	}
 	if !strings.Contains(report.Markdown(), "status was past_due") {
 		t.Fatalf("Markdown missing assertion detail:\n%s", report.Markdown())
+	}
+}
+
+func TestRunnerWebhookReplayFailureSimulation(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+
+	webhookService := webhooks.NewService(store)
+	if _, err := webhookService.CreateEndpoint(ctx, webhooks.Endpoint{
+		URL:           receiver.URL,
+		EnabledEvents: []string{"checkout.session.completed"},
+	}); err != nil {
+		t.Fatalf("CreateEndpoint: %v", err)
+	}
+
+	report, err := NewRunner(billing.NewService(store), webhookService).Run(ctx, mustLoad(t, `
+name: webhook-replay-failure
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: user@example.test
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_succeeded
+  - id: replay-webhook
+    action: webhook.replay
+    params:
+      eventRef: complete-checkout.events.0.id
+      duplicate: 2
+      responseStatus: 500
+      responseBody: receiver down
+      signatureMismatch: true
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+	if report.ExitCode() != ExitPass {
+		t.Fatalf("ExitCode = %d, want pass", report.ExitCode())
+	}
+	attempts, ok := report.Steps[3].Output["delivery_attempts"].([]webhooks.DeliveryAttempt)
+	if !ok || len(attempts) != 2 {
+		t.Fatalf("replay output = %#v, want two delivery attempts", report.Steps[3].Output)
+	}
+	for _, attempt := range attempts {
+		if attempt.Status != webhooks.StatusFailed || attempt.ResponseStatus != 500 || attempt.Metadata["signature_mismatch"] != "true" {
+			t.Fatalf("attempt = %#v, want failed 500 signature mismatch evidence", attempt)
+		}
 	}
 }
 

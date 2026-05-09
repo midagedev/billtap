@@ -1215,9 +1215,14 @@ func (h *Handler) handleEventAction(w http.ResponseWriter, r *http.Request) {
 		delay = time.Duration(p.int64("delay")) * time.Second
 	}
 	attempts, err := h.webhooks.ReplayEvent(r.Context(), id, webhooks.ReplayOptions{
-		Duplicate:  int(p.int64Default("duplicate", 1)),
-		Delay:      delay,
-		OutOfOrder: p.boolDefault("out_of_order", false),
+		Duplicate:         int(p.int64Default("duplicate", 1)),
+		Delay:             delay,
+		OutOfOrder:        p.boolDefault("out_of_order", false),
+		ResponseStatus:    int(p.int64("response_status")),
+		ResponseBody:      p.first("response_body", "body"),
+		SimulatedError:    p.first("error", "simulated_error"),
+		SimulatedTimeout:  p.boolDefault("timeout", false),
+		SignatureMismatch: p.boolDefault("signature_mismatch", false),
 	})
 	writeResult(w, map[string]any{"message": "replay scheduled", "object": "list", "data": h.deliveryAttemptResponses(r, attempts)}, err)
 }

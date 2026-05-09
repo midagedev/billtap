@@ -31,6 +31,7 @@ type BillingService interface {
 
 type WebhookService interface {
 	CreateEvent(context.Context, webhooks.EventInput) (webhooks.Event, []webhooks.DeliveryAttempt, error)
+	ReplayEvent(context.Context, string, webhooks.ReplayOptions) ([]webhooks.DeliveryAttempt, error)
 }
 
 type Runner struct {
@@ -209,6 +210,8 @@ func (r *Runner) runStep(ctx context.Context, scenario Scenario, step Step, stat
 		return finish(r.advanceClock(step, params, state))
 	case "invoice.retry":
 		return finish(r.retryInvoice(step, params, state))
+	case "webhook.replay":
+		return finish(r.replayWebhook(ctx, step, params, state))
 	case "webhook.deliver_duplicate", "webhook.deliver_out_of_order":
 		return finish(r.runSaaSStep(ctx, scenario, step, params, state))
 	case "app.assert":
@@ -356,8 +359,14 @@ func (r *Runner) completeCheckout(ctx context.Context, scenario Scenario, step S
 	}
 	state.results[step.ID] = output
 	state.aliasCheckoutCompletion(sessionRef, output)
-	if err := r.emitCheckoutWebhooks(ctx, scenario, output, state); err != nil {
+	events, err := r.emitCheckoutWebhooks(ctx, scenario, output, state)
+	if err != nil {
 		return nil, err
+	}
+	if len(events) > 0 {
+		output["events"] = events
+		state.results[step.ID] = output
+		state.aliasCheckoutCompletion(sessionRef, output)
 	}
 	return output, nil
 }
@@ -386,6 +395,27 @@ func (r *Runner) retryInvoice(step Step, params map[string]any, state *runState)
 		"clock":         state.clock.Now(),
 		"deterministic": true,
 		"note":          "invoice.retry recorded as a deterministic scenario step; billing mutation is not available in the current service boundary",
+	}
+	state.results[step.ID] = output
+	return output, nil
+}
+
+func (r *Runner) replayWebhook(ctx context.Context, step Step, params map[string]any, state *runState) (map[string]any, error) {
+	if r.Webhooks == nil {
+		return nil, errors.New("webhook service is required for webhook.replay")
+	}
+	eventID := firstString(params, "eventRef", "event", "event_id", "eventId")
+	if eventID == "" {
+		return nil, fmt.Errorf("%w: webhook.replay requires eventRef", ErrInvalidConfig)
+	}
+	attempts, err := r.Webhooks.ReplayEvent(ctx, eventID, replayOptions(params))
+	if err != nil {
+		return nil, err
+	}
+	output := map[string]any{
+		"event_id":                eventID,
+		"delivery_attempts":       attempts,
+		"delivery_attempts_count": len(attempts),
 	}
 	state.results[step.ID] = output
 	return output, nil
@@ -458,13 +488,14 @@ func (r *Runner) assertApp(ctx context.Context, scenario Scenario, step Step, pa
 	return output, assertion, nil
 }
 
-func (r *Runner) emitCheckoutWebhooks(ctx context.Context, scenario Scenario, output map[string]any, state *runState) error {
+func (r *Runner) emitCheckoutWebhooks(ctx context.Context, scenario Scenario, output map[string]any, state *runState) ([]webhooks.Event, error) {
 	if r.Webhooks == nil {
-		return nil
+		return nil, nil
 	}
+	events := []webhooks.Event{}
 	for _, item := range checkoutWebhookPayloads(output) {
 		state.sequence++
-		_, _, err := r.Webhooks.CreateEvent(ctx, webhooks.EventInput{
+		event, _, err := r.Webhooks.CreateEvent(ctx, webhooks.EventInput{
 			Type:           item.eventType,
 			ObjectPayload:  item.payload,
 			RequestID:      "req_" + item.objectID,
@@ -474,10 +505,28 @@ func (r *Runner) emitCheckoutWebhooks(ctx context.Context, scenario Scenario, ou
 			Sequence:       state.sequence,
 		})
 		if err != nil {
-			return err
+			return events, err
 		}
+		events = append(events, event)
 	}
-	return nil
+	return events, nil
+}
+
+func replayOptions(params map[string]any) webhooks.ReplayOptions {
+	delay := durationValue(params, "delay")
+	if delay == 0 {
+		delay = time.Duration(int64Value(params, "delay_seconds")) * time.Second
+	}
+	return webhooks.ReplayOptions{
+		Duplicate:         int(int64ValueDefault(params, "duplicate", 1)),
+		Delay:             delay,
+		OutOfOrder:        boolValue(params, "outOfOrder", boolValue(params, "out_of_order", false)),
+		ResponseStatus:    int(int64ValueDefault(params, "responseStatus", int64Value(params, "response_status"))),
+		ResponseBody:      firstString(params, "responseBody", "response_body", "body"),
+		SimulatedError:    firstString(params, "error", "simulatedError", "simulated_error"),
+		SimulatedTimeout:  boolValue(params, "timeout", false),
+		SignatureMismatch: boolValue(params, "signatureMismatch", boolValue(params, "signature_mismatch", false)),
+	}
 }
 
 type webhookPayload struct {
@@ -640,6 +689,13 @@ func fieldValue(value any, name string) (any, bool) {
 		}
 		rv = rv.Elem()
 	}
+	if rv.Kind() == reflect.Slice || rv.Kind() == reflect.Array {
+		idx := -1
+		if _, err := fmt.Sscan(name, &idx); err == nil && idx >= 0 && idx < rv.Len() {
+			return rv.Index(idx).Interface(), true
+		}
+		return nil, false
+	}
 	if rv.Kind() != reflect.Struct {
 		return nil, false
 	}
@@ -798,6 +854,32 @@ func boolValue(params map[string]any, key string, fallback bool) bool {
 		}
 	}
 	return fallback
+}
+
+func durationValue(params map[string]any, key string) time.Duration {
+	value, ok := params[key]
+	if !ok || value == nil {
+		return 0
+	}
+	switch typed := value.(type) {
+	case time.Duration:
+		return typed
+	case string:
+		if parsed, err := time.ParseDuration(typed); err == nil {
+			return parsed
+		}
+	case int:
+		return time.Duration(typed) * time.Second
+	case int64:
+		return time.Duration(typed) * time.Second
+	case int32:
+		return time.Duration(typed) * time.Second
+	case float64:
+		return time.Duration(typed) * time.Second
+	case float32:
+		return time.Duration(typed) * time.Second
+	}
+	return 0
 }
 
 func failureType(err error) string {
