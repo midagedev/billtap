@@ -168,7 +168,9 @@ Billtap does not support or claim:
 - Real payment processing or live payment success paths.
 - Stripe Dashboard behavior.
 - Real card data, PAN, CVC, expiration fields, or live credentials.
-- Stripe request idempotency-key semantics across all endpoints.
+- Full Stripe request idempotency-key semantics across all endpoints. Billtap
+  only caches same-process `POST` responses for supported API simulation and
+  rejects same-key parameter mismatches.
 - Direct charges, refunds, disputes, payouts, transfers, balance transactions,
   accounts, Connect onboarding, setup intents, mandates, tax, coupons,
   promotion codes, discounts, subscriptions schedules, quotes, or usage-based

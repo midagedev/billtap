@@ -550,6 +550,70 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 	})
 }
 
+func TestIdempotencyKeySimulation(t *testing.T) {
+	handler := newTestHandler(t)
+
+	t.Run("matching post replays first response", func(t *testing.T) {
+		headers := map[string]string{"Idempotency-Key": "customer-create-same"}
+		status, body := postFormStatusWithHeaders(t, handler, "/v1/customers", url.Values{
+			"email": {"same@example.test"},
+		}, headers)
+		if status != http.StatusOK {
+			t.Fatalf("status=%d body=%s, want 200", status, body)
+		}
+
+		replayStatus, replayBody := postFormStatusWithHeaders(t, handler, "/v1/customers", url.Values{
+			"email": {"same@example.test"},
+		}, headers)
+		if replayStatus != http.StatusOK || replayBody != body {
+			t.Fatalf("replay status=%d body=%s, want same body %s", replayStatus, replayBody, body)
+		}
+
+		customers := getJSON[struct {
+			Data []billing.Customer `json:"data"`
+		}](t, handler, "/v1/customers?email=same@example.test")
+		if len(customers.Data) != 1 {
+			t.Fatalf("customers = %#v, want exactly one created customer", customers.Data)
+		}
+	})
+
+	t.Run("same key with different params conflicts", func(t *testing.T) {
+		headers := map[string]string{"Idempotency-Key": "customer-create-conflict"}
+		status, body := postFormStatusWithHeaders(t, handler, "/v1/customers", url.Values{
+			"email": {"first@example.test"},
+		}, headers)
+		if status != http.StatusOK {
+			t.Fatalf("status=%d body=%s, want 200", status, body)
+		}
+
+		conflictStatus, conflictBody := postFormStatusWithHeaders(t, handler, "/v1/customers", url.Values{
+			"email": {"second@example.test"},
+		}, headers)
+		errBody := decodeErrorBody(t, conflictBody)
+		if conflictStatus != http.StatusConflict {
+			t.Fatalf("status=%d body=%s, want 409", conflictStatus, conflictBody)
+		}
+		if errBody.Error.Type != "idempotency_error" || errBody.Error.Code != "idempotency_key_in_use" {
+			t.Fatalf("error=%#v, want idempotency conflict", errBody.Error)
+		}
+	})
+
+	t.Run("validation errors are not cached", func(t *testing.T) {
+		headers := map[string]string{"Idempotency-Key": "product-validation-not-cached"}
+		status, body := postFormStatusWithHeaders(t, handler, "/v1/products", url.Values{}, headers)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+
+		retryStatus, retryBody := postFormStatusWithHeaders(t, handler, "/v1/products", url.Values{
+			"name": {"Recovered Product"},
+		}, headers)
+		if retryStatus != http.StatusOK {
+			t.Fatalf("status=%d body=%s, want 200 because validation errors are not cached", retryStatus, retryBody)
+		}
+	})
+}
+
 func TestDashboardObjectsAndDebugBundle(t *testing.T) {
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -996,9 +1060,17 @@ func postJSONStatus(t *testing.T, handler http.Handler, path string, body any) (
 
 func postFormStatus(t *testing.T, handler http.Handler, path string, values url.Values) (int, string) {
 	t.Helper()
+	return postFormStatusWithHeaders(t, handler, path, values, nil)
+}
+
+func postFormStatusWithHeaders(t *testing.T, handler http.Handler, path string, values url.Values, headers map[string]string) (int, string) {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, stringsReader(values.Encode()))
 	req.Host = "billtap.test"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
