@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  release-gate:
+    name: Release gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Go tests
+        run: go test ./...
+
+      - name: Frontend typecheck
+        run: npm run typecheck
+
+      - name: Frontend build
+        run: npm run build
+
+      - name: Sample app smoke
+        run: npm run smoke:sample
+
+      - name: Build Billtap binary
+        run: go build -o /tmp/billtap ./cmd/billtap
+
+      - name: Scenario smoke
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          PORT=3300 npm --prefix examples/sample-app start > /tmp/billtap-sample-app.log 2>&1 &
+          sample_pid=$!
+
+          cleanup() {
+            kill "$sample_pid" 2>/dev/null || true
+            wait "$sample_pid" 2>/dev/null || true
+            echo "::group::sample app log"
+            cat /tmp/billtap-sample-app.log || true
+            echo "::endgroup::"
+          }
+          trap cleanup EXIT
+
+          for _ in {1..30}; do
+            if curl -fsS http://127.0.0.1:3300/healthz >/dev/null 2>&1; then
+              break
+            fi
+            if ! kill -0 "$sample_pid" 2>/dev/null; then
+              echo "sample app exited before becoming ready" >&2
+              exit 1
+            fi
+            sleep 1
+          done
+
+          curl -fsS http://127.0.0.1:3300/healthz >/dev/null
+          /tmp/billtap scenario run examples/subscription-payment-retry.yml
+          curl -fsS -X POST http://127.0.0.1:3300/test/reset >/dev/null
+          /tmp/billtap scenario run examples/saas-adoption-contract.yml
+
+      - name: Docker build
+        run: docker build -t billtap:local .

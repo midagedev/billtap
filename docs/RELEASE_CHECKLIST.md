@@ -2,6 +2,8 @@
 
 ## Required Checks
 
+These checks are automated by the `CI / Release gate` GitHub Actions workflow and should be configured as required for PRs and protected merges.
+
 - `go test ./...`
 - `npm run typecheck`
 - `npm run build`
