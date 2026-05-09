@@ -97,12 +97,20 @@ async function seedBillingData(baseURL) {
     success_url: "http://127.0.0.1/success",
     cancel_url: "http://127.0.0.1/cancel",
   });
+  const portalSession = await postForm(`${baseURL}/v1/checkout/sessions`, {
+    customer: customer.id,
+    mode: "subscription",
+    "line_items[0][price]": price.id,
+    "line_items[0][quantity]": "1",
+    success_url: "http://127.0.0.1/success",
+    cancel_url: "http://127.0.0.1/cancel",
+  });
 
-  await postJSON(`${baseURL}/api/checkout/sessions/${encodeURIComponent(checkoutSession.id)}/complete`, {
+  await postJSON(`${baseURL}/api/checkout/sessions/${encodeURIComponent(portalSession.id)}/complete`, {
     outcome: "payment_succeeded",
   });
 
-  return { customer, product, price, checkoutSession };
+  return { customer, product, price, checkoutSession, portalSession };
 }
 
 async function postForm(url, values) {
@@ -172,6 +180,13 @@ async function runBrowserSmoke(baseURL, checks) {
           timeout: timeoutMs,
         });
       }
+
+      if (check.name === "checkout") {
+        await exerciseStripeCheckoutPageObjectCompatibility(page);
+      }
+      if (check.name === "portal") {
+        await exerciseStripePortalPageObjectCompatibility(page);
+      }
     }
 
     if (consoleErrors.length > 0) {
@@ -180,6 +195,40 @@ async function runBrowserSmoke(baseURL, checks) {
   } finally {
     await browser.close();
   }
+}
+
+async function exerciseStripeCheckoutPageObjectCompatibility(page) {
+  await page.locator("#cardNumber").fill("4242424242424242");
+  await page.locator("#cardExpiry").fill("12/34");
+  await page.locator("#cardCvc").fill("123");
+  await page.locator("input[name='billingName']").fill("Jane Doe");
+  await page.locator("select[name='billingCountry']").selectOption("US");
+  await page.locator("button[type='submit']").click();
+  await page.getByRole("heading", { name: "Payment successful", exact: true }).waitFor({
+    state: "visible",
+    timeout: timeoutMs,
+  });
+  await page.getByRole("heading", { name: "Your payment has been processed successfully.", exact: true }).waitFor({
+    state: "visible",
+    timeout: timeoutMs,
+  });
+}
+
+async function exerciseStripePortalPageObjectCompatibility(page) {
+  await page.getByTestId("page-container-main").waitFor({ state: "visible", timeout: timeoutMs });
+  await page.getByTestId("return-to-business-link").waitFor({ state: "visible", timeout: timeoutMs });
+  await page.getByRole("button", { name: /edit/i }).click();
+  await page.locator("#radio-add").waitFor({ state: "visible", timeout: timeoutMs });
+
+  const frame = page.frameLocator('iframe[title="Secure payment input frame"]');
+  await frame.locator('input[name="number"], input[autocomplete="cc-number"]').fill("4000000000000341");
+  await frame.locator('input[name="expiry"], input[autocomplete="cc-exp"]').fill("12/34");
+  await frame.locator('input[name="cvc"], input[autocomplete="cc-csc"]').fill("123");
+  await page.getByTestId("confirm").click();
+  await page.getByText(/Portal API payment method simulation applied|Payment method failed/).first().waitFor({
+    state: "visible",
+    timeout: timeoutMs,
+  });
 }
 
 async function run(command, args) {

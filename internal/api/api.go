@@ -23,15 +23,17 @@ import (
 )
 
 type Options struct {
-	Billing     *billing.Service
-	Webhooks    *webhooks.Service
-	Diagnostics *diagnostics.Service
+	Billing       *billing.Service
+	Webhooks      *webhooks.Service
+	Diagnostics   *diagnostics.Service
+	PublicBaseURL string
 }
 
 type Handler struct {
 	billing     *billing.Service
 	webhooks    *webhooks.Service
 	diagnostics *diagnostics.Service
+	publicBase  string
 	mux         *http.ServeMux
 	idem        *idempotencyStore
 }
@@ -41,6 +43,7 @@ func New(opts Options) http.Handler {
 		billing:     opts.Billing,
 		webhooks:    opts.Webhooks,
 		diagnostics: opts.Diagnostics,
+		publicBase:  strings.TrimRight(opts.PublicBaseURL, "/"),
 		mux:         http.NewServeMux(),
 		idem:        newIdempotencyStore(),
 	}
@@ -345,14 +348,14 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			CancelURL:  p.string("cancel_url"),
 		})
 		if err == nil {
-			session.URL = absoluteURL(r, session.URL)
+			session.URL = h.absoluteURL(r, session.URL)
 		}
 		writeResult(w, stripeCheckoutSession(session), err)
 	case http.MethodGet:
 		sessions, err := h.billing.ListCheckoutSessions(r.Context())
 		data := make([]map[string]any, 0, len(sessions))
 		for i := range sessions {
-			sessions[i].URL = absoluteURL(r, sessions[i].URL)
+			sessions[i].URL = h.absoluteURL(r, sessions[i].URL)
 			data = append(data, stripeCheckoutSession(sessions[i]))
 		}
 		writeResult(w, stripeList(r.URL.Path, data), err)
@@ -378,7 +381,7 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 	}
 	session, err := h.billing.GetCheckoutSession(r.Context(), rest)
 	if err == nil {
-		session.URL = absoluteURL(r, session.URL)
+		session.URL = h.absoluteURL(r, session.URL)
 	}
 	writeResult(w, stripeCheckoutSession(session), err)
 }
@@ -407,7 +410,7 @@ func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Req
 		"object":     "billing_portal.session",
 		"customer":   customerID,
 		"return_url": p.string("return_url"),
-		"url":        absoluteURL(r, "/portal?customer_id="+customerID),
+		"url":        h.absoluteURL(r, "/portal?customer_id="+customerID),
 		"created":    time.Now().UTC().Unix(),
 		"livemode":   false,
 	}
@@ -444,7 +447,7 @@ func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id st
 		writeResult(w, nil, err)
 		return
 	}
-	session.URL = absoluteURL(r, session.URL)
+	session.URL = h.absoluteURL(r, session.URL)
 	result := map[string]any{"session": session}
 	if session.SubscriptionID != "" {
 		if sub, err := h.billing.GetSubscription(r.Context(), session.SubscriptionID); err == nil {
@@ -2206,9 +2209,22 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func absoluteURL(r *http.Request, path string) string {
+func (h *Handler) absoluteURL(r *http.Request, path string) string {
+	return absoluteURL(r, path, h.publicBase)
+}
+
+func absoluteURL(r *http.Request, path string, publicBase string) string {
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
 		return path
+	}
+	if publicBase != "" {
+		if path == "" {
+			return publicBase
+		}
+		if strings.HasPrefix(path, "/") {
+			return publicBase + path
+		}
+		return publicBase + "/" + path
 	}
 	scheme := "http"
 	if r.TLS != nil {
@@ -2308,7 +2324,7 @@ func (h *Handler) collectObjects(r *http.Request) (map[string]any, error) {
 		return nil, err
 	}
 	for i := range checkoutSessions {
-		checkoutSessions[i].URL = absoluteURL(r, checkoutSessions[i].URL)
+		checkoutSessions[i].URL = h.absoluteURL(r, checkoutSessions[i].URL)
 	}
 	subscriptions, err := h.billing.ListSubscriptions(r.Context())
 	if err != nil {

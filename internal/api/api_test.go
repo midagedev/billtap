@@ -78,6 +78,38 @@ func TestCheckoutMVPFlow(t *testing.T) {
 	}
 }
 
+func TestHostedURLsUseConfiguredPublicBaseURL(t *testing.T) {
+	handler := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080/"})
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"public-url@example.test"},
+		"name":  {"Public URL"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"9900"},
+		"recurring[interval]": {"month"},
+	})
+
+	checkout := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+	})
+	if !strings.HasPrefix(checkout.URL, "http://127.0.0.1:18080/checkout/") {
+		t.Fatalf("checkout url = %q, want configured public base URL", checkout.URL)
+	}
+
+	portal := postForm[struct {
+		URL string `json:"url"`
+	}](t, handler, "/v1/billing_portal/sessions", url.Values{"customer": {customer.ID}})
+	if portal.URL != "http://127.0.0.1:18080/portal?customer_id="+customer.ID {
+		t.Fatalf("portal url = %q, want configured public base URL", portal.URL)
+	}
+}
+
 func TestCheckoutFailureOutcome(t *testing.T) {
 	handler := newTestHandler(t)
 
@@ -1452,6 +1484,11 @@ func TestFixtureApplyPreservesStableBillingGraphIDs(t *testing.T) {
 
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
+	return newTestHandlerWithOptions(t, Options{})
+}
+
+func newTestHandlerWithOptions(t *testing.T, opts Options) http.Handler {
+	t.Helper()
 	store, err := storage.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "billtap.db"))
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
@@ -1461,7 +1498,10 @@ func newTestHandler(t *testing.T) http.Handler {
 			t.Fatalf("close store: %v", err)
 		}
 	})
-	return New(Options{Billing: billing.NewService(store), Webhooks: webhooks.NewService(store), Diagnostics: diagnostics.NewService(store)})
+	opts.Billing = billing.NewService(store)
+	opts.Webhooks = webhooks.NewService(store)
+	opts.Diagnostics = diagnostics.NewService(store)
+	return New(opts)
 }
 
 func postForm[T any](t *testing.T, handler http.Handler, path string, values url.Values) T {
