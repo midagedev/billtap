@@ -1,0 +1,30 @@
+# Dependencies
+node_modules/
+vendor/
+
+# Build outputs
+bin/
+dist/
+build/
+coverage/
+
+# Local runtime data
+.private/
+.billtap/
+data/
+tmp/
+snapshots/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Go
+*.test
+*.out
+
+# OS and editor
+.DS_Store
+.idea/
+.vscode/

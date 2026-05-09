@@ -1,0 +1,1 @@
+ALTER TABLE prices ADD COLUMN lookup_key TEXT NOT NULL DEFAULT '';

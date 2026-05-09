@@ -1,0 +1,208 @@
+name: saas-adoption-contract
+profile: saas
+app:
+  webhookUrl: http://localhost:3300/webhooks/stripe
+  assertions:
+    baseUrl: http://localhost:3300/test/assertions
+
+saas:
+  tenant:
+    id: tenant_direct
+    rail: CARD
+  catalogPreset: saas-default
+
+steps:
+  - id: workspace
+    action: saas.workspace.create
+    params:
+      ownerEmail: owner@example.test
+      workspaceName: Adoption Workspace
+      planTier: FREE
+      basicSeatCount: 1
+      additionalSeatCount: 0
+      exportRemaining: 1
+
+  - id: preview-upgrade
+    action: saas.subscription.preview_upgrade
+    params:
+      workspaceRef: workspace.workspace.id
+      nextPlanTier: STANDARD
+      paymentCycle: MONTHLY
+
+  - id: checkout-upgrade
+    action: saas.subscription.checkout_upgrade
+    params:
+      workspaceRef: workspace.workspace.id
+      nextPlanTier: STANDARD
+      paymentCycle: MONTHLY
+      outcome: payment_succeeded
+
+  - id: retry-payment
+    action: invoice.retry
+    params:
+      subscriptionRef: checkout-upgrade.subscription.id
+      outcome: payment_succeeded
+
+  - id: cancel-subscription
+    action: saas.subscription.cancel
+    params:
+      workspaceRef: workspace.workspace.id
+
+  - id: resume-subscription
+    action: saas.subscription.stop_pending_cancellation
+    params:
+      workspaceRef: workspace.workspace.id
+
+  - id: blocked-invite
+    action: saas.member.invite
+    params:
+      workspaceRef: workspace.workspace.id
+      emails:
+        - member1@example.test
+      expect: seat_limit_exceeded
+
+  - id: estimate-seat
+    action: saas.seat.estimate_purchase
+    params:
+      workspaceRef: workspace.workspace.id
+      count: 1
+
+  - id: purchase-seat
+    action: saas.seat.purchase
+    params:
+      workspaceRef: workspace.workspace.id
+      count: 1
+      outcome: payment_succeeded
+
+  - id: invite-member
+    action: saas.member.invite
+    params:
+      workspaceRef: workspace.workspace.id
+      emails:
+        - member1@example.test
+
+  - id: export-summary
+    action: saas.export.summary
+    params:
+      workspaceRef: workspace.workspace.id
+
+  - id: export-usage
+    action: saas.export.usage
+    params:
+      workspaceRef: workspace.workspace.id
+      designCase: dc_001
+
+  - id: normal-export
+    action: saas.export.products
+    params:
+      workspaceRef: workspace.workspace.id
+      designCases:
+        - dc_001
+      exportTo: viewer
+
+  - id: preview-extra
+    action: saas.extra_export.preview
+    params:
+      workspaceRef: workspace.workspace.id
+      designCases:
+        - dc_002
+      exportTo: viewer
+
+  - id: create-extra-payment
+    action: saas.extra_export.create_payment_intent
+    params:
+      workspaceRef: workspace.workspace.id
+      designCases:
+        - dc_002
+      exportTo: viewer
+      outcome: payment_succeeded
+
+  - id: provide-extra
+    action: saas.extra_export.provide
+    params:
+      workspaceRef: workspace.workspace.id
+      extraExportPaymentRef: create-extra-payment.extraExportPayment.id
+
+  - id: export-session
+    action: saas.export_session.create
+    params:
+      workspaceRef: workspace.workspace.id
+      designCases:
+        - dc_002
+      exportTo: viewer
+      extraExportPaymentRef: create-extra-payment.extraExportPayment.id
+
+  - id: export-files
+    action: saas.export_session.files
+    params:
+      exportSessionRef: export-session.exportSession.id
+
+  - id: payment-history
+    action: saas.payment.history
+    params:
+      workspaceRef: workspace.workspace.id
+
+  - id: customer-portal
+    action: saas.payment.customer_portal
+    params:
+      workspaceRef: workspace.workspace.id
+
+  - id: platform-webhook
+    action: saas.webhook.platform
+    params:
+      workspaceRef: workspace.workspace.id
+      eventType: invoice.paid
+      objectRef: checkout-upgrade.subscription.id
+
+  - id: connect-unresolved
+    action: saas.webhook.connect
+    params:
+      connectedAccountId: acct_dealer_001
+      eventType: invoice.paid
+      customerId: cus_unknown
+      expect: identity_unresolved
+
+  - id: connect-resolved
+    action: saas.webhook.connect
+    params:
+      connectedAccountId: acct_dealer_001
+      eventType: invoice.paid
+      workspaceRef: workspace.workspace.id
+      expect: processed
+
+  - id: duplicate-webhook
+    action: webhook.deliver_duplicate
+    params:
+      eventRef: connect-resolved.event.id
+
+  - id: assert-subscription
+    action: app.assert
+    params:
+      target: saas.workspace.subscription
+      expected:
+        workspaceId: workspace.workspace.id
+        status: COMPLETED
+        planTier: STANDARD
+
+  - id: support-bundle
+    action: saas.support.bundle
+    params:
+      workspaceRef: workspace.workspace.id
+
+  - id: observability
+    action: saas.observability.expect
+    params:
+      signals:
+        - billing.subscription_update
+        - billing.seat_update
+        - billing.export_update
+        - billing.webhook_processed
+
+  - id: assert-support-bundle
+    action: app.assert
+    params:
+      target: saas.support.bundle
+      expected:
+        workspaceId: workspace.workspace.id
+        hasWebhookEvidence: true
+        hasPaymentHistory: true

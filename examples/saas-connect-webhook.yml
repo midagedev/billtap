@@ -1,0 +1,52 @@
+name: saas-connect-webhook
+profile: saas
+app:
+  webhookUrl: http://localhost:3300/webhooks/stripe/connect
+  assertions:
+    baseUrl: http://localhost:3300/test/assertions
+
+saas:
+  tenant:
+    id: tenant_dealer
+    rail: CONNECT
+    connectedAccountId: acct_dealer_001
+  catalogPreset: saas-default
+
+steps:
+  - id: workspace
+    action: saas.workspace.create
+    params:
+      ownerEmail: dealer-owner@example.test
+      workspaceName: Dealer Workspace
+      planTier: PREMIUM
+      paymentCycle: CUSTOM
+
+  - id: unresolved
+    action: saas.webhook.connect
+    params:
+      connectedAccountId: acct_dealer_001
+      eventType: invoice.paid
+      customerId: cus_unknown
+      expect: identity_unresolved
+
+  - id: resolved
+    action: saas.webhook.connect
+    params:
+      connectedAccountId: acct_dealer_001
+      eventType: invoice.paid
+      workspaceRef: workspace.workspace.id
+      expect: processed
+
+  - id: duplicate
+    action: webhook.deliver_duplicate
+    params:
+      eventRef: resolved.event.id
+
+  - id: assert-webhook
+    action: app.assert
+    params:
+      target: saas.webhook.event
+      expected:
+        workspaceId: workspace.workspace.id
+        sourceType: connect
+        duplicateIgnored: true

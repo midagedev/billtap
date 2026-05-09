@@ -1,0 +1,59 @@
+name: subscription-payment-retry
+app:
+  webhookUrl: http://localhost:3300/webhooks/stripe
+  assertions:
+    baseUrl: http://localhost:3300/test/assertions
+
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: user@example.test
+
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_failed
+
+  - id: assert-grace
+    action: app.assert
+    params:
+      target: workspace.subscription
+      expected:
+        status: past_due
+
+  - id: advance-clock
+    action: clock.advance
+    params:
+      duration: 3d
+
+  - id: retry-payment
+    action: invoice.retry
+    params:
+      subscriptionRef: checkout.subscription.id
+      outcome: payment_succeeded
+
+  - id: assert-active
+    action: app.assert
+    params:
+      target: workspace.subscription
+      expected:
+        status: active

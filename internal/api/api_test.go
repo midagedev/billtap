@@ -1,0 +1,727 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/hckim/billtap/internal/billing"
+	"github.com/hckim/billtap/internal/fixtures"
+	"github.com/hckim/billtap/internal/scenarios"
+	"github.com/hckim/billtap/internal/security"
+	"github.com/hckim/billtap/internal/storage"
+	"github.com/hckim/billtap/internal/webhooks"
+)
+
+func TestCheckoutMVPFlow(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"buyer@example.test"},
+		"name":  {"Buyer"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"name": {"Team"},
+	})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"9900"},
+		"recurring[interval]": {"month"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"mode":                    {"subscription"},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"2"},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+
+	if session.URL == "" || session.Status != "open" {
+		t.Fatalf("session = %#v, want open session with hosted URL", session)
+	}
+
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+	var completed billing.CheckoutSession
+	if err := json.Unmarshal(completion["session"], &completed); err != nil {
+		t.Fatalf("decode completed session: %v", err)
+	}
+	if completed.PaymentStatus != "paid" || completed.SubscriptionID == "" || completed.InvoiceID == "" || completed.PaymentIntentID == "" {
+		t.Fatalf("completed session = %#v, want paid session with billing objects", completed)
+	}
+
+	var subscription billing.Subscription
+	if err := json.Unmarshal(completion["subscription"], &subscription); err != nil {
+		t.Fatalf("decode subscription: %v", err)
+	}
+	if subscription.Status != "active" {
+		t.Fatalf("subscription status = %q, want active", subscription.Status)
+	}
+
+	timeline := getJSON[struct {
+		Object string                  `json:"object"`
+		Data   []billing.TimelineEntry `json:"data"`
+	}](t, handler, "/api/timeline?checkoutSessionId="+session.ID)
+	if got := len(timeline.Data); got < 4 {
+		t.Fatalf("timeline entries = %d, want checkout completion evidence", got)
+	}
+}
+
+func TestCheckoutFailureOutcome(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"buyer@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+		"outcome": "payment_failed",
+	})
+	var invoice billing.Invoice
+	if err := json.Unmarshal(completion["invoice"], &invoice); err != nil {
+		t.Fatalf("decode invoice: %v", err)
+	}
+	var paymentIntent billing.PaymentIntent
+	if err := json.Unmarshal(completion["payment_intent"], &paymentIntent); err != nil {
+		t.Fatalf("decode payment intent: %v", err)
+	}
+	if invoice.Status != "open" || paymentIntent.Status != "requires_payment_method" {
+		t.Fatalf("invoice=%s payment_intent=%s, want failed checkout state", invoice.Status, paymentIntent.Status)
+	}
+}
+
+func TestWebhookEndpointDeliveryAndReplay(t *testing.T) {
+	var signatures []string
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		signatures = append(signatures, r.Header.Get(webhooks.SignatureHeaderName))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+
+	handler := newTestHandler(t)
+	endpoint := postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"checkout.session.completed,invoice.*"},
+	})
+	if endpoint.Secret != security.MaskedValue {
+		t.Fatalf("webhook endpoint secret = %q, want masked", endpoint.Secret)
+	}
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"buyer@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	_ = postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+
+	events := getJSON[struct {
+		Object string           `json:"object"`
+		Data   []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events")
+	if len(events.Data) < 4 {
+		t.Fatalf("events = %d, want checkout webhook events", len(events.Data))
+	}
+
+	attempts := getJSON[struct {
+		Object string                     `json:"object"`
+		Data   []webhooks.DeliveryAttempt `json:"data"`
+	}](t, handler, "/api/delivery-attempts")
+	if len(attempts.Data) == 0 {
+		t.Fatal("no delivery attempts recorded")
+	}
+	if signatures[0] == "" || attempts.Data[0].RequestHeaders[webhooks.SignatureHeaderName] == "" {
+		t.Fatalf("missing signature: received=%q attempt=%#v", signatures[0], attempts.Data[0].RequestHeaders)
+	}
+
+	replay := postJSON[struct {
+		Message string                     `json:"message"`
+		Data    []webhooks.DeliveryAttempt `json:"data"`
+	}](t, handler, "/api/events/"+events.Data[0].ID+"/replay", map[string]any{
+		"duplicate":     2,
+		"delay_seconds": 30,
+		"out_of_order":  true,
+	})
+	if len(replay.Data) != 2 {
+		t.Fatalf("replay attempts = %d, want duplicate delayed attempts", len(replay.Data))
+	}
+	if replay.Data[0].Status != webhooks.StatusScheduled || replay.Data[0].Metadata["source"] != webhooks.SourceReplay || replay.Data[0].Metadata["out_of_order"] != "true" {
+		t.Fatalf("replay attempt = %#v, want scheduled replay out-of-order metadata", replay.Data[0])
+	}
+}
+
+func TestProductionBoundaryRedactionAndAuditAPI(t *testing.T) {
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+
+	handler := newTestHandler(t)
+	endpoint := postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL + "?api_key=stripe_key_redaction_sample"},
+		"secret":         {"webhook_secret_redaction_sample"},
+		"enabled_events": {"*"},
+	})
+	if endpoint.Secret != security.MaskedValue {
+		t.Fatalf("endpoint secret = %q, want masked", endpoint.Secret)
+	}
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"buyer@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	_ = postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+
+	attempts := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/api/delivery-attempts")
+	if len(attempts.Data) == 0 {
+		t.Fatal("no delivery attempts recorded")
+	}
+	first := attempts.Data[0]
+	headers, _ := first["request_headers"].(map[string]any)
+	signature, _ := headers[webhooks.SignatureHeaderName].(string)
+	if !strings.Contains(signature, "v1=****") {
+		t.Fatalf("signature = %q, want masked HMAC evidence", signature)
+	}
+	if strings.Contains(first["request_url"].(string), "stripe_key_redaction_sample") {
+		t.Fatalf("request_url = %q, want sensitive query masked", first["request_url"])
+	}
+
+	events := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events")
+	if len(events.Data) == 0 {
+		t.Fatal("no events recorded")
+	}
+	replay := postJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/api/events/"+events.Data[0].ID+"/replay", map[string]any{
+		"duplicate":     2,
+		"delay_seconds": 30,
+		"out_of_order":  true,
+	})
+	if len(replay.Data) != 2 {
+		t.Fatalf("replay attempts = %d, want duplicate replay attempts", len(replay.Data))
+	}
+	replayHeaders, _ := replay.Data[0]["request_headers"].(map[string]any)
+	if signature, _ := replayHeaders[webhooks.SignatureHeaderName].(string); !strings.Contains(signature, "v1=****") {
+		t.Fatalf("replay signature = %q, want masked HMAC evidence", signature)
+	}
+	audit := getJSON[struct {
+		Data []webhooks.AuditEntry `json:"data"`
+	}](t, handler, "/api/audit-log?action=webhook.replay&targetId="+events.Data[0].ID)
+	if len(audit.Data) != 1 || audit.Data[0].Metadata["out_of_order"] != "true" {
+		t.Fatalf("audit = %#v, want replay audit evidence", audit.Data)
+	}
+
+	status, body := postJSONStatus(t, handler, "/v1/checkout/sessions", map[string]any{
+		"payment_method_data": map[string]any{
+			"card": map[string]any{"number": "4242424242424242"},
+		},
+	})
+	if status != http.StatusBadRequest || !strings.Contains(body, "real card data") {
+		t.Fatalf("status=%d body=%s, want real card data rejection", status, body)
+	}
+}
+
+func TestDashboardObjectsAndDebugBundle(t *testing.T) {
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+
+	handler := newTestHandler(t)
+	_ = postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"*"},
+	})
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"buyer@example.test"},
+		"name":  {"Buyer"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	_ = postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+
+	objects := getJSON[struct {
+		Object           string                    `json:"object"`
+		Customers        []billing.Customer        `json:"customers"`
+		CheckoutSessions []billing.CheckoutSession `json:"checkout_sessions"`
+		Subscriptions    []billing.Subscription    `json:"subscriptions"`
+		Invoices         []billing.Invoice         `json:"invoices"`
+		PaymentIntents   []billing.PaymentIntent   `json:"payment_intents"`
+		WebhookEvents    []webhooks.Event          `json:"webhook_events"`
+	}](t, handler, "/api/objects")
+	if objects.Object != "dashboard_objects" {
+		t.Fatalf("object type = %q, want dashboard_objects", objects.Object)
+	}
+	if len(objects.Customers) != 1 || len(objects.CheckoutSessions) != 1 || len(objects.Subscriptions) != 1 || len(objects.Invoices) != 1 || len(objects.PaymentIntents) != 1 {
+		t.Fatalf("dashboard objects = %#v, want completed checkout graph", objects)
+	}
+	if len(objects.WebhookEvents) == 0 {
+		t.Fatal("dashboard objects did not include webhook events")
+	}
+
+	bundle := postJSON[struct {
+		ID               string                  `json:"id"`
+		Object           string                  `json:"object"`
+		Target           map[string]string       `json:"target"`
+		Filters          map[string]string       `json:"filters"`
+		Timeline         []billing.TimelineEntry `json:"timeline"`
+		WebhookEvents    []webhooks.Event        `json:"webhook_events"`
+		DeliveryAttempts []map[string]any        `json:"delivery_attempts"`
+	}](t, handler, "/api/debug-bundles", map[string]string{
+		"object_type": "checkoutSessions",
+		"object_id":   session.ID,
+	})
+	if bundle.ID == "" || bundle.Object != "debug_bundle" {
+		t.Fatalf("debug bundle = %#v, want identified debug_bundle", bundle)
+	}
+	if bundle.Target["id"] != session.ID || bundle.Filters["checkout_session_id"] != session.ID {
+		t.Fatalf("bundle target=%#v filters=%#v, want checkout session filter", bundle.Target, bundle.Filters)
+	}
+	if len(bundle.Timeline) == 0 {
+		t.Fatal("debug bundle timeline is empty")
+	}
+	if len(bundle.WebhookEvents) == 0 || len(bundle.DeliveryAttempts) == 0 {
+		t.Fatalf("bundle webhook_events=%d delivery_attempts=%d, want webhook evidence", len(bundle.WebhookEvents), len(bundle.DeliveryAttempts))
+	}
+}
+
+func TestScenarioRunAPI(t *testing.T) {
+	assertions := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/assertions/workspace/subscription" {
+			t.Fatalf("assertion path = %q", r.URL.Path)
+		}
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode assertion payload: %v", err)
+		}
+		if payload["target"] != "workspace.subscription" || payload["context"] == nil || payload["clock"] == nil {
+			t.Fatalf("assertion payload = %#v", payload)
+		}
+		_, _ = w.Write([]byte(`{"pass":true}`))
+	}))
+	defer assertions.Close()
+
+	handler := newTestHandler(t)
+	report := postJSON[scenarios.Report](t, handler, "/api/scenarios/run", map[string]any{
+		"name": "api-scenario",
+		"app": map[string]any{
+			"assertions": map[string]any{"baseUrl": assertions.URL + "/assertions"},
+		},
+		"catalog": map[string]any{
+			"products": []map[string]any{{"id": "prod_pro", "name": "Pro"}},
+			"prices": []map[string]any{{
+				"id":         "price_pro_monthly",
+				"product":    "prod_pro",
+				"currency":   "usd",
+				"unitAmount": 4900,
+				"interval":   "month",
+			}},
+		},
+		"steps": []map[string]any{
+			{"id": "create-customer", "action": "customer.create", "params": map[string]any{"email": "api-scenario@example.test"}},
+			{"id": "checkout", "action": "checkout.create", "params": map[string]any{"customerRef": "create-customer.customer.id", "price": "price_pro_monthly"}},
+			{"id": "complete-checkout", "action": "checkout.complete", "params": map[string]any{"sessionRef": "checkout.session.id", "outcome": "payment_succeeded"}},
+			{"id": "advance-clock", "action": "clock.advance", "params": map[string]any{"duration": "3d"}},
+			{"id": "assert-active", "action": "app.assert", "params": map[string]any{"target": "workspace.subscription", "expected": map[string]any{"status": "active"}}},
+		},
+	})
+	if report.Status != "passed" || report.ExitCode() != scenarios.ExitPass {
+		t.Fatalf("scenario report = %#v, want passed", report)
+	}
+	if got := len(report.Steps); got != 5 {
+		t.Fatalf("steps = %d, want 5", got)
+	}
+	if !report.ClockEnd.After(report.ClockStart) {
+		t.Fatalf("clock did not advance: %s -> %s", report.ClockStart, report.ClockEnd)
+	}
+}
+
+func TestPortalCoverageAPI(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"portal@example.test"},
+		"name":  {"Portal User"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+	var sub billing.Subscription
+	if err := json.Unmarshal(completion["subscription"], &sub); err != nil {
+		t.Fatalf("decode subscription: %v", err)
+	}
+
+	state := getJSON[billing.PortalState](t, handler, "/api/portal?customer_id="+customer.ID)
+	if state.Customer.ID != customer.ID || state.Subscription == nil || len(state.Invoices) != 1 {
+		t.Fatalf("portal state = %#v, want customer subscription and invoice history", state)
+	}
+
+	plan := postJSON[struct {
+		Subscription billing.Subscription `json:"subscription"`
+		State        billing.PortalState  `json:"state"`
+	}](t, handler, "/api/portal/subscriptions/"+sub.ID+"/plan-change", map[string]any{
+		"plan":     "scale",
+		"quantity": 9,
+	})
+	if plan.Subscription.Metadata["plan"] != "scale" || plan.Subscription.Items[0].Quantity != 9 {
+		t.Fatalf("plan change subscription = %#v", plan.Subscription)
+	}
+
+	seats := postJSON[struct {
+		Subscription billing.Subscription `json:"subscription"`
+	}](t, handler, "/api/portal/subscriptions/"+sub.ID+"/seat-change", map[string]any{"quantity": 12})
+	if seats.Subscription.Items[0].Quantity != 12 {
+		t.Fatalf("seat quantity = %d, want 12", seats.Subscription.Items[0].Quantity)
+	}
+
+	canceled := postJSON[struct {
+		Subscription billing.Subscription `json:"subscription"`
+	}](t, handler, "/api/portal/subscriptions/"+sub.ID+"/cancel", map[string]string{"mode": "period"})
+	if !canceled.Subscription.CancelAtPeriodEnd {
+		t.Fatalf("cancelAtPeriodEnd = false, want scheduled cancellation")
+	}
+
+	resumed := postJSON[struct {
+		Subscription billing.Subscription `json:"subscription"`
+	}](t, handler, "/api/portal/subscriptions/"+sub.ID+"/resume", map[string]string{})
+	if resumed.Subscription.CancelAtPeriodEnd || resumed.Subscription.Status != "active" {
+		t.Fatalf("resumed subscription = %#v, want active without pending cancellation", resumed.Subscription)
+	}
+
+	immediate := postJSON[struct {
+		Subscription billing.Subscription `json:"subscription"`
+	}](t, handler, "/api/portal/subscriptions/"+sub.ID+"/cancel", map[string]string{"mode": "immediate"})
+	if immediate.Subscription.Status != "canceled" || immediate.Subscription.CanceledAt == nil {
+		t.Fatalf("immediate subscription = %#v, want canceled timestamp", immediate.Subscription)
+	}
+
+	payment := postJSON[struct {
+		PaymentMethod billing.PaymentMethodSimulation `json:"payment_method"`
+	}](t, handler, "/api/portal/customers/"+customer.ID+"/payment-method", map[string]string{"outcome": "fails"})
+	if payment.PaymentMethod.Status != "failed" || payment.PaymentMethod.FailureCode == "" {
+		t.Fatalf("payment method simulation = %#v, want failed card evidence", payment.PaymentMethod)
+	}
+
+	timeline := getJSON[struct {
+		Data []billing.TimelineEntry `json:"data"`
+	}](t, handler, "/api/timeline?customerId="+customer.ID)
+	if len(timeline.Data) < 8 {
+		t.Fatalf("timeline entries = %d, want portal transition evidence", len(timeline.Data))
+	}
+}
+
+func TestStripeCompatCatalogAndPortalEndpoints(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"id":                 {"cus_e2e_pro"},
+		"email":              {"stripe-compat@example.test"},
+		"metadata[tenantId]": {"saas"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"id":                                  {"prod_e2e_saas_premium"},
+		"name":                                {"SaaS Pro Plan (E2E)"},
+		"metadata[tenantId]":                  {"saas"},
+		"metadata[tier]":                      {"PREMIUM"},
+		"metadata[tierLevel]":                 {"3"},
+		"metadata[basicSeat]":                 {"1"},
+		"metadata[freeTrialPeriodDays]":       {"14"},
+		"metadata[planExportLimit]":           {"-1"},
+		"metadata[additionalSeatExportLimit]": {"-1"},
+		"metadata[freeTrialExportLimit]":      {"100"},
+		"metadata[productType]":               {"WORKSPACE_PLAN"},
+		"metadata[version]":                   {"2"},
+		"metadata[default_price]":             {"price_e2e_saas_premium_monthly"},
+	})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"id":                        {"price_e2e_saas_premium_monthly"},
+		"product":                   {product.ID},
+		"currency":                  {"usd"},
+		"unit_amount":               {"30000"},
+		"lookup_key":                {"saas_plan_premium_monthly"},
+		"recurring[interval]":       {"month"},
+		"recurring[interval_count]": {"1"},
+		"metadata[tenantId]":        {"saas"},
+		"metadata[tier]":            {"PREMIUM"},
+	})
+	if customer.ID != "cus_e2e_pro" || product.ID != "prod_e2e_saas_premium" || price.ID != "price_e2e_saas_premium_monthly" {
+		t.Fatalf("seeded IDs = customer:%s product:%s price:%s", customer.ID, product.ID, price.ID)
+	}
+
+	search := getJSON[struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID       string            `json:"id"`
+			Metadata map[string]string `json:"metadata"`
+			Created  int64             `json:"created"`
+		} `json:"data"`
+	}](t, handler, "/v1/products/search?query=metadata['tenantId']:'saas'%20AND%20metadata['productType']:'WORKSPACE_PLAN'")
+	if search.Object != "search_result" || len(search.Data) != 1 || search.Data[0].Metadata["tier"] != "PREMIUM" || search.Data[0].Created == 0 {
+		t.Fatalf("search result = %#v", search)
+	}
+
+	prices := getJSON[struct {
+		Data []struct {
+			ID        string `json:"id"`
+			LookupKey string `json:"lookup_key"`
+			Recurring struct {
+				Interval string `json:"interval"`
+			} `json:"recurring"`
+		} `json:"data"`
+	}](t, handler, "/v1/prices?product="+product.ID+"&active=true&type=recurring")
+	if len(prices.Data) != 1 || prices.Data[0].LookupKey != "saas_plan_premium_monthly" || prices.Data[0].Recurring.Interval != "month" {
+		t.Fatalf("prices = %#v", prices)
+	}
+
+	portal := postForm[struct {
+		Object string `json:"object"`
+		URL    string `json:"url"`
+	}](t, handler, "/v1/billing_portal/sessions", url.Values{
+		"customer":   {customer.ID},
+		"return_url": {"https://app.example.test/settings"},
+	})
+	if portal.Object != "billing_portal.session" || !strings.Contains(portal.URL, "/portal?customer_id="+customer.ID) {
+		t.Fatalf("portal = %#v", portal)
+	}
+
+	methods := getJSON[struct {
+		Data []struct {
+			ID   string `json:"id"`
+			Card struct {
+				Last4 string `json:"last4"`
+			} `json:"card"`
+		} `json:"data"`
+	}](t, handler, "/v1/payment_methods?customer="+customer.ID+"&type=card")
+	if len(methods.Data) != 1 || methods.Data[0].Card.Last4 != "4242" {
+		t.Fatalf("payment methods = %#v", methods)
+	}
+}
+
+func TestFixtureApplySnapshotAndAssertAPI(t *testing.T) {
+	handler := newTestHandler(t)
+	pack := map[string]any{
+		"name":      "saas-basic",
+		"runId":     "run-fixture-1",
+		"namespace": "sample-app",
+		"customers": []map[string]any{{
+			"id":       "cus_fixture_pro",
+			"email":    "fixture-pro@example.test",
+			"metadata": map[string]string{"tenantId": "saas"},
+		}},
+		"catalog": map[string]any{
+			"products": []map[string]any{{
+				"id":   "prod_fixture_saas_premium",
+				"name": "SaaS Pro Fixture",
+				"metadata": map[string]string{
+					"tenantId":      "saas",
+					"productType":   "WORKSPACE_PLAN",
+					"tier":          "PREMIUM",
+					"default_price": "price_fixture_saas_premium_monthly",
+				},
+			}},
+			"prices": []map[string]any{{
+				"id":         "price_fixture_saas_premium_monthly",
+				"product":    "prod_fixture_saas_premium",
+				"currency":   "usd",
+				"unitAmount": 30000,
+				"lookupKey":  "saas_plan_premium_monthly",
+				"interval":   "month",
+				"metadata":   map[string]string{"tenantId": "saas", "tier": "PREMIUM"},
+			}},
+		},
+		"subscriptions": []map[string]any{{
+			"ref":      "pro-workspace",
+			"customer": "cus_fixture_pro",
+			"price":    "price_fixture_saas_premium_monthly",
+			"quantity": 3,
+			"outcome":  "payment_succeeded",
+			"metadata": map[string]string{"tenantId": "saas"},
+		}},
+		"assertions": []map[string]any{
+			{"target": "customer", "id": "cus_fixture_pro"},
+			{"target": "price", "lookupKey": "saas_plan_premium_monthly"},
+			{"target": "subscription", "customer": "cus_fixture_pro", "price": "price_fixture_saas_premium_monthly", "status": "active", "quantity": 3},
+		},
+	}
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if applied.Assertions == nil || !applied.Assertions.Pass {
+		t.Fatalf("apply assertions = %#v, want pass", applied.Assertions)
+	}
+	if applied.Summary["customers"] != 1 || applied.Summary["products"] != 1 || applied.Summary["prices"] != 1 || applied.Summary["subscriptions"] != 1 {
+		t.Fatalf("apply summary = %#v", applied.Summary)
+	}
+
+	appliedAgain := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if len(appliedAgain.Subscriptions) != 1 || appliedAgain.Subscriptions[0].ID != applied.Subscriptions[0].ID {
+		t.Fatalf("second apply subscriptions = %#v, want idempotent fixture ref", appliedAgain.Subscriptions)
+	}
+
+	snapshot := getJSON[fixtures.Snapshot](t, handler, "/api/fixtures/snapshot?runId=run-fixture-1&tenantId=saas&namespace=sample-app")
+	if snapshot.Summary["customers"] != 1 || snapshot.Summary["products"] != 1 || snapshot.Summary["prices"] != 1 || snapshot.Summary["subscriptions"] != 1 || snapshot.Summary["invoices"] != 1 || snapshot.Summary["payment_intents"] != 1 {
+		t.Fatalf("snapshot summary = %#v", snapshot.Summary)
+	}
+	if snapshot.Subscriptions[0].Metadata[fixtures.MetadataFixtureRef] != "pro-workspace" {
+		t.Fatalf("subscription metadata = %#v, want fixture ref", snapshot.Subscriptions[0].Metadata)
+	}
+
+	report := postJSON[fixtures.AssertionReport](t, handler, "/api/fixtures/assert", map[string]any{
+		"name": "saas-basic-check",
+		"filter": map[string]any{
+			"runId":     "run-fixture-1",
+			"tenantId":  "saas",
+			"namespace": "sample-app",
+		},
+		"expect": []map[string]any{{
+			"target":       "timeline",
+			"customer":     "cus_fixture_pro",
+			"countAtLeast": 4,
+		}},
+	})
+	if !report.Pass || len(report.Results) != 1 {
+		t.Fatalf("assert report = %#v, want pass", report)
+	}
+
+	status, body := postJSONStatus(t, handler, "/api/fixtures/assert", map[string]any{
+		"name": "saas-basic-failing-check",
+		"filter": map[string]any{
+			"runId": "run-fixture-1",
+		},
+		"expect": []map[string]any{{
+			"target": "subscription",
+			"status": "canceled",
+		}},
+	})
+	if status != http.StatusConflict || !strings.Contains(body, `"pass":false`) {
+		t.Fatalf("status=%d body=%s, want assertion conflict report", status, body)
+	}
+}
+
+func newTestHandler(t *testing.T) http.Handler {
+	t.Helper()
+	store, err := storage.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+	return New(Options{Billing: billing.NewService(store), Webhooks: webhooks.NewService(store)})
+}
+
+func postForm[T any](t *testing.T, handler http.Handler, path string, values url.Values) T {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, path, stringsReader(values.Encode()))
+	req.Host = "billtap.test"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return decodeResponse[T](t, rec)
+}
+
+func postJSON[T any](t *testing.T, handler http.Handler, path string, body any) T {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return decodeResponse[T](t, rec)
+}
+
+func postJSONStatus(t *testing.T, handler http.Handler, path string, body any) (int, string) {
+	t.Helper()
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, path, bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String()
+}
+
+func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return decodeResponse[T](t, rec)
+}
+
+func decodeResponse[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
+	t.Helper()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var out T
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatalf("decode response %s: %v", rec.Body.String(), err)
+	}
+	return out
+}
+
+func stringsReader(value string) *bytes.Reader {
+	return bytes.NewReader([]byte(value))
+}

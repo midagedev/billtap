@@ -1,0 +1,49 @@
+name: sample-app-checkout
+app:
+  webhookUrl: http://localhost:3300/webhooks/stripe
+  assertions:
+    baseUrl: http://localhost:3300/test/assertions
+
+catalog:
+  products:
+    - id: prod_sample
+      name: Sample SaaS
+  prices:
+    - id: price_sample_monthly
+      product: prod_sample
+      currency: usd
+      unitAmount: 2900
+      interval: month
+
+clock:
+  start: "2026-05-08T00:00:00Z"
+
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: sample-buyer@example.test
+      name: Sample Buyer
+
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_sample_monthly
+      successUrl: http://localhost:3300/success
+      cancelUrl: http://localhost:3300/cancel
+
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_succeeded
+
+  - id: assert-active-subscription
+    action: app.assert
+    params:
+      target: workspace.subscription
+      expected:
+        status: active
+        customer: create-customer.customer.id
+        subscription: checkout.subscription.id

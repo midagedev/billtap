@@ -1,0 +1,61 @@
+name: saas-seat-and-member
+profile: saas
+app:
+  webhookUrl: http://localhost:3300/webhooks/stripe
+  assertions:
+    baseUrl: http://localhost:3300/test/assertions
+
+saas:
+  tenant:
+    id: tenant_direct
+    rail: CARD
+  catalogPreset: saas-default
+
+steps:
+  - id: workspace
+    action: saas.workspace.create
+    params:
+      ownerEmail: owner@example.test
+      workspaceName: Seat Workspace
+      planTier: STANDARD
+      paymentCycle: MONTHLY
+      basicSeatCount: 1
+      additionalSeatCount: 0
+
+  - id: blocked-invite
+    action: saas.member.invite
+    params:
+      workspaceRef: workspace.workspace.id
+      emails:
+        - member1@example.test
+      expect: seat_limit_exceeded
+
+  - id: estimate-seat
+    action: saas.seat.estimate_purchase
+    params:
+      workspaceRef: workspace.workspace.id
+      count: 1
+
+  - id: purchase-seat
+    action: saas.seat.purchase
+    params:
+      workspaceRef: workspace.workspace.id
+      count: 1
+      outcome: payment_succeeded
+
+  - id: invite-member
+    action: saas.member.invite
+    params:
+      workspaceRef: workspace.workspace.id
+      emails:
+        - member1@example.test
+
+  - id: assert-seats
+    action: app.assert
+    params:
+      target: saas.workspace.seats
+      expected:
+        workspaceId: workspace.workspace.id
+        basic: 1
+        additional: 1
+        used: 2

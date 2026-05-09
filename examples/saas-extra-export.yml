@@ -1,0 +1,71 @@
+name: saas-extra-export
+profile: saas
+app:
+  webhookUrl: http://localhost:3300/webhooks/stripe
+  assertions:
+    baseUrl: http://localhost:3300/test/assertions
+
+saas:
+  tenant:
+    id: tenant_direct
+    rail: CARD
+  catalogPreset: saas-default
+
+steps:
+  - id: workspace
+    action: saas.workspace.create
+    params:
+      ownerEmail: owner@example.test
+      workspaceName: Export Workspace
+      planTier: STANDARD
+      paymentCycle: MONTHLY
+      exportRemaining: 0
+
+  - id: blocked-export
+    action: saas.export.products
+    params:
+      workspaceRef: workspace.workspace.id
+      designCases:
+        - dc_001
+      exportTo: viewer
+      expect: quota_exhausted
+
+  - id: preview-extra
+    action: saas.extra_export.preview
+    params:
+      workspaceRef: workspace.workspace.id
+      designCases:
+        - dc_001
+      exportTo: viewer
+
+  - id: create-payment
+    action: saas.extra_export.create_payment_intent
+    params:
+      workspaceRef: workspace.workspace.id
+      designCases:
+        - dc_001
+      exportTo: viewer
+      outcome: payment_succeeded
+
+  - id: provide-extra
+    action: saas.extra_export.provide
+    params:
+      workspaceRef: workspace.workspace.id
+      extraExportPaymentRef: create-payment.extraExportPayment.id
+
+  - id: create-session
+    action: saas.export_session.create
+    params:
+      workspaceRef: workspace.workspace.id
+      designCases:
+        - dc_001
+      exportTo: viewer
+      extraExportPaymentRef: create-payment.extraExportPayment.id
+
+  - id: assert-extra-export
+    action: app.assert
+    params:
+      target: saas.extra_export.payment
+      expected:
+        status: EXPORT_SUCCEEDED
+        workspaceId: workspace.workspace.id

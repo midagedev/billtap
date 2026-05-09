@@ -1,0 +1,7 @@
+<svg width="96" height="96" viewBox="0 0 96 96" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title">
+  <title id="title">Billtap mark</title>
+  <rect x="12" y="12" width="72" height="72" rx="14" fill="#111827"/>
+  <path d="M30 29H55C62.18 29 67 33.5 67 40.2C67 44.18 65.12 47.1 61.92 48.78C65.96 50.32 68.5 53.74 68.5 58.4C68.5 65.76 63.08 70 55.06 70H30V29ZM42.18 45.42H53.2C56 45.42 57.92 43.84 57.92 41.18C57.92 38.58 56.06 37 53.2 37H42.18V45.42ZM42.18 61.92H54.22C57.44 61.92 59.36 60.16 59.36 57.32C59.36 54.48 57.44 52.72 54.22 52.72H42.18V61.92Z" fill="#F8FAFC"/>
+  <path d="M27 23H69" stroke="#2DD4BF" stroke-width="5" stroke-linecap="round"/>
+  <path d="M27 76H51" stroke="#F59E0B" stroke-width="5" stroke-linecap="round"/>
+</svg>

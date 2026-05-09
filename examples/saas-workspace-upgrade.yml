@@ -1,0 +1,52 @@
+name: saas-workspace-upgrade
+profile: saas
+app:
+  webhookUrl: http://localhost:3300/webhooks/stripe
+  assertions:
+    baseUrl: http://localhost:3300/test/assertions
+
+saas:
+  tenant:
+    id: tenant_direct
+    rail: CARD
+  catalogPreset: saas-default
+
+steps:
+  - id: workspace
+    action: saas.workspace.create
+    params:
+      ownerEmail: owner@example.test
+      workspaceName: Owner Workspace
+      planTier: FREE
+
+  - id: checkout
+    action: saas.subscription.checkout_upgrade
+    params:
+      workspaceRef: workspace.workspace.id
+      nextPlanTier: STANDARD
+      paymentCycle: MONTHLY
+      outcome: payment_succeeded
+
+  - id: webhook
+    action: saas.webhook.platform
+    params:
+      eventType: customer.subscription.created
+      objectRef: checkout.subscription.id
+
+  - id: assert-subscription
+    action: app.assert
+    params:
+      target: saas.workspace.subscription
+      expected:
+        workspaceId: workspace.workspace.id
+        status: COMPLETED
+        planTier: STANDARD
+        paymentCycle: MONTHLY
+
+  - id: assert-export
+    action: app.assert
+    params:
+      target: saas.workspace.export.summary
+      expected:
+        workspaceId: workspace.workspace.id
+        totalRemainingGreaterThan: 0
