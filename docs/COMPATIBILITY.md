@@ -129,11 +129,13 @@ Current scenario boundaries:
   webhook evidence.
 - `invoice.retry` is currently deterministic scenario evidence; it does not yet
   mutate the generic billing invoice/payment-intent state.
-- Generic webhook replay is available through `POST /api/events/{id}/replay`;
-  it is not currently a scenario runner action.
+- Generic webhook replay is available through `POST /api/events/{id}/replay`
+  and the `webhook.replay` scenario action. Replay can schedule duplicate,
+  delayed, out-of-order, simulated endpoint status, timeout, generic transport
+  error, and signature-mismatch delivery attempts.
 - `webhook.deliver_duplicate` and `webhook.deliver_out_of_order` currently
-  update SaaS profile webhook evidence; they do not schedule generic HTTP
-  delivery attempts from the scenario runner.
+  update SaaS profile webhook evidence. Use `webhook.replay` for generic HTTP
+  delivery attempts.
 - App assertions call the configured app assertion endpoint and can fail the
   run with a non-zero exit code.
 - Scenario reports are JSON and Markdown capable from the CLI.

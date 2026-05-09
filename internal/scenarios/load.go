@@ -120,6 +120,7 @@ func supportedAction(action string) bool {
 		"checkout.complete",
 		"clock.advance",
 		"invoice.retry",
+		"webhook.replay",
 		"app.assert":
 		return true
 	default:

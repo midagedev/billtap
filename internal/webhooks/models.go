@@ -144,16 +144,26 @@ type EventInput struct {
 }
 
 type DeliveryOptions struct {
-	Duplicate  int
-	Delay      time.Duration
-	OutOfOrder bool
-	Replay     bool
+	Duplicate         int
+	Delay             time.Duration
+	OutOfOrder        bool
+	Replay            bool
+	ResponseStatus    int
+	ResponseBody      string
+	SimulatedError    string
+	SimulatedTimeout  bool
+	SignatureMismatch bool
 }
 
 type ReplayOptions struct {
-	Duplicate  int
-	Delay      time.Duration
-	OutOfOrder bool
+	Duplicate         int
+	Delay             time.Duration
+	OutOfOrder        bool
+	ResponseStatus    int
+	ResponseBody      string
+	SimulatedError    string
+	SimulatedTimeout  bool
+	SignatureMismatch bool
 }
 
 type ServiceOptions struct {

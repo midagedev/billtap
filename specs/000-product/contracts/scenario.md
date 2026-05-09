@@ -103,6 +103,9 @@ Steps may reference previous step outputs with:
 <step-id>.<path>
 ```
 
+Numeric path segments address list entries, for example
+`complete-checkout.events.0.id`.
+
 ## Built-In Actions
 
 - `customer.create`
@@ -120,6 +123,10 @@ Steps may reference previous step outputs with:
 - `webhook.deliver_duplicate`
 - `webhook.deliver_out_of_order`
 - `app.assert`
+
+`webhook.replay` schedules delivery attempts for an existing event id. It can
+use `duplicate`, `delay` or `delay_seconds`, `outOfOrder`, `responseStatus`,
+`responseBody`, `timeout`, `error`, and `signatureMismatch` parameters.
 
 ## SaaS Profile Actions
 

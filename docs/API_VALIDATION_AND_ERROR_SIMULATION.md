@@ -187,7 +187,7 @@ declare ownership, verification, open risks, and gate status in the PR.
 | V2. Supported endpoint validators | `/v1` request parsing and per-endpoint schemas | Required/unknown/type/enum validation for documented supported endpoints | Go table tests per endpoint |
 | V3. Payment error simulation | Checkout completion, payment-intent state, scenario outcomes | Deterministic card/payment failure catalog | Go scenario and API tests |
 | V4. Idempotency simulation | POST request idempotency storage and conflict handling | Replay/mismatch/conflict behavior for supported POST endpoints | Go API tests and scorecard cases |
-| V5. Webhook failure scenarios | Webhook delivery and scenario runner | Endpoint 4xx/5xx, timeout, duplicate, delay, out-of-order, signature mismatch evidence | Go webhook tests and scenario reports |
+| V5. Webhook failure scenarios | Webhook delivery and scenario runner | Endpoint 4xx/5xx, timeout, duplicate, delay, out-of-order, signature mismatch evidence through `POST /api/events/{id}/replay` and `webhook.replay` | Go webhook tests and scenario reports |
 | V6. Compatibility scorecard | Testkit, CLI/report artifacts | JSON/Markdown scorecard and replay bundles | CI artifact tests |
 | V7. Stripe SDK smoke | Node or Go client smoke runner | Real-client adoption report | Optional CI/manual workflow |
 
