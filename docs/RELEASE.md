@@ -8,7 +8,8 @@ in the same release, `v0.1.0` should be published as source code plus
 maintainer-verified local build instructions. Do not claim a published package,
 Homebrew formula, or official Docker image until that artifact exists.
 
-This document does not choose a license.
+Billtap is licensed under Apache-2.0. The release must include the top-level
+`LICENSE` and `NOTICE` files.
 
 ## Release Goals For v0.1.0
 
@@ -19,9 +20,9 @@ The `v0.1.0` release should make three public claims:
   `docs/COMPATIBILITY.md`.
 - Billtap can be built, tested, run, and smoke-checked from a clean checkout.
 
-Release blocker: the project owner must add a `LICENSE` file before publishing
-the repository as a public community project or accepting external
-contributions.
+License requirement: keep the Apache-2.0 `LICENSE`, top-level `NOTICE`, and
+package metadata aligned before publishing the repository as a public community
+project or accepting external contributions.
 
 ## Required Public Statements
 

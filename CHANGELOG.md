@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Licensed Billtap under Apache-2.0 and added a top-level `NOTICE`.
 - Hardened public-readiness validation: JSON numeric request values now
   preserve decimal input for wrong-type rejection, subscription quantities no
   longer silently normalize invalid values, and update endpoints have explicit
@@ -9,8 +10,8 @@
 - Expanded the compatibility scorecard to `l3-public-readiness-v2` with 28
   release-blocking cases covering request validation, idempotency mismatch, and
   deterministic checkout payment-error aliases.
-- Added public release readiness documentation and clarified that a project
-  owner-selected `LICENSE` file is required before community release.
+- Added public release readiness documentation and clarified release evidence
+  requirements.
 - Added public compatibility and release process docs for the v0.1.0 release
   path.
 - Documented the supported Stripe-like subset, Billtap-specific APIs,
