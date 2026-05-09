@@ -28,7 +28,7 @@ func RedactHeaders(headers map[string]string) map[string]string {
 	}
 	out := make(map[string]string, len(headers))
 	for key, value := range headers {
-		if normalize(key) == "billtapsignature" {
+		if isSignatureHeader(key) {
 			out[key] = MaskSignatureHeader(value)
 			continue
 		}
@@ -39,6 +39,11 @@ func RedactHeaders(headers map[string]string) map[string]string {
 		out[key] = value
 	}
 	return out
+}
+
+func isSignatureHeader(key string) bool {
+	normalized := normalize(key)
+	return normalized == "billtapsignature" || normalized == "stripesignature"
 }
 
 func MaskSignatureHeader(value string) string {

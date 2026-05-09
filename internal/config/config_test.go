@@ -21,19 +21,23 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.RawPayloadStorage != RawPayloadStore || cfg.RetentionDays != 30 {
 		t.Fatalf("boundary defaults raw=%q retention=%d", cfg.RawPayloadStorage, cfg.RetentionDays)
 	}
+	if cfg.WebhookSignatureHeader != DefaultWebhookSignatureHeader {
+		t.Fatalf("WebhookSignatureHeader = %q, want %q", cfg.WebhookSignatureHeader, DefaultWebhookSignatureHeader)
+	}
 }
 
 func TestLoadConfigFileThenEnvOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "billtap.json")
-	body := `{"addr":":9000","database_url":"file.db","static_dir":"static","environment":"test","raw_payload_storage":"metadata_only","retention_days":7}`
+	body := `{"addr":":9000","database_url":"file.db","static_dir":"static","environment":"test","raw_payload_storage":"metadata_only","retention_days":7,"webhook_signature_header":"Billtap-Signature"}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config file: %v", err)
 	}
 
 	env := map[string]string{
-		envAddr:        ":9100",
-		envDatabaseURL: ":memory:",
+		envAddr:                   ":9100",
+		envDatabaseURL:            ":memory:",
+		envWebhookSignatureHeader: "Stripe-Signature",
 	}
 	cfg, err := LoadWithLookup(path, func(key string) (string, bool) {
 		value, ok := env[key]
@@ -54,6 +58,9 @@ func TestLoadConfigFileThenEnvOverrides(t *testing.T) {
 	}
 	if cfg.RawPayloadStorage != RawPayloadMetadataOnly || cfg.RetentionDays != 7 {
 		t.Fatalf("boundary config raw=%q retention=%d", cfg.RawPayloadStorage, cfg.RetentionDays)
+	}
+	if cfg.WebhookSignatureHeader != "Stripe-Signature" {
+		t.Fatalf("WebhookSignatureHeader = %q, want env override", cfg.WebhookSignatureHeader)
 	}
 }
 

@@ -294,14 +294,15 @@ func (s *Service) upsertPrice(ctx context.Context, pack Pack, fixture PriceFixtu
 
 func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture SubscriptionFixture) (billing.CheckoutSession, billing.Subscription, error) {
 	ref := subscriptionRef(fixture)
-	existing, found, err := s.findSubscriptionByRef(ctx, pack, ref)
+	items := subscriptionLineItems(fixture)
+	existing, found, err := s.findSubscription(ctx, pack, fixture, ref)
 	if err != nil {
 		return billing.CheckoutSession{}, billing.Subscription{}, err
 	}
 	metadata := fixtureMetadata(fixture.Metadata, pack, ref)
 	if found {
 		patch := billing.SubscriptionPatch{
-			Items:             []billing.LineItem{{PriceID: fixture.Price, Quantity: positiveQuantity(fixture.Quantity)}},
+			Items:             items,
 			ReplaceItems:      true,
 			Metadata:          metadata,
 			CancelAtPeriodEnd: fixture.CancelAtPeriodEnd,
@@ -311,14 +312,19 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 	}
 
 	session, err := s.billing.CreateCheckoutSession(ctx, billing.CheckoutSession{
+		ID:         strings.TrimSpace(fixture.CheckoutSessionID),
 		CustomerID: fixture.Customer,
 		Mode:       "subscription",
-		LineItems:  []billing.LineItem{{PriceID: fixture.Price, Quantity: positiveQuantity(fixture.Quantity)}},
+		LineItems:  items,
 	})
 	if err != nil {
 		return billing.CheckoutSession{}, billing.Subscription{}, err
 	}
-	completed, err := s.billing.CompleteCheckout(ctx, session.ID, fixture.Outcome)
+	completed, err := s.billing.CompleteCheckoutWithOptions(ctx, session.ID, fixture.Outcome, billing.CheckoutCompletionOptions{
+		SubscriptionID:  strings.TrimSpace(fixture.ID),
+		InvoiceID:       strings.TrimSpace(fixture.InvoiceID),
+		PaymentIntentID: strings.TrimSpace(fixture.PaymentIntentID),
+	})
 	if err != nil {
 		return billing.CheckoutSession{}, billing.Subscription{}, err
 	}
@@ -333,7 +339,16 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 	return completed, subscription, err
 }
 
-func (s *Service) findSubscriptionByRef(ctx context.Context, pack Pack, ref string) (billing.Subscription, bool, error) {
+func (s *Service) findSubscription(ctx context.Context, pack Pack, fixture SubscriptionFixture, ref string) (billing.Subscription, bool, error) {
+	if id := strings.TrimSpace(fixture.ID); id != "" {
+		subscription, err := s.billing.GetSubscription(ctx, id)
+		if err == nil {
+			return subscription, true, nil
+		}
+		if !errors.Is(err, billing.ErrNotFound) {
+			return billing.Subscription{}, false, err
+		}
+	}
 	subscriptions, err := s.billing.ListSubscriptions(ctx)
 	if err != nil {
 		return billing.Subscription{}, false, err
@@ -445,8 +460,13 @@ func validatePack(pack Pack) error {
 		if strings.TrimSpace(subscription.Customer) == "" {
 			problems = append(problems, fmt.Sprintf("subscriptions[%d].customer is required", idx))
 		}
-		if strings.TrimSpace(subscription.Price) == "" {
-			problems = append(problems, fmt.Sprintf("subscriptions[%d].price is required", idx))
+		if strings.TrimSpace(subscription.Price) == "" && len(subscription.Items) == 0 {
+			problems = append(problems, fmt.Sprintf("subscriptions[%d].price or items is required", idx))
+		}
+		for itemIdx, item := range subscription.Items {
+			if strings.TrimSpace(item.Price) == "" {
+				problems = append(problems, fmt.Sprintf("subscriptions[%d].items[%d].price is required", idx, itemIdx))
+			}
 		}
 	}
 	if len(problems) > 0 {
@@ -633,7 +653,24 @@ func subscriptionRef(fixture SubscriptionFixture) string {
 	if strings.TrimSpace(fixture.Ref) != "" {
 		return strings.TrimSpace(fixture.Ref)
 	}
+	if strings.TrimSpace(fixture.ID) != "" {
+		return strings.TrimSpace(fixture.ID)
+	}
 	return strings.TrimSpace(fixture.Customer + "_" + fixture.Price)
+}
+
+func subscriptionLineItems(fixture SubscriptionFixture) []billing.LineItem {
+	if len(fixture.Items) == 0 {
+		return []billing.LineItem{{PriceID: strings.TrimSpace(fixture.Price), Quantity: positiveQuantity(fixture.Quantity)}}
+	}
+	out := make([]billing.LineItem, 0, len(fixture.Items))
+	for _, item := range fixture.Items {
+		out = append(out, billing.LineItem{
+			PriceID:  strings.TrimSpace(item.Price),
+			Quantity: positiveQuantity(item.Quantity),
+		})
+	}
+	return out
 }
 
 func lineItemHasPrice(items []billing.LineItem, priceIDs map[string]bool) bool {

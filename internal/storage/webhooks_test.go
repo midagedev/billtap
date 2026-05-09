@@ -125,6 +125,51 @@ func TestWebhookServiceRecordsSignedDelivery(t *testing.T) {
 	}
 }
 
+func TestWebhookServiceCanUseStripeSignatureHeader(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer store.Close()
+
+	var gotStripeSignature string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotStripeSignature = r.Header.Get(webhooks.StripeSignatureHeaderName)
+		if r.Header.Get(webhooks.SignatureHeaderName) != "" {
+			t.Fatalf("received legacy signature header in Stripe mode")
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{
+		StoreRawPayloads:    true,
+		SignatureHeaderName: webhooks.StripeSignatureHeaderName,
+	})
+	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
+		t.Fatalf("CreateEndpoint returned error: %v", err)
+	}
+	_, attempts, err := service.CreateEvent(ctx, webhooks.EventInput{
+		Type:          "checkout.session.completed",
+		ObjectPayload: json.RawMessage(`{"id":"cs_test"}`),
+		Source:        webhooks.SourceCheckout,
+		Sequence:      1,
+	})
+	if err != nil {
+		t.Fatalf("CreateEvent returned error: %v", err)
+	}
+	if len(attempts) != 1 || attempts[0].RequestHeaders[webhooks.StripeSignatureHeaderName] == "" {
+		t.Fatalf("attempts = %#v, want Stripe-Signature evidence", attempts)
+	}
+	if gotStripeSignature == "" {
+		t.Fatal("test server did not receive Stripe-Signature")
+	}
+	if webhooks.SignatureHeaderValue(attempts[0].RequestHeaders) == "" {
+		t.Fatal("SignatureHeaderValue did not find configured Stripe-Signature")
+	}
+}
+
 func TestRelayModeDoesNotPersistRawPayloadsAndAuditsOverrides(t *testing.T) {
 	ctx := context.Background()
 	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))

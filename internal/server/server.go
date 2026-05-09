@@ -44,8 +44,9 @@ func (s *Server) routes() {
 		var webhookService *webhooks.Service
 		if webhookRepo, ok := s.store.(webhooks.Repository); ok {
 			webhookService = webhooks.NewServiceWithOptions(webhookRepo, webhooks.ServiceOptions{
-				StoreRawPayloads: s.cfg.RawPayloadStorage != config.RawPayloadMetadataOnly,
-				RetentionDays:    s.cfg.RetentionDays,
+				StoreRawPayloads:    s.cfg.RawPayloadStorage != config.RawPayloadMetadataOnly,
+				RetentionDays:       s.cfg.RetentionDays,
+				SignatureHeaderName: s.cfg.WebhookSignatureHeader,
 			})
 		}
 		handler := api.New(api.Options{Billing: billing.NewService(repo), Webhooks: webhookService})

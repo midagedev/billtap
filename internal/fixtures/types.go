@@ -58,13 +58,23 @@ type PriceFixture struct {
 }
 
 type SubscriptionFixture struct {
-	Ref               string            `json:"ref" yaml:"ref"`
-	Customer          string            `json:"customer" yaml:"customer"`
-	Price             string            `json:"price" yaml:"price"`
-	Quantity          int64             `json:"quantity" yaml:"quantity"`
-	Outcome           string            `json:"outcome" yaml:"outcome"`
-	Metadata          map[string]string `json:"metadata" yaml:"metadata"`
-	CancelAtPeriodEnd *bool             `json:"cancelAtPeriodEnd" yaml:"cancelAtPeriodEnd"`
+	ID                string                    `json:"id" yaml:"id"`
+	CheckoutSessionID string                    `json:"checkoutSession" yaml:"checkoutSession"`
+	InvoiceID         string                    `json:"invoice" yaml:"invoice"`
+	PaymentIntentID   string                    `json:"paymentIntent" yaml:"paymentIntent"`
+	Ref               string                    `json:"ref" yaml:"ref"`
+	Customer          string                    `json:"customer" yaml:"customer"`
+	Price             string                    `json:"price" yaml:"price"`
+	Quantity          int64                     `json:"quantity" yaml:"quantity"`
+	Items             []SubscriptionItemFixture `json:"items" yaml:"items"`
+	Outcome           string                    `json:"outcome" yaml:"outcome"`
+	Metadata          map[string]string         `json:"metadata" yaml:"metadata"`
+	CancelAtPeriodEnd *bool                     `json:"cancelAtPeriodEnd" yaml:"cancelAtPeriodEnd"`
+}
+
+type SubscriptionItemFixture struct {
+	Price    string `json:"price" yaml:"price"`
+	Quantity int64  `json:"quantity" yaml:"quantity"`
 }
 
 type ApplyResult struct {

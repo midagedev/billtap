@@ -17,6 +17,10 @@ func TestRedactHeadersMasksSensitiveValues(t *testing.T) {
 	if headers["Billtap-Signature"] != "t=1,v1=****" {
 		t.Fatalf("signature header = %q, want masked signature evidence", headers["Billtap-Signature"])
 	}
+	stripeHeaders := RedactHeaders(map[string]string{"Stripe-Signature": "t=1,v1=abc"})
+	if stripeHeaders["Stripe-Signature"] != "t=1,v1=****" {
+		t.Fatalf("stripe signature header = %q, want masked signature evidence", stripeHeaders["Stripe-Signature"])
+	}
 }
 
 func TestRedactURLMasksSensitiveQuery(t *testing.T) {

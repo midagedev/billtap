@@ -232,8 +232,21 @@ func TestWebhookEndpointDeliveryAndReplay(t *testing.T) {
 	checkoutEventID := eventIDs["checkout.session.completed"]
 	invoiceCreatedEventID := eventIDs["invoice.created"]
 	invoiceFinalizedEventID := eventIDs["invoice.finalized"]
-	if checkoutEventID == "" || invoiceCreatedEventID == "" || invoiceFinalizedEventID == "" {
-		t.Fatalf("events = %#v, want checkout and invoice events", events.Data)
+	invoicePaidEventID := eventIDs["invoice.paid"]
+	if checkoutEventID == "" || invoiceCreatedEventID == "" || invoiceFinalizedEventID == "" || invoicePaidEventID == "" {
+		t.Fatalf("events = %#v, want checkout and invoice events including invoice.paid", events.Data)
+	}
+	for _, event := range events.Data {
+		if event.Type != "customer.subscription.created" {
+			continue
+		}
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data.Object, &payload); err != nil {
+			t.Fatalf("decode subscription webhook payload: %v", err)
+		}
+		if _, ok := payload["current_period_start"].(float64); !ok {
+			t.Fatalf("subscription webhook current_period_start = %#v, want Stripe-style unix timestamp", payload["current_period_start"])
+		}
 	}
 
 	attempts := getJSON[struct {
@@ -1063,6 +1076,164 @@ func TestFixtureApplySnapshotAndAssertAPI(t *testing.T) {
 	}
 }
 
+func TestFixtureApplyPreservesStableBillingGraphIDs(t *testing.T) {
+	handler := newTestHandler(t)
+	pack := map[string]any{
+		"name":      "ds5-fixed-ids",
+		"runId":     "run-fixed-ids-1",
+		"namespace": "ds5",
+		"customers": []map[string]any{{
+			"id":       "cus_fixture_fixed",
+			"email":    "fixed@example.test",
+			"metadata": map[string]string{"tenantId": "dentbird"},
+		}},
+		"products": []map[string]any{
+			{
+				"id":   "prod_fixture_plan",
+				"name": "Fixture Plan",
+				"metadata": map[string]string{
+					"tenantId":    "dentbird",
+					"productType": "WORKSPACE_PLAN",
+					"tier":        "PREMIUM",
+				},
+			},
+			{
+				"id":   "prod_fixture_seat",
+				"name": "Fixture Seat",
+				"metadata": map[string]string{
+					"tenantId":    "dentbird",
+					"productType": "ADDITIONAL_SEAT",
+				},
+			},
+		},
+		"prices": []map[string]any{
+			{
+				"id":         "price_fixture_plan_monthly",
+				"product":    "prod_fixture_plan",
+				"currency":   "usd",
+				"unitAmount": 30000,
+				"interval":   "month",
+				"metadata":   map[string]string{"tenantId": "dentbird", "tier": "PREMIUM"},
+			},
+			{
+				"id":         "price_fixture_seat_monthly",
+				"product":    "prod_fixture_seat",
+				"currency":   "usd",
+				"unitAmount": 10000,
+				"interval":   "month",
+				"metadata":   map[string]string{"tenantId": "dentbird"},
+			},
+		},
+		"subscriptions": []map[string]any{{
+			"id":              "sub_fixture_fixed",
+			"checkoutSession": "cs_fixture_fixed",
+			"invoice":         "in_fixture_fixed",
+			"paymentIntent":   "pi_fixture_fixed",
+			"customer":        "cus_fixture_fixed",
+			"items": []map[string]any{
+				{"price": "price_fixture_plan_monthly", "quantity": 1},
+				{"price": "price_fixture_seat_monthly", "quantity": 2},
+			},
+			"metadata": map[string]string{
+				"tenantId":               "dentbird",
+				"manualExportLimitCount": "0",
+			},
+		}},
+	}
+
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if len(applied.CheckoutSessions) != 1 || applied.CheckoutSessions[0].ID != "cs_fixture_fixed" {
+		t.Fatalf("checkout sessions = %#v, want fixed checkout session id", applied.CheckoutSessions)
+	}
+	if len(applied.Subscriptions) != 1 || applied.Subscriptions[0].ID != "sub_fixture_fixed" || applied.Subscriptions[0].LatestInvoiceID != "in_fixture_fixed" {
+		t.Fatalf("subscriptions = %#v, want fixed subscription and invoice ids", applied.Subscriptions)
+	}
+
+	subscription := getJSON[struct {
+		ID            string `json:"id"`
+		LatestInvoice string `json:"latest_invoice"`
+		Items         struct {
+			Data []struct {
+				ID       string `json:"id"`
+				Quantity int64  `json:"quantity"`
+				Price    struct {
+					ID string `json:"id"`
+				} `json:"price"`
+			} `json:"data"`
+		} `json:"items"`
+	}](t, handler, "/v1/subscriptions/sub_fixture_fixed")
+	if subscription.ID != "sub_fixture_fixed" || subscription.LatestInvoice != "in_fixture_fixed" || len(subscription.Items.Data) != 2 {
+		t.Fatalf("subscription = %#v, want fixed id, latest invoice, and two items", subscription)
+	}
+	if subscription.Items.Data[1].Quantity != 2 || subscription.Items.Data[1].Price.ID != "price_fixture_seat_monthly" {
+		t.Fatalf("seat item = %#v, want quantity 2 seat price", subscription.Items.Data[1])
+	}
+
+	list := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/subscriptions?customer=cus_fixture_fixed&status=all")
+	if len(list.Data) != 1 || list.Data[0].ID != "sub_fixture_fixed" {
+		t.Fatalf("subscription list = %#v, want fixed subscription by customer", list)
+	}
+
+	invoice := getJSON[struct {
+		ID            string `json:"id"`
+		PaymentIntent string `json:"payment_intent"`
+	}](t, handler, "/v1/invoices/in_fixture_fixed")
+	if invoice.ID != "in_fixture_fixed" || invoice.PaymentIntent != "pi_fixture_fixed" {
+		t.Fatalf("invoice = %#v, want fixed payment intent", invoice)
+	}
+
+	item := postForm[struct {
+		ID       string `json:"id"`
+		Quantity int64  `json:"quantity"`
+		Price    struct {
+			ID string `json:"id"`
+		} `json:"price"`
+	}](t, handler, "/v1/subscription_items", url.Values{
+		"subscription": {"sub_fixture_fixed"},
+		"price":        {"price_fixture_seat_monthly"},
+		"quantity":     {"3"},
+	})
+	if item.ID == "" || item.Price.ID != "price_fixture_seat_monthly" || item.Quantity != 3 {
+		t.Fatalf("created subscription item = %#v", item)
+	}
+
+	deleted := deleteJSON[struct {
+		ID      string `json:"id"`
+		Deleted bool   `json:"deleted"`
+	}](t, handler, "/v1/subscription_items/"+item.ID)
+	if deleted.ID != item.ID || !deleted.Deleted {
+		t.Fatalf("deleted item = %#v, want deleted marker", deleted)
+	}
+
+	createdSubscription := postForm[struct {
+		ID               string `json:"id"`
+		CollectionMethod string `json:"collection_method"`
+		Items            struct {
+			Data []struct {
+				Quantity int64 `json:"quantity"`
+				Price    struct {
+					ID string `json:"id"`
+				} `json:"price"`
+			} `json:"data"`
+		} `json:"items"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":           {"cus_fixture_fixed"},
+		"items[0][price]":    {"price_fixture_plan_monthly"},
+		"items[0][quantity]": {"2"},
+		"collection_method":  {"send_invoice"},
+	})
+	if createdSubscription.ID == "" || createdSubscription.CollectionMethod != "send_invoice" || len(createdSubscription.Items.Data) != 1 {
+		t.Fatalf("created subscription = %#v, want Stripe-style subscription create response", createdSubscription)
+	}
+	if createdSubscription.Items.Data[0].Quantity != 2 || createdSubscription.Items.Data[0].Price.ID != "price_fixture_plan_monthly" {
+		t.Fatalf("created subscription item = %#v", createdSubscription.Items.Data[0])
+	}
+}
+
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	store, err := storage.OpenSQLite(context.Background(), filepath.Join(t.TempDir(), "billtap.db"))
@@ -1134,6 +1305,14 @@ func postFormStatusWithHeaders(t *testing.T, handler http.Handler, path string, 
 func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return decodeResponse[T](t, rec)
+}
+
+func deleteJSON[T any](t *testing.T, handler http.Handler, path string) T {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, path, nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return decodeResponse[T](t, rec)

@@ -59,7 +59,8 @@ Base path: `/v1`
 | Checkout sessions | `POST /v1/checkout/sessions`, `GET /v1/checkout/sessions`, `GET /v1/checkout/sessions/{id}` | Supported | Creates subscription-mode sandbox checkout sessions with line items and hosted Billtap URLs. |
 | Checkout completion | `POST /v1/checkout/sessions/{id}/complete`, `POST /api/checkout/sessions/{id}/complete` | Billtap-specific | Completes a sandbox checkout and creates subscription, invoice, payment intent, timeline, and checkout webhook evidence. Supports success plus deterministic failure aliases such as `card_declined`, `insufficient_funds`, `expired_card`, `incorrect_cvc`, `processing_error`, `authentication_required`, and documented Stripe test PaymentMethod IDs such as `pm_card_visa_chargeDeclined`. |
 | Billing portal sessions | `POST /v1/billing_portal/sessions` | Partial | Returns a Billtap portal URL for a known customer. Portal configuration, flows, and Stripe-hosted portal behavior are not modeled. |
-| Subscriptions | `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}` | Partial | List/retrieve subscriptions created by checkout or fixtures. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation. |
+| Subscriptions | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}` | Partial | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation. |
+| Subscription items | `POST /v1/subscription_items`, `DELETE /v1/subscription_items/{id}` | Partial | Add or remove local subscription items for integration smoke paths. Billing proration and invoice recalculation are not modeled. |
 | Invoices | `GET /v1/invoices`, `GET /v1/invoices/{id}`, `POST /v1/invoices/create_preview` | Partial | List/retrieve invoices created by checkout. Preview returns a zero-value local smoke-test invoice. |
 | Payment intents | `GET /v1/payment_intents`, `GET /v1/payment_intents/{id}` | Partial | List/retrieve payment intents created by checkout and fixtures. Direct create and confirm are not supported. |
 | Payment methods | `GET /v1/payment_methods?customer={id}&type=card` | Partial | Returns a deterministic sandbox card projection for a known customer. Create, attach, detach, and update are not supported. |
@@ -95,6 +96,7 @@ Supported generic event types:
 - `invoice.created`
 - `invoice.finalized`
 - `invoice.payment_succeeded`
+- `invoice.paid`
 - `invoice.payment_failed`
 - `payment_intent.created`
 - `payment_intent.succeeded`
@@ -119,7 +121,10 @@ Delivery headers use:
 Billtap-Signature: t=<unix_seconds>,v1=<hex_hmac_sha256>
 ```
 
-This is Stripe-compatible in shape, but the header name is Billtap-specific.
+The default header name is Billtap-specific. Set
+`BILLTAP_WEBHOOK_SIGNATURE_HEADER=Stripe-Signature` when an application already
+verifies Stripe's standard webhook header and should consume Billtap through the
+same receiver path.
 
 ## Scenario Claim
 
@@ -170,6 +175,8 @@ Fixture packs support repeatable local setup and assertions for:
 - catalog products
 - catalog prices
 - subscription graphs created through the normal checkout-completion path
+- optional stable checkout session, subscription, invoice, and payment intent
+  IDs for provider-replacement tests that need exact fixture IDs
 - fixture-scoped snapshots
 - assertion reports for customers, products, prices, checkout sessions,
   subscriptions, invoices, payment intents, and timeline entries

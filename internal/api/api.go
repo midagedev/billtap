@@ -59,6 +59,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/billing_portal/sessions", h.handleBillingPortalSessions)
 	h.mux.HandleFunc("/v1/subscriptions", h.handleSubscriptions)
 	h.mux.HandleFunc("/v1/subscriptions/", h.handleSubscription)
+	h.mux.HandleFunc("/v1/subscription_items", h.handleSubscriptionItems)
+	h.mux.HandleFunc("/v1/subscription_items/", h.handleSubscriptionItem)
 	h.mux.HandleFunc("/v1/invoices/create_preview", h.handleInvoicePreview)
 	h.mux.HandleFunc("/v1/invoices", h.handleInvoices)
 	h.mux.HandleFunc("/v1/invoices/", h.handleInvoice)
@@ -446,24 +448,80 @@ func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id st
 }
 
 func (h *Handler) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
-		return
+	switch r.Method {
+	case http.MethodGet:
+		items, err := h.billing.ListSubscriptions(r.Context())
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		filtered := filterSubscriptions(items, r)
+		data := make([]map[string]any, 0, len(filtered))
+		for _, item := range filtered {
+			data = append(data, h.stripeSubscription(r, item))
+			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
+				break
+			}
+		}
+		writeResult(w, stripeList(r.URL.Path, data), nil)
+	case http.MethodPost:
+		subscription, err := h.createSubscriptionFromParams(r)
+		writeResult(w, h.stripeSubscription(r, subscription), err)
+	default:
+		methodNotAllowed(w, "GET, POST")
 	}
-	items, err := h.billing.ListSubscriptions(r.Context())
+}
+
+func (h *Handler) createSubscriptionFromParams(r *http.Request) (billing.Subscription, error) {
+	p, err := parseParams(r)
 	if err != nil {
-		writeResult(w, nil, err)
-		return
+		return billing.Subscription{}, err
 	}
-	filtered := filterSubscriptions(items, r)
-	data := make([]map[string]any, 0, len(filtered))
-	for _, item := range filtered {
-		data = append(data, h.stripeSubscription(r, item))
-		if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
-			break
+	customerID := p.first("customer", "customer_id")
+	items := subscriptionCreateItemsFromParams(p)
+	if customerID == "" {
+		return billing.Subscription{}, fmt.Errorf("%w: customer is required", billing.ErrInvalidInput)
+	}
+	if len(items) == 0 {
+		return billing.Subscription{}, fmt.Errorf("%w: at least one item is required", billing.ErrInvalidInput)
+	}
+	if err := validateCustomerExists(h.billing.GetCustomer(r.Context(), customerID)); err != nil {
+		return billing.Subscription{}, err
+	}
+	for _, item := range items {
+		if err := validatePriceExists(h.billing.GetPrice(r.Context(), item.PriceID)); err != nil {
+			return billing.Subscription{}, err
 		}
 	}
-	writeResult(w, stripeList(r.URL.Path, data), nil)
+	session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
+		CustomerID: customerID,
+		Mode:       "subscription",
+		LineItems:  items,
+	})
+	if err != nil {
+		return billing.Subscription{}, err
+	}
+	completed, err := h.billing.CompleteCheckout(r.Context(), session.ID, p.stringDefault("outcome", "payment_succeeded"))
+	if err != nil {
+		return billing.Subscription{}, err
+	}
+	subscription, err := h.billing.GetSubscription(r.Context(), completed.SubscriptionID)
+	if err != nil {
+		return billing.Subscription{}, err
+	}
+	metadata := p.metadata()
+	for _, key := range []string{"collection_method", "days_until_due", "cancel_at", "billing_cycle_anchor"} {
+		if value := p.string(key); value != "" {
+			if metadata == nil {
+				metadata = map[string]string{}
+			}
+			metadata[key] = value
+		}
+	}
+	if metadata == nil {
+		return subscription, nil
+	}
+	return h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{Metadata: metadata})
 }
 
 func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
@@ -505,6 +563,80 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	default:
 		methodNotAllowed(w, "GET, POST, DELETE")
 	}
+}
+
+func (h *Handler) handleSubscriptionItems(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		methodNotAllowed(w, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	subscriptionID := p.string("subscription")
+	priceID := p.first("price", "price_id")
+	if subscriptionID == "" {
+		writeResult(w, nil, fmt.Errorf("%w: subscription is required", billing.ErrInvalidInput))
+		return
+	}
+	if priceID == "" {
+		writeResult(w, nil, fmt.Errorf("%w: price is required", billing.ErrInvalidInput))
+		return
+	}
+	if err := validatePriceExists(h.billing.GetPrice(r.Context(), priceID)); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	current, err := h.billing.GetSubscription(r.Context(), subscriptionID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	items := append([]billing.LineItem{}, current.Items...)
+	items = append(items, billing.LineItem{PriceID: priceID, Quantity: p.int64Default("quantity", 1)})
+	subscription, err := h.billing.PatchSubscription(r.Context(), subscriptionID, billing.SubscriptionPatch{
+		Items:        items,
+		ReplaceItems: true,
+	})
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, h.stripeSubscriptionItem(r, subscription, subscription.Items[len(subscription.Items)-1], len(subscription.Items)-1))
+}
+
+func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/subscription_items/")
+	if id == "" || strings.Contains(id, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodDelete {
+		methodNotAllowed(w, "DELETE")
+		return
+	}
+	subscription, idx, found, err := h.findSubscriptionItem(r, id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if !found {
+		writeResult(w, nil, billing.ErrNotFound)
+		return
+	}
+	items := append([]billing.LineItem{}, subscription.Items[:idx]...)
+	items = append(items, subscription.Items[idx+1:]...)
+	if len(items) == 0 {
+		writeResult(w, nil, fmt.Errorf("%w: subscription items cannot be empty", billing.ErrInvalidInput))
+		return
+	}
+	if _, err := h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{Items: items, ReplaceItems: true}); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"id": id, "object": "subscription_item", "deleted": true})
 }
 
 func (h *Handler) handleInvoicePreview(w http.ResponseWriter, r *http.Request) {
@@ -1574,7 +1706,7 @@ func (h *Handler) stripeSubscriptionItem(r *http.Request, sub billing.Subscripti
 		}
 	}
 	return map[string]any{
-		"id":                   "si_" + sanitizeID(sub.ID+"_"+strconv.Itoa(idx)),
+		"id":                   subscriptionItemID(sub, idx),
 		"object":               "subscription_item",
 		"subscription":         sub.ID,
 		"price":                priceObject,
@@ -1584,6 +1716,10 @@ func (h *Handler) stripeSubscriptionItem(r *http.Request, sub billing.Subscripti
 		"current_period_end":   unix(sub.CurrentPeriodEnd),
 		"metadata":             map[string]string{},
 	}
+}
+
+func subscriptionItemID(sub billing.Subscription, idx int) string {
+	return "si_" + sanitizeID(sub.ID+"_"+strconv.Itoa(idx))
 }
 
 func stripeInvoice(invoice billing.Invoice) map[string]any {
@@ -1752,6 +1888,42 @@ func subscriptionItemsFromParams(p params, current billing.Subscription) []billi
 	return out
 }
 
+func subscriptionCreateItemsFromParams(p params) []billing.LineItem {
+	var out []billing.LineItem
+	for i := 0; i < 100; i++ {
+		priceID := p.first(fmt.Sprintf("items[%d][price]", i), fmt.Sprintf("items[%d][price_id]", i))
+		if priceID == "" {
+			if i == 0 {
+				priceID = p.first("price", "price_id")
+			}
+			if priceID == "" {
+				continue
+			}
+		}
+		quantity := p.int64Default(fmt.Sprintf("items[%d][quantity]", i), 1)
+		if quantity <= 0 {
+			quantity = 1
+		}
+		out = append(out, billing.LineItem{PriceID: priceID, Quantity: quantity})
+	}
+	return out
+}
+
+func (h *Handler) findSubscriptionItem(r *http.Request, itemID string) (billing.Subscription, int, bool, error) {
+	subscriptions, err := h.billing.ListSubscriptions(r.Context())
+	if err != nil {
+		return billing.Subscription{}, 0, false, err
+	}
+	for _, subscription := range subscriptions {
+		for idx := range subscription.Items {
+			if subscriptionItemID(subscription, idx) == itemID {
+				return subscription, idx, true, nil
+			}
+		}
+	}
+	return billing.Subscription{}, 0, false, nil
+}
+
 func unix(t time.Time) int64 {
 	if t.IsZero() {
 		return 0
@@ -1867,7 +2039,7 @@ func (h *Handler) emitCheckoutWebhooks(r *http.Request, result map[string]any) [
 	ctx := r.Context()
 	sequence := time.Now().UTC().UnixNano()
 	var emitted []webhooks.Event
-	for idx, item := range checkoutWebhookPayloads(result) {
+	for idx, item := range h.checkoutWebhookPayloads(r, result) {
 		event, _, err := h.webhooks.CreateEvent(ctx, webhooks.EventInput{
 			Type:           item.eventType,
 			ObjectPayload:  item.payload,
@@ -1992,7 +2164,7 @@ type webhookPayload struct {
 	payload   json.RawMessage
 }
 
-func checkoutWebhookPayloads(result map[string]any) []webhookPayload {
+func (h *Handler) checkoutWebhookPayloads(r *http.Request, result map[string]any) []webhookPayload {
 	session, _ := result["session"].(billing.CheckoutSession)
 	subscription, _ := result["subscription"].(billing.Subscription)
 	invoice, _ := result["invoice"].(billing.Invoice)
@@ -2005,31 +2177,32 @@ func checkoutWebhookPayloads(result map[string]any) []webhookPayload {
 			out = append(out, webhookPayload{eventType: eventType, objectID: objectID, payload: raw})
 		}
 	}
-	appendPayload("checkout.session.completed", session.ID, session)
+	appendPayload("checkout.session.completed", session.ID, stripeCheckoutSession(session))
 	if subscription.ID != "" {
-		appendPayload("customer.subscription.created", subscription.ID, subscription)
+		appendPayload("customer.subscription.created", subscription.ID, h.stripeSubscription(r, subscription))
 	}
 	if invoice.ID != "" {
-		appendPayload("invoice.created", invoice.ID, invoice)
-		appendPayload("invoice.finalized", invoice.ID, invoice)
+		appendPayload("invoice.created", invoice.ID, stripeInvoice(invoice))
+		appendPayload("invoice.finalized", invoice.ID, stripeInvoice(invoice))
 	}
 	if paymentIntent.ID != "" {
-		appendPayload("payment_intent.created", paymentIntent.ID, paymentIntent)
+		appendPayload("payment_intent.created", paymentIntent.ID, stripePaymentIntent(paymentIntent))
 		if paymentIntent.Status == "succeeded" {
-			appendPayload("payment_intent.succeeded", paymentIntent.ID, paymentIntent)
+			appendPayload("payment_intent.succeeded", paymentIntent.ID, stripePaymentIntent(paymentIntent))
 		} else {
-			appendPayload("payment_intent.payment_failed", paymentIntent.ID, paymentIntent)
+			appendPayload("payment_intent.payment_failed", paymentIntent.ID, stripePaymentIntent(paymentIntent))
 		}
 	}
 	if invoice.ID != "" {
 		if invoice.Status == "paid" {
-			appendPayload("invoice.payment_succeeded", invoice.ID, invoice)
+			appendPayload("invoice.payment_succeeded", invoice.ID, stripeInvoice(invoice))
+			appendPayload("invoice.paid", invoice.ID, stripeInvoice(invoice))
 		} else {
-			appendPayload("invoice.payment_failed", invoice.ID, invoice)
+			appendPayload("invoice.payment_failed", invoice.ID, stripeInvoice(invoice))
 		}
 	}
 	if subscription.ID != "" {
-		appendPayload("customer.subscription.updated", subscription.ID, subscription)
+		appendPayload("customer.subscription.updated", subscription.ID, h.stripeSubscription(r, subscription))
 	}
 	return out
 }

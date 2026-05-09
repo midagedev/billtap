@@ -20,11 +20,12 @@ var (
 )
 
 type Service struct {
-	repo             Repository
-	now              func() time.Time
-	client           *http.Client
-	storeRawPayloads bool
-	retentionDays    int
+	repo                Repository
+	now                 func() time.Time
+	client              *http.Client
+	storeRawPayloads    bool
+	retentionDays       int
+	signatureHeaderName string
 }
 
 func NewService(repo Repository) *Service {
@@ -36,10 +37,11 @@ func NewServiceWithOptions(repo Repository, opts ServiceOptions) *Service {
 		opts.RetentionDays = 30
 	}
 	return &Service{
-		repo:             repo,
-		now:              func() time.Time { return time.Now().UTC() },
-		storeRawPayloads: opts.StoreRawPayloads,
-		retentionDays:    opts.RetentionDays,
+		repo:                repo,
+		now:                 func() time.Time { return time.Now().UTC() },
+		storeRawPayloads:    opts.StoreRawPayloads,
+		retentionDays:       opts.RetentionDays,
+		signatureHeaderName: NormalizeSignatureHeaderName(opts.SignatureHeaderName),
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -299,8 +301,8 @@ func (s *Service) createAttempt(ctx context.Context, event Event, endpoint Endpo
 		ScheduledAt:   scheduledAt,
 		RequestURL:    endpoint.URL,
 		RequestHeaders: map[string]string{
-			SignatureHeaderName: signatureHeader,
-			"Content-Type":      "application/json",
+			s.signatureHeaderName: signatureHeader,
+			"Content-Type":        "application/json",
 		},
 		RequestBody: event.RawPayload,
 		Metadata:    metadata,

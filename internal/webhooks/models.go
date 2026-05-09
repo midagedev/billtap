@@ -167,8 +167,9 @@ type ReplayOptions struct {
 }
 
 type ServiceOptions struct {
-	StoreRawPayloads bool
-	RetentionDays    int
+	StoreRawPayloads    bool
+	RetentionDays       int
+	SignatureHeaderName string
 }
 
 type Repository interface {

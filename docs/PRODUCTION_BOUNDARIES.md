@@ -43,6 +43,7 @@ Supported boundary config:
 - `BILLTAP_RELAY_MODE=true|false`
 - `BILLTAP_RAW_PAYLOAD_STORAGE=store|metadata_only`
 - `BILLTAP_RETENTION_DAYS=30`
+- `BILLTAP_WEBHOOK_SIGNATURE_HEADER=Billtap-Signature|Stripe-Signature`
 
 ## Data Rules
 
@@ -76,6 +77,8 @@ Production:
 - Scenario app assertion response bodies are redacted and truncated before reports are written.
 - Requests containing real card fields such as `payment_method_data.card.number`, `card[cvc]`, or `card[exp_year]` are rejected.
 - Relay mode still sends signed webhook payloads to configured endpoints but stores only metadata in `webhook_events.raw_payload` and `delivery_attempts.request_body`.
+- `BILLTAP_WEBHOOK_SIGNATURE_HEADER` changes the delivery header name only; the
+  HMAC payload format remains `t=<unix_seconds>,v1=<hex_hmac_sha256>`.
 - Retention can redact old webhook raw payloads, delivery request bodies, and response bodies while preserving IDs, timestamps, statuses, event types, and metadata.
 - Audit log records webhook replay and delivery override actions.
 

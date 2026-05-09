@@ -169,7 +169,9 @@ func (s *Service) CreateCheckoutSession(ctx context.Context, in CheckoutSession)
 		in.Mode = "subscription"
 	}
 	now := s.now()
-	in.ID = id("cs")
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = id("cs")
+	}
 	in.Object = ObjectCheckoutSession
 	in.URL = "/checkout/" + in.ID
 	in.Status = "open"
@@ -187,6 +189,14 @@ func (s *Service) ListCheckoutSessions(ctx context.Context) ([]CheckoutSession, 
 }
 
 func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcome string) (CheckoutSession, error) {
+	return s.completeCheckout(ctx, sessionID, outcome, CheckoutCompletionOptions{})
+}
+
+func (s *Service) CompleteCheckoutWithOptions(ctx context.Context, sessionID string, outcome string, opts CheckoutCompletionOptions) (CheckoutSession, error) {
+	return s.completeCheckout(ctx, sessionID, outcome, opts)
+}
+
+func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcome string, opts CheckoutCompletionOptions) (CheckoutSession, error) {
 	session, err := s.repo.GetCheckoutSession(ctx, sessionID)
 	if err != nil {
 		return CheckoutSession{}, err
@@ -218,7 +228,7 @@ func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcom
 	paid := outcomeSpec.Paid
 
 	sub := Subscription{
-		ID:                 id("sub"),
+		ID:                 firstNonEmpty(opts.SubscriptionID, id("sub")),
 		Object:             ObjectSubscription,
 		CustomerID:         session.CustomerID,
 		Status:             "active",
@@ -228,7 +238,7 @@ func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcom
 		Metadata:           map[string]string{"checkout_session": session.ID},
 	}
 	invoice := Invoice{
-		ID:             id("in"),
+		ID:             firstNonEmpty(opts.InvoiceID, id("in")),
 		Object:         ObjectInvoice,
 		CustomerID:     session.CustomerID,
 		SubscriptionID: sub.ID,
@@ -242,7 +252,7 @@ func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcom
 		CreatedAt:      now,
 	}
 	intent := PaymentIntent{
-		ID:              id("pi"),
+		ID:              firstNonEmpty(opts.PaymentIntentID, id("pi")),
 		Object:          ObjectPaymentIntent,
 		CustomerID:      session.CustomerID,
 		InvoiceID:       invoice.ID,
@@ -624,12 +634,25 @@ type CheckoutCompletion struct {
 	PaymentIntent PaymentIntent
 }
 
+type CheckoutCompletionOptions struct {
+	SubscriptionID  string
+	InvoiceID       string
+	PaymentIntentID string
+}
+
 type TimelineFilter struct {
 	CustomerID        string
 	CheckoutSessionID string
 	SubscriptionID    string
 	InvoiceID         string
 	PaymentIntentID   string
+}
+
+func firstNonEmpty(value string, fallback string) string {
+	if strings.TrimSpace(value) != "" {
+		return strings.TrimSpace(value)
+	}
+	return fallback
 }
 
 func currentPortalSubscription(subscriptions []Subscription) *Subscription {

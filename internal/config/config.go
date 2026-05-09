@@ -9,40 +9,45 @@ import (
 )
 
 const (
-	envConfigPath        = "BILLTAP_CONFIG"
-	envAddr              = "BILLTAP_ADDR"
-	envDatabaseURL       = "BILLTAP_DATABASE_URL"
-	envStaticDir         = "BILLTAP_STATIC_DIR"
-	envEnvironment       = "BILLTAP_ENV"
-	envRelayMode         = "BILLTAP_RELAY_MODE"
-	envRawPayloadStorage = "BILLTAP_RAW_PAYLOAD_STORAGE"
-	envRetentionDays     = "BILLTAP_RETENTION_DAYS"
+	envConfigPath             = "BILLTAP_CONFIG"
+	envAddr                   = "BILLTAP_ADDR"
+	envDatabaseURL            = "BILLTAP_DATABASE_URL"
+	envStaticDir              = "BILLTAP_STATIC_DIR"
+	envEnvironment            = "BILLTAP_ENV"
+	envRelayMode              = "BILLTAP_RELAY_MODE"
+	envRawPayloadStorage      = "BILLTAP_RAW_PAYLOAD_STORAGE"
+	envRetentionDays          = "BILLTAP_RETENTION_DAYS"
+	envWebhookSignatureHeader = "BILLTAP_WEBHOOK_SIGNATURE_HEADER"
 
 	RawPayloadStore        = "store"
 	RawPayloadMetadataOnly = "metadata_only"
+
+	DefaultWebhookSignatureHeader = "Billtap-Signature"
 )
 
 type LookupFunc func(string) (string, bool)
 
 type Config struct {
-	Addr              string `json:"addr"`
-	DatabaseURL       string `json:"database_url"`
-	StaticDir         string `json:"static_dir"`
-	Environment       string `json:"environment"`
-	RelayMode         bool   `json:"relay_mode"`
-	RawPayloadStorage string `json:"raw_payload_storage"`
-	RetentionDays     int    `json:"retention_days"`
+	Addr                   string `json:"addr"`
+	DatabaseURL            string `json:"database_url"`
+	StaticDir              string `json:"static_dir"`
+	Environment            string `json:"environment"`
+	RelayMode              bool   `json:"relay_mode"`
+	RawPayloadStorage      string `json:"raw_payload_storage"`
+	RetentionDays          int    `json:"retention_days"`
+	WebhookSignatureHeader string `json:"webhook_signature_header"`
 }
 
 func Default() Config {
 	return Config{
-		Addr:              ":8080",
-		DatabaseURL:       ".billtap/billtap.db",
-		StaticDir:         "dist/app",
-		Environment:       "development",
-		RelayMode:         false,
-		RawPayloadStorage: RawPayloadStore,
-		RetentionDays:     30,
+		Addr:                   ":8080",
+		DatabaseURL:            ".billtap/billtap.db",
+		StaticDir:              "dist/app",
+		Environment:            "development",
+		RelayMode:              false,
+		RawPayloadStorage:      RawPayloadStore,
+		RetentionDays:          30,
+		WebhookSignatureHeader: DefaultWebhookSignatureHeader,
 	}
 }
 
@@ -95,6 +100,9 @@ func LoadWithLookup(path string, lookup LookupFunc) (Config, error) {
 		}
 		cfg.RetentionDays = days
 	}
+	if value, ok := lookup(envWebhookSignatureHeader); ok {
+		cfg.WebhookSignatureHeader = value
+	}
 	if cfg.RelayMode {
 		cfg.RawPayloadStorage = RawPayloadMetadataOnly
 	}
@@ -125,6 +133,9 @@ func (c Config) Validate() error {
 	}
 	if c.RetentionDays < 0 {
 		return errors.New("retention_days must be zero or greater")
+	}
+	if c.WebhookSignatureHeader == "" {
+		return errors.New("webhook_signature_header is required")
 	}
 	return nil
 }
@@ -166,6 +177,9 @@ func merge(base Config, override Config) Config {
 	}
 	if override.RetentionDays != 0 {
 		base.RetentionDays = override.RetentionDays
+	}
+	if override.WebhookSignatureHeader != "" {
+		base.WebhookSignatureHeader = override.WebhookSignatureHeader
 	}
 	return base
 }

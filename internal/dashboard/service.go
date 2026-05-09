@@ -456,7 +456,7 @@ func deliveryAttemptEvidence(attempt webhooks.DeliveryAttempt) DeliveryAttemptEv
 		ScheduledAt:     attempt.ScheduledAt,
 		DeliveredAt:     attempt.DeliveredAt,
 		RequestURL:      attempt.RequestURL,
-		SignatureHeader: attempt.RequestHeaders[webhooks.SignatureHeaderName],
+		SignatureHeader: webhooks.SignatureHeaderValue(attempt.RequestHeaders),
 		RequestHeaders:  attempt.RequestHeaders,
 		RequestBody:     attempt.RequestBody,
 		ResponseStatus:  attempt.ResponseStatus,
