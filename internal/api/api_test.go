@@ -107,6 +107,83 @@ func TestCheckoutFailureOutcome(t *testing.T) {
 	}
 }
 
+func TestCheckoutPaymentErrorSimulation(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"errors@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+
+	tests := []struct {
+		name          string
+		paymentMethod string
+		status        string
+		code          string
+		declineCode   string
+	}{
+		{
+			name:          "insufficient funds",
+			paymentMethod: "pm_card_visa_chargeDeclinedInsufficientFunds",
+			status:        "requires_payment_method",
+			code:          "card_declined",
+			declineCode:   "insufficient_funds",
+		},
+		{
+			name:          "requires action",
+			paymentMethod: "pm_card_threeDSecure2Required",
+			status:        "requires_action",
+			code:          "authentication_required",
+			declineCode:   "authentication_required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+				"customer":             {customer.ID},
+				"line_items[0][price]": {price.ID},
+			})
+			completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+				"payment_method": tt.paymentMethod,
+			})
+			var invoice billing.Invoice
+			if err := json.Unmarshal(completion["invoice"], &invoice); err != nil {
+				t.Fatalf("decode invoice: %v", err)
+			}
+			var paymentIntent billing.PaymentIntent
+			if err := json.Unmarshal(completion["payment_intent"], &paymentIntent); err != nil {
+				t.Fatalf("decode payment intent: %v", err)
+			}
+			if invoice.Status != "open" || paymentIntent.Status != tt.status {
+				t.Fatalf("invoice=%s payment_intent=%s, want open/%s", invoice.Status, paymentIntent.Status, tt.status)
+			}
+			if paymentIntent.FailureCode != tt.code || paymentIntent.DeclineCode != tt.declineCode || paymentIntent.PaymentMethodID != tt.paymentMethod {
+				t.Fatalf("payment intent = %#v, want code=%s decline=%s method=%s", paymentIntent, tt.code, tt.declineCode, tt.paymentMethod)
+			}
+
+			projected := getJSON[struct {
+				Status           string `json:"status"`
+				PaymentMethodID  string `json:"payment_method"`
+				LastPaymentError struct {
+					Type        string `json:"type"`
+					Code        string `json:"code"`
+					DeclineCode string `json:"decline_code"`
+					Message     string `json:"message"`
+				} `json:"last_payment_error"`
+			}](t, handler, "/v1/payment_intents/"+paymentIntent.ID)
+			if projected.Status != tt.status || projected.PaymentMethodID != tt.paymentMethod {
+				t.Fatalf("projected payment intent = %#v", projected)
+			}
+			if projected.LastPaymentError.Type != "card_error" || projected.LastPaymentError.Code != tt.code || projected.LastPaymentError.DeclineCode != tt.declineCode || projected.LastPaymentError.Message == "" {
+				t.Fatalf("last_payment_error = %#v, want card error code=%s decline=%s", projected.LastPaymentError, tt.code, tt.declineCode)
+			}
+		})
+	}
+}
+
 func TestWebhookEndpointDeliveryAndReplay(t *testing.T) {
 	var signatures []string
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

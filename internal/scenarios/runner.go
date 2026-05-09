@@ -324,7 +324,11 @@ func (r *Runner) completeCheckout(ctx context.Context, scenario Scenario, step S
 		return nil, errors.New("billing service is required for checkout.complete")
 	}
 	sessionRef := firstString(params, "sessionRef", "session", "session_id")
-	session, err := r.Billing.CompleteCheckout(ctx, sessionRef, stringDefault(params, "outcome", "payment_succeeded"))
+	outcome := firstString(params, "outcome", "paymentMethod", "payment_method", "payment_method_id")
+	if outcome == "" {
+		outcome = "payment_succeeded"
+	}
+	session, err := r.Billing.CompleteCheckout(ctx, sessionRef, outcome)
 	if err != nil {
 		return nil, err
 	}

@@ -195,8 +195,8 @@ func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcom
 		return session, nil
 	}
 
-	outcome = normalizeOutcome(outcome)
-	if outcome != "success" && outcome != "failure" {
+	outcomeSpec, ok := checkoutOutcomeFor(outcome)
+	if !ok {
 		return CheckoutSession{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
 	}
 
@@ -215,7 +215,7 @@ func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcom
 
 	now := s.now()
 	periodEnd := now.AddDate(0, 1, 0)
-	paid := outcome == "success"
+	paid := outcomeSpec.Paid
 
 	sub := Subscription{
 		ID:                 id("sub"),
@@ -242,14 +242,15 @@ func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcom
 		CreatedAt:      now,
 	}
 	intent := PaymentIntent{
-		ID:         id("pi"),
-		Object:     ObjectPaymentIntent,
-		CustomerID: session.CustomerID,
-		InvoiceID:  invoice.ID,
-		Amount:     total,
-		Currency:   currency,
-		Status:     "succeeded",
-		CreatedAt:  now,
+		ID:              id("pi"),
+		Object:          ObjectPaymentIntent,
+		CustomerID:      session.CustomerID,
+		InvoiceID:       invoice.ID,
+		Amount:          total,
+		Currency:        currency,
+		Status:          outcomeSpec.PaymentIntentStatus,
+		PaymentMethodID: outcomeSpec.PaymentMethodID,
+		CreatedAt:       now,
 	}
 	if !paid {
 		nextAttempt := now.Add(24 * time.Hour)
@@ -258,16 +259,16 @@ func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcom
 		invoice.AmountDue = total
 		invoice.AmountPaid = 0
 		invoice.NextPaymentAttempt = &nextAttempt
-		intent.Status = "requires_payment_method"
-		intent.FailureCode = "card_declined"
-		intent.FailureMessage = "Simulated checkout failure"
+		intent.FailureCode = outcomeSpec.FailureCode
+		intent.DeclineCode = outcomeSpec.DeclineCode
+		intent.FailureMessage = outcomeSpec.FailureMessage
 	}
 	sub.LatestInvoiceID = invoice.ID
 	invoice.PaymentIntentID = intent.ID
 
 	return s.repo.RecordCheckoutCompletion(ctx, CheckoutCompletion{
 		SessionID:     session.ID,
-		Outcome:       outcome,
+		Outcome:       outcomeSpec.Outcome,
 		CompletedAt:   now,
 		Subscription:  sub,
 		Invoice:       invoice,
@@ -746,13 +747,74 @@ func id(prefix string) string {
 	return prefix + "_" + hex.EncodeToString(b[:])
 }
 
-func normalizeOutcome(outcome string) string {
-	switch strings.ToLower(strings.TrimSpace(outcome)) {
-	case "", "success", "payment_succeeded", "succeeded", "paid":
-		return "success"
-	case "failure", "payment_failed", "failed", "card_declined", "insufficient_funds", "expired_card":
-		return "failure"
+type checkoutOutcomeSpec struct {
+	Outcome             string
+	Paid                bool
+	PaymentIntentStatus string
+	PaymentMethodID     string
+	FailureCode         string
+	DeclineCode         string
+	FailureMessage      string
+}
+
+func checkoutOutcomeFor(outcome string) (checkoutOutcomeSpec, bool) {
+	normalized := strings.ToLower(strings.TrimSpace(outcome))
+	switch normalized {
+	case "", "success", "payment_succeeded", "succeeded", "paid", "pm_card_visa":
+		return checkoutOutcomeSpec{
+			Outcome:             "success",
+			Paid:                true,
+			PaymentIntentStatus: "succeeded",
+			PaymentMethodID:     paymentMethodID(normalized),
+		}, true
+	case "failure", "payment_failed", "failed", "card_declined", "generic_decline", "pm_card_visa_chargedeclined":
+		return failedCheckoutOutcome("card_declined", paymentMethodID(normalized), "card_declined", "generic_decline", "Your card was declined."), true
+	case "insufficient_funds", "pm_card_visa_chargedeclinedinsufficientfunds":
+		return failedCheckoutOutcome("insufficient_funds", paymentMethodID(normalized), "card_declined", "insufficient_funds", "Your card has insufficient funds."), true
+	case "customer_payment_method_failed", "pm_card_chargecustomerfail":
+		return failedCheckoutOutcome("customer_payment_method_failed", paymentMethodID(normalized), "card_declined", "do_not_honor", "The customer's payment method was declined."), true
+	case "expired_card":
+		return failedCheckoutOutcome("expired_card", "", "expired_card", "expired_card", "Your card has expired."), true
+	case "incorrect_cvc":
+		return failedCheckoutOutcome("incorrect_cvc", "", "incorrect_cvc", "incorrect_cvc", "Your card's security code is incorrect."), true
+	case "processing_error":
+		return failedCheckoutOutcome("processing_error", "", "processing_error", "processing_error", "An error occurred while processing your card. Try again later."), true
+	case "missing_payment_method", "payment_method_missing":
+		return failedCheckoutOutcome("missing_payment_method", "", "payment_method_missing", "", "No payment method is available to complete this checkout."), true
+	case "authentication_required", "requires_action", "pm_card_threedsecure2required":
+		spec := failedCheckoutOutcome("authentication_required", paymentMethodID(normalized), "authentication_required", "authentication_required", "This payment requires authentication.")
+		spec.PaymentIntentStatus = "requires_action"
+		return spec, true
 	default:
-		return outcome
+		return checkoutOutcomeSpec{}, false
+	}
+}
+
+func failedCheckoutOutcome(outcome string, paymentMethodID string, code string, declineCode string, message string) checkoutOutcomeSpec {
+	return checkoutOutcomeSpec{
+		Outcome:             outcome,
+		Paid:                false,
+		PaymentIntentStatus: "requires_payment_method",
+		PaymentMethodID:     paymentMethodID,
+		FailureCode:         code,
+		DeclineCode:         declineCode,
+		FailureMessage:      message,
+	}
+}
+
+func paymentMethodID(normalizedOutcome string) string {
+	switch normalizedOutcome {
+	case "pm_card_visa":
+		return "pm_card_visa"
+	case "pm_card_visa_chargedeclined":
+		return "pm_card_visa_chargeDeclined"
+	case "pm_card_visa_chargedeclinedinsufficientfunds":
+		return "pm_card_visa_chargeDeclinedInsufficientFunds"
+	case "pm_card_chargecustomerfail":
+		return "pm_card_chargeCustomerFail"
+	case "pm_card_threedsecure2required":
+		return "pm_card_threeDSecure2Required"
+	default:
+		return ""
 	}
 }

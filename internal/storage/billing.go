@@ -252,9 +252,9 @@ func (s *SQLiteStore) RecordCheckoutCompletion(ctx context.Context, c billing.Ch
 		c.Invoice.ID, c.Invoice.CustomerID, c.Invoice.SubscriptionID, c.Invoice.Status, c.Invoice.Currency, c.Invoice.Subtotal, c.Invoice.Total, c.Invoice.AmountDue, c.Invoice.AmountPaid, c.Invoice.AttemptCount, encodeOptionalTime(c.Invoice.NextPaymentAttempt), c.Invoice.PaymentIntentID, encodeTime(c.Invoice.CreatedAt)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO payment_intents (id, customer_id, invoice_id, amount, currency, status, failure_code, failure_message, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.PaymentIntent.ID, c.PaymentIntent.CustomerID, c.PaymentIntent.InvoiceID, c.PaymentIntent.Amount, c.PaymentIntent.Currency, c.PaymentIntent.Status, c.PaymentIntent.FailureCode, c.PaymentIntent.FailureMessage, encodeTime(c.PaymentIntent.CreatedAt)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO payment_intents (id, customer_id, invoice_id, amount, currency, status, failure_code, failure_decline_code, failure_message, payment_method_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.PaymentIntent.ID, c.PaymentIntent.CustomerID, c.PaymentIntent.InvoiceID, c.PaymentIntent.Amount, c.PaymentIntent.Currency, c.PaymentIntent.Status, c.PaymentIntent.FailureCode, c.PaymentIntent.DeclineCode, c.PaymentIntent.FailureMessage, c.PaymentIntent.PaymentMethodID, encodeTime(c.PaymentIntent.CreatedAt)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `UPDATE checkout_sessions
@@ -413,7 +413,7 @@ func (s *SQLiteStore) ListInvoicesFiltered(ctx context.Context, filter billing.I
 }
 
 func (s *SQLiteStore) GetPaymentIntent(ctx context.Context, id string) (billing.PaymentIntent, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_message, created_at FROM payment_intents WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_decline_code, failure_message, payment_method_id, created_at FROM payment_intents WHERE id = ?`, id)
 	pi, err := scanPaymentIntent(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.PaymentIntent{}, billing.ErrNotFound
@@ -422,7 +422,7 @@ func (s *SQLiteStore) GetPaymentIntent(ctx context.Context, id string) (billing.
 }
 
 func (s *SQLiteStore) ListPaymentIntents(ctx context.Context) ([]billing.PaymentIntent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_message, created_at FROM payment_intents ORDER BY created_at DESC, id DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_decline_code, failure_message, payment_method_id, created_at FROM payment_intents ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -456,7 +456,7 @@ func (s *SQLiteStore) ListPaymentIntentsFiltered(ctx context.Context, filter bil
 		}
 		clauses = append(clauses, "invoice_id IN ("+strings.Join(placeholders, ",")+")")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_message, created_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_decline_code, failure_message, payment_method_id, created_at
 		FROM payment_intents WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at DESC, id DESC`, args...)
 	if err != nil {
 		return nil, err
@@ -622,7 +622,7 @@ func scanInvoice(row scanner) (billing.Invoice, error) {
 func scanPaymentIntent(row scanner) (billing.PaymentIntent, error) {
 	var pi billing.PaymentIntent
 	var createdAt string
-	if err := row.Scan(&pi.ID, &pi.CustomerID, &pi.InvoiceID, &pi.Amount, &pi.Currency, &pi.Status, &pi.FailureCode, &pi.FailureMessage, &createdAt); err != nil {
+	if err := row.Scan(&pi.ID, &pi.CustomerID, &pi.InvoiceID, &pi.Amount, &pi.Currency, &pi.Status, &pi.FailureCode, &pi.DeclineCode, &pi.FailureMessage, &pi.PaymentMethodID, &createdAt); err != nil {
 		return pi, err
 	}
 	pi.Object = billing.ObjectPaymentIntent
