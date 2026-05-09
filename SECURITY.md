@@ -6,9 +6,26 @@ Billtap is pre-release. No supported version line exists yet.
 
 ## Reporting A Vulnerability
 
-Open a private security advisory in the public hosting provider when available. If advisories are not configured yet, contact the maintainer through the repository owner profile.
+Open a private security advisory in the public hosting provider when available:
+
+```text
+https://github.com/midagedev/billtap/security/advisories/new
+```
+
+If advisories are not configured yet, contact the maintainer through the repository owner profile.
 
 Do not include real credentials, real customer data, or production payment payloads in reports.
+
+Report privately if the issue involves:
+
+- secret exposure
+- real card-data acceptance, storage, or leakage
+- webhook signature bypass or replay abuse
+- unsafe relay-mode behavior
+- production-boundary bypasses
+- redaction failures for credentials, signatures, cookies, tokens, or card-like values
+
+Public issues are appropriate for non-sensitive documentation questions or boundary clarifications that do not expose a vulnerability.
 
 ## Product Boundary
 

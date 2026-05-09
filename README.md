@@ -196,7 +196,15 @@ go run ./cmd/billtap scenario run examples/saas-adoption-contract.yml
 - Webhook contract: `specs/000-product/contracts/webhooks.md`
 - Changelog: `CHANGELOG.md`
 - Contributing: `CONTRIBUTING.md`
+- Code of conduct: `CODE_OF_CONDUCT.md`
+- Support: `SUPPORT.md`
 - Security: `SECURITY.md`
+
+## Community And Support
+
+Before opening an issue or pull request, read `CONTRIBUTING.md` and `SUPPORT.md`. Security reports and production-boundary bypasses should follow `SECURITY.md` rather than public issues.
+
+Public reports and examples must be sanitized. Do not include real card data, live credentials, production customer data, private company data, or production payment payloads.
 
 ## Release Process
 

@@ -1,0 +1,55 @@
+name: Security or boundary concern
+description: Report non-sensitive security concerns or production-boundary questions.
+title: "[Boundary]: "
+labels:
+  - security
+  - production-boundary
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this template only for non-sensitive boundary questions or reports that can be discussed publicly.
+
+        If the issue includes a vulnerability, secret exposure, real payment data, webhook-signature bypass, or relay-mode bypass, stop and follow SECURITY.md instead.
+  - type: checkboxes
+    id: disclosure
+    attributes:
+      label: Public disclosure check
+      options:
+        - label: This can be discussed publicly without exposing a vulnerability before maintainers can fix it.
+          required: true
+        - label: This report does not include secrets, real card data, real customer data, or production payment payloads.
+          required: true
+  - type: dropdown
+    id: concern
+    attributes:
+      label: Concern type
+      options:
+        - Production boundary documentation
+        - Relay mode behavior
+        - Data masking or redaction
+        - Retention policy
+        - Audit logging
+        - Real-payment confusion
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: scenario
+    attributes:
+      label: Scenario
+      description: Describe the sanitized scenario, expected boundary, and why the current behavior or documentation is unclear.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected boundary
+      description: What should Billtap allow, reject, mask, document, or make explicit?
+    validations:
+      required: true
+  - type: textarea
+    id: references
+    attributes:
+      label: Related documentation or code
+      description: Link to relevant docs, files, or sanitized examples.

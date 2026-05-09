@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/midagedev/billtap/security/advisories/new
+    about: Report vulnerabilities, secret exposure, real payment data handling, or webhook-signature bypasses privately.
+  - name: Support guide
+    url: https://github.com/midagedev/billtap/blob/main/SUPPORT.md
+    about: Choose between issues, pull requests, support questions, and security reporting.
+  - name: Production boundaries
+    url: https://github.com/midagedev/billtap/blob/main/docs/PRODUCTION_BOUNDARIES.md
+    about: Review what Billtap can and cannot do around relay mode and real payment data.

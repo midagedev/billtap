@@ -1,0 +1,65 @@
+name: Feature request
+description: Propose a Billtap sandbox capability or documentation improvement.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Billtap focuses on deterministic local development, CI billing scenarios, fixture-backed compatibility, webhook reliability, and controlled staging-adjacent debugging.
+
+        Requests for real payment processing, production payment dependency, or full provider parity are out of scope.
+  - type: checkboxes
+    id: boundary
+    attributes:
+      label: Scope check
+      options:
+        - label: This request keeps Billtap out of the live payment path.
+          required: true
+        - label: This request does not require Billtap to process real card data or live payment credentials.
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - API compatibility
+        - Billing state
+        - Checkout UI
+        - Portal UI
+        - Dashboard
+        - Webhooks
+        - Scenario runner
+        - Fixtures
+        - SaaS profile
+        - Production boundary
+        - Documentation
+        - Developer experience
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What billing test, integration workflow, or debugging gap does this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+      description: Describe the capability, public API, CLI command, fixture shape, UI behavior, or documentation change.
+    validations:
+      required: true
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility and fixtures
+      description: If this touches Stripe-like behavior, describe the fixture-backed behavior and known limitations.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Mention workarounds, provider sandbox behavior, or why existing Billtap flows do not cover this.
