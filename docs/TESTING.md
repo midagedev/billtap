@@ -52,6 +52,14 @@ Browser tests for:
 - webhook replay
 - scenario detail
 
+Run the release smoke for built UI routes with:
+
+```bash
+npm run smoke:web
+```
+
+The smoke command builds the React assets and Billtap Go binary, starts Billtap with an isolated temporary SQLite database, then checks `/app/dashboard/`, `/app/checkout/`, and `/app/portal/` in Chromium for key page text and JavaScript console errors. On a fresh CI runner, install the Chromium browser once with `npm run smoke:web:install`.
+
 ### Scenario tests
 
 Run scenario YAML files end to end:

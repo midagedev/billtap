@@ -96,6 +96,8 @@ go test ./...
 npm run typecheck
 npm run build
 npm run smoke:sample
+npm run smoke:web:install
+npm run smoke:web
 go build -o /tmp/billtap ./cmd/billtap
 docker build -t billtap:local .
 ```

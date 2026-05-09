@@ -13,13 +13,16 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "smoke:sample": "npm --prefix examples/sample-app run smoke"
+    "smoke:sample": "npm --prefix examples/sample-app run smoke",
+    "smoke:web": "node tests/web-smoke/smoke-web.mjs",
+    "smoke:web:install": "playwright install --with-deps chromium"
   },
   "dependencies": {
     "react": "^19.2.1",
     "react-dom": "^19.2.1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.59.1",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",

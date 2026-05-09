@@ -39,6 +39,9 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Install browser smoke dependencies
+        run: npm run smoke:web:install
+
       - name: Go tests
         run: go test ./...
 
@@ -50,6 +53,9 @@ jobs:
 
       - name: Sample app smoke
         run: npm run smoke:sample
+
+      - name: Web UI smoke
+        run: npm run smoke:web
 
       - name: Build Billtap binary
         run: go build -o /tmp/billtap ./cmd/billtap
