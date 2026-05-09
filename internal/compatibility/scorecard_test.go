@@ -26,6 +26,9 @@ func TestWriteArtifactsGeneratesPassingScorecard(t *testing.T) {
 	if scorecard.Summary.Imported == 0 || scorecard.Summary.Skipped == 0 || scorecard.Summary.Unsupported == 0 {
 		t.Fatalf("summary = %#v, want imported, skipped, and unsupported statuses", scorecard.Summary)
 	}
+	if scorecard.Summary.ReleaseBlocking < 20 {
+		t.Fatalf("release-blocking cases = %d, want expanded public readiness corpus", scorecard.Summary.ReleaseBlocking)
+	}
 	if scorecard.Summary.Mismatch != 0 || scorecard.Summary.Error != 0 {
 		t.Fatalf("summary = %#v, want no mismatches or errors", scorecard.Summary)
 	}
@@ -35,11 +38,20 @@ func TestWriteArtifactsGeneratesPassingScorecard(t *testing.T) {
 
 	jsonPath := filepath.Join(dir, "compatibility-scorecard.json")
 	mdPath := filepath.Join(dir, "compatibility-scorecard.md")
-	if !fileContains(t, jsonPath, `"scorecard_version": "l3-foundation-v1"`) {
+	if !fileContains(t, jsonPath, `"scorecard_version": "l3-public-readiness-v2"`) {
 		t.Fatalf("JSON scorecard missing version")
 	}
 	if !fileContains(t, jsonPath, `"mismatch": 0`) || !fileContains(t, jsonPath, `"error": 0`) {
 		t.Fatalf("JSON scorecard missing zero mismatch/error counts")
+	}
+	for _, id := range []string{
+		`"id": "prices.create.invalid_json_amount_type"`,
+		`"id": "subscription_items.create.invalid_quantity"`,
+		`"id": "checkout.complete.processing_error_outcome"`,
+	} {
+		if !fileContains(t, jsonPath, id) {
+			t.Fatalf("JSON scorecard missing %s", id)
+		}
 	}
 	if !fileContains(t, mdPath, "# Compatibility Scorecard") || !fileContains(t, mdPath, "`unsupported`") {
 		t.Fatalf("Markdown scorecard missing expected content")

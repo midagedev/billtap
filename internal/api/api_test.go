@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -465,6 +466,23 @@ func TestStripeLikeAPIErrorEnvelope(t *testing.T) {
 			t.Fatalf("error=%#v, want line_items parameter_missing", errBody.Error)
 		}
 	})
+
+	t.Run("error category mapping", func(t *testing.T) {
+		cases := []struct {
+			status int
+			want   string
+		}{
+			{status: http.StatusPaymentRequired, want: "card_error"},
+			{status: http.StatusTooManyRequests, want: "invalid_request_error"},
+			{status: http.StatusInternalServerError, want: "api_error"},
+		}
+		for _, tc := range cases {
+			got := stripeErrorFor(tc.status, errors.New("simulated"))
+			if got.Type != tc.want {
+				t.Fatalf("status %d error type = %q, want %q", tc.status, got.Type, tc.want)
+			}
+		}
+	})
 }
 
 func TestSupportedEndpointRequestValidation(t *testing.T) {
@@ -473,6 +491,19 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 	t.Run("unknown product parameter", func(t *testing.T) {
 		status, body := postFormStatus(t, handler, "/v1/products", url.Values{
 			"name":     {"Team"},
+			"nickname": {"unused"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_unknown" || errBody.Error.Param != "nickname" {
+			t.Fatalf("error=%#v, want unknown nickname", errBody.Error)
+		}
+	})
+
+	t.Run("unknown customer update parameter", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/customers/cus_missing", url.Values{
 			"nickname": {"unused"},
 		})
 		errBody := decodeErrorBody(t, body)
@@ -496,6 +527,50 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "unit_amount" {
 			t.Fatalf("error=%#v, want invalid unit_amount", errBody.Error)
+		}
+	})
+
+	t.Run("invalid JSON price amount type", func(t *testing.T) {
+		status, body := postJSONStatus(t, handler, "/v1/prices", map[string]any{
+			"product":     "prod_missing",
+			"currency":    "usd",
+			"unit_amount": 9.99,
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "unit_amount" {
+			t.Fatalf("error=%#v, want invalid unit_amount", errBody.Error)
+		}
+	})
+
+	t.Run("invalid price interval enum", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/prices", url.Values{
+			"product":             {"prod_missing"},
+			"currency":            {"usd"},
+			"unit_amount":         {"9900"},
+			"recurring[interval]": {"decade"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "recurring[interval]" {
+			t.Fatalf("error=%#v, want invalid recurring interval", errBody.Error)
+		}
+	})
+
+	t.Run("invalid price update active type", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/prices/price_missing", url.Values{
+			"active": {"maybe"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "active" {
+			t.Fatalf("error=%#v, want invalid active", errBody.Error)
 		}
 	})
 
@@ -525,6 +600,21 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 		if errBody.Error.Code != "resource_missing" {
 			t.Fatalf("error=%#v, want resource_missing", errBody.Error)
+		}
+	})
+
+	t.Run("checkout invalid mode", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":             {"cus_missing"},
+			"mode":                 {"payment"},
+			"line_items[0][price]": {"price_missing"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "mode" {
+			t.Fatalf("error=%#v, want invalid mode", errBody.Error)
 		}
 	})
 
@@ -593,6 +683,49 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("subscription create quantity must be positive", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/subscriptions", url.Values{
+			"customer":           {customer.ID},
+			"items[0][price]":    {price.ID},
+			"items[0][quantity]": {"0"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "items[0][quantity]" {
+			t.Fatalf("error=%#v, want invalid subscription item quantity", errBody.Error)
+		}
+	})
+
+	t.Run("subscription update cancel flag must be boolean", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/subscriptions/sub_missing", url.Values{
+			"cancel_at_period_end": {"maybe"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "cancel_at_period_end" {
+			t.Fatalf("error=%#v, want invalid cancel_at_period_end", errBody.Error)
+		}
+	})
+
+	t.Run("subscription item create quantity must be positive", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/subscription_items", url.Values{
+			"subscription": {"sub_missing"},
+			"price":        {price.ID},
+			"quantity":     {"0"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "quantity" {
+			t.Fatalf("error=%#v, want invalid quantity", errBody.Error)
+		}
+	})
+
 	t.Run("portal customer required", func(t *testing.T) {
 		status, body := postFormStatus(t, handler, "/v1/billing_portal/sessions", url.Values{})
 		errBody := decodeErrorBody(t, body)
@@ -614,6 +747,19 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 		if errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "url" {
 			t.Fatalf("error=%#v, want missing url", errBody.Error)
+		}
+	})
+
+	t.Run("webhook update active must be boolean", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/webhook_endpoints/we_missing", url.Values{
+			"active": {"maybe"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "active" {
+			t.Fatalf("error=%#v, want invalid active", errBody.Error)
 		}
 	})
 }

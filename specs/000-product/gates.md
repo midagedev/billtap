@@ -16,6 +16,7 @@
 | G9 | Release Candidate | public release |
 | G10 | sample-app Billtap Replacement Smoke | SaaS repo replacement proof |
 | G11 | Fixture Assertion Ergonomics | developer integration test adoption |
+| G12 | Public Release Readiness | community release |
 
 ## G0: Spec Readiness
 
@@ -152,3 +153,16 @@ Pass criteria:
 - Billtap can assert expected customers, products, prices, subscriptions, invoices, payment intents, and timeline evidence with structured pass/fail reports
 - sample-app's Billtap overlay uses a data-driven SaaS fixture pack rather than imperative catalog shell calls
 - sample-app's Billtap overlay has a one-shot assert gate that checks both Billtap persisted state and the existing Stripe compatibility proxy surface before `application server` starts
+
+## G12: Public Release Readiness
+
+Pass criteria:
+
+- public compatibility claims are tied to tests or release-blocking scorecard cases
+- scorecard has `mismatch=0`, `error=0`, and `passed=true`
+- supported request validation rejects unknown, wrong-type, missing, and invalid enum/quantity cases for the public subset
+- deterministic payment-error simulation covers the documented checkout aliases
+- release docs name source-only distribution state and artifact boundaries
+- release checklist includes sample-app scenario preconditions
+- public docs do not imply real payment processing, full Stripe parity, or production payment dependency
+- `LICENSE` exists before public community release

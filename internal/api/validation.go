@@ -21,6 +21,7 @@ var (
 	retryBackoffParamRE   = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
 	checkoutLineItemRE    = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
 	legacyLineItemParamRE = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
+	subscriptionItemRE    = regexp.MustCompile(`^items\[(\d+)\]\[(price|price_id|quantity)\]$`)
 )
 
 type validationError struct {
@@ -203,6 +204,13 @@ func validateCustomerCreate(p params) error {
 	})
 }
 
+func validateCustomerUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"email", "name"},
+		AllowMetadata: true,
+	})
+}
+
 func validateProductCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:       []string{"id", "name", "description", "active"},
@@ -236,12 +244,43 @@ func validatePriceCreate(p params) error {
 			"recurring[interval_count]",
 			"active",
 		},
-		Required:      []string{"currency", "unit_amount"},
-		RequiredAny:   [][]string{{"product", "product_id"}},
-		Int64Params:   []string{"unit_amount", "recurring[interval_count]"},
-		NonNegative:   []string{"unit_amount"},
-		BoolParams:    []string{"active"},
-		EnumParams:    map[string][]string{"recurring[interval]": {"day", "week", "month", "year"}},
+		Required:    []string{"currency", "unit_amount"},
+		RequiredAny: [][]string{{"product", "product_id"}},
+		Int64Params: []string{"unit_amount", "recurring[interval_count]"},
+		NonNegative: []string{"unit_amount"},
+		BoolParams:  []string{"active"},
+		EnumParams: map[string][]string{
+			"recurring[interval]": {"day", "week", "month", "year"},
+			"recurring_interval":  {"day", "week", "month", "year"},
+			"interval":            {"day", "week", "month", "year"},
+		},
+		AllowMetadata: true,
+	})
+}
+
+func validatePriceUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"product",
+			"product_id",
+			"currency",
+			"unit_amount",
+			"lookup_key",
+			"lookupKey",
+			"recurring[interval]",
+			"recurring_interval",
+			"interval",
+			"recurring[interval_count]",
+			"active",
+		},
+		Int64Params: []string{"unit_amount", "recurring[interval_count]"},
+		NonNegative: []string{"unit_amount"},
+		BoolParams:  []string{"active"},
+		EnumParams: map[string][]string{
+			"recurring[interval]": {"day", "week", "month", "year"},
+			"recurring_interval":  {"day", "week", "month", "year"},
+			"interval":            {"day", "week", "month", "year"},
+		},
 		AllowMetadata: true,
 	})
 }
@@ -271,6 +310,73 @@ func validateCheckoutSessionCreate(p params) error {
 	return nil
 }
 
+func validateSubscriptionCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"customer",
+			"customer_id",
+			"price",
+			"price_id",
+			"collection_method",
+			"days_until_due",
+			"cancel_at",
+			"billing_cycle_anchor",
+			"outcome",
+		},
+		AllowedRegex: []*regexp.Regexp{subscriptionItemRE},
+		RequiredAny:  [][]string{{"customer", "customer_id"}},
+		Int64Params:  []string{"days_until_due", "cancel_at", "billing_cycle_anchor"},
+		Positive:     []string{"days_until_due"},
+		EnumParams: map[string][]string{
+			"collection_method": {"charge_automatically", "send_invoice"},
+		},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	itemIndexes := p.subscriptionItemIndexes()
+	if len(itemIndexes) == 0 && !p.hasAny("price", "price_id") {
+		return missingParam("items")
+	}
+	for idx := range itemIndexes {
+		quantityKey := fmt.Sprintf("items[%d][quantity]", idx)
+		if err := p.validateMin(quantityKey, 1); err != nil {
+			return err
+		}
+		if p.has(quantityKey) && !p.hasAny(fmt.Sprintf("items[%d][price]", idx), fmt.Sprintf("items[%d][price_id]", idx)) {
+			return missingParam(fmt.Sprintf("items[%d][price]", idx))
+		}
+	}
+	return nil
+}
+
+func validateSubscriptionUpdate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed:       []string{"cancel_at_period_end"},
+		AllowedRegex:  []*regexp.Regexp{subscriptionItemRE},
+		BoolParams:    []string{"cancel_at_period_end"},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	for idx := range p.subscriptionItemIndexes() {
+		if err := p.validateMin(fmt.Sprintf("items[%d][quantity]", idx), 1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateSubscriptionItemCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"subscription", "price", "price_id", "quantity"},
+		Required:    []string{"subscription"},
+		RequiredAny: [][]string{{"price", "price_id"}},
+		Int64Params: []string{"quantity"},
+		Positive:    []string{"quantity"},
+	})
+}
+
 func validateBillingPortalSessionCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:     []string{"customer", "customer_id", "return_url"},
@@ -288,6 +394,16 @@ func validateWebhookEndpointCreate(p params) error {
 	})
 }
 
+func validateWebhookEndpointUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:      []string{"url", "secret", "retry_max_attempts", "active"},
+		AllowedRegex: []*regexp.Regexp{enabledEventsParamRE, retryBackoffParamRE},
+		Int64Params:  []string{"retry_max_attempts"},
+		Positive:     []string{"retry_max_attempts"},
+		BoolParams:   []string{"active"},
+	})
+}
+
 func (p params) lineItemIndexes() map[int]struct{} {
 	indexes := map[int]struct{}{}
 	for key := range p.values {
@@ -302,6 +418,22 @@ func (p params) lineItemIndexes() map[int]struct{} {
 			}
 			indexes[idx] = struct{}{}
 		}
+	}
+	return indexes
+}
+
+func (p params) subscriptionItemIndexes() map[int]struct{} {
+	indexes := map[int]struct{}{}
+	for key := range p.values {
+		matches := subscriptionItemRE.FindStringSubmatch(key)
+		if len(matches) != 3 {
+			continue
+		}
+		idx, err := strconv.Atoi(matches[1])
+		if err != nil {
+			continue
+		}
+		indexes[idx] = struct{}{}
 	}
 	return indexes
 }

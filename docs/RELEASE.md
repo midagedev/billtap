@@ -19,6 +19,10 @@ The `v0.1.0` release should make three public claims:
   `docs/COMPATIBILITY.md`.
 - Billtap can be built, tested, run, and smoke-checked from a clean checkout.
 
+Release blocker: the project owner must add a `LICENSE` file before publishing
+the repository as a public community project or accepting external
+contributions.
+
 ## Required Public Statements
 
 Every release note must state:
@@ -160,6 +164,11 @@ docker build -t billtap:v0.1.0 .
 If the tag has not been pushed yet, run the same commands against the release
 branch before tagging.
 
+Before running this against a public release, confirm that
+`https://github.com/midagedev/billtap.git` is the intended public canonical
+repository and that the tag or release branch is visible to the intended
+audience.
+
 ## Artifact Policy
 
 For `v0.1.0`:
@@ -179,6 +188,7 @@ registry publishing. Add those steps here before claiming them.
 Block the release if any of these are true:
 
 - Required verification fails without a documented accepted deferral.
+- `LICENSE` is missing or does not match the intended public license.
 - Public docs imply full Stripe parity.
 - Public docs imply real payment processing.
 - Public docs include live credentials, real customer data, private hostnames,

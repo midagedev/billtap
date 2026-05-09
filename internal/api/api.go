@@ -141,6 +141,10 @@ func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := validateCustomerUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		customer, err := h.billing.UpdateCustomer(r.Context(), id, billing.Customer{
 			Email:    p.string("email"),
 			Name:     p.string("name"),
@@ -276,6 +280,10 @@ func (h *Handler) handlePrice(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 		p, err := parseParams(r)
 		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validatePriceUpdate(p); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -477,6 +485,9 @@ func (h *Handler) createSubscriptionFromParams(r *http.Request) (billing.Subscri
 	if err != nil {
 		return billing.Subscription{}, err
 	}
+	if err := validateSubscriptionCreate(p); err != nil {
+		return billing.Subscription{}, err
+	}
 	customerID := p.first("customer", "customer_id")
 	items := subscriptionCreateItemsFromParams(p)
 	if customerID == "" {
@@ -540,6 +551,10 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		if err := validateSubscriptionUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		replaceItems := hasSubscriptionItemPatch(p)
 		var items []billing.LineItem
 		if replaceItems {
@@ -572,6 +587,10 @@ func (h *Handler) handleSubscriptionItems(w http.ResponseWriter, r *http.Request
 	}
 	p, err := parseParams(r)
 	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateSubscriptionItemCreate(p); err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
@@ -808,6 +827,10 @@ func (h *Handler) handleWebhookEndpoint(w http.ResponseWriter, r *http.Request) 
 	case http.MethodPost:
 		p, err := parseParams(r)
 		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateWebhookEndpointUpdate(p); err != nil {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
@@ -1371,7 +1394,9 @@ func mustReadRequestBody(r *http.Request) []byte {
 func parseParams(r *http.Request) (params, error) {
 	if strings.Contains(r.Header.Get("Content-Type"), "application/json") {
 		var raw map[string]any
-		if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		decoder := json.NewDecoder(r.Body)
+		decoder.UseNumber()
+		if err := decoder.Decode(&raw); err != nil {
 			return params{}, err
 		}
 		if security.ContainsCardDataAny(raw) {
@@ -1382,8 +1407,8 @@ func parseParams(r *http.Request) (params, error) {
 			switch v := value.(type) {
 			case string:
 				values[key] = v
-			case float64:
-				values[key] = strconv.FormatInt(int64(v), 10)
+			case json.Number:
+				values[key] = v.String()
 			case bool:
 				values[key] = strconv.FormatBool(v)
 			case map[string]any:
@@ -1996,6 +2021,11 @@ func sanitizeID(value string) string {
 
 func writeResult(w http.ResponseWriter, value any, err error) {
 	if err != nil {
+		var validationErr *validationError
+		if errors.As(err, &validationErr) {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		switch {
 		case errors.Is(err, billing.ErrNotFound):
 			writeError(w, http.StatusNotFound, err)

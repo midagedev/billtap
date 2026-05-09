@@ -13,9 +13,11 @@
 Run the checks that match the change:
 
 - [ ] `go test ./...`
+- [ ] `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
 - [ ] `npm run typecheck`
 - [ ] `npm run build`
 - [ ] `npm run smoke:sample`
+- [ ] `npm run smoke:sdk`
 - [ ] `go run ./cmd/billtap scenario run examples/subscription-payment-retry.yml`
 - [ ] `go run ./cmd/billtap scenario run examples/saas-adoption-contract.yml`
 - [ ] Not applicable, documentation-only change

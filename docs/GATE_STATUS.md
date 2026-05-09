@@ -16,10 +16,42 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G9 Release Candidate | Passed locally | Dockerfile, sample app, public examples, release checklist |
 | G10 Fixture Integration Smoke | Passed locally | Fixture apply/snapshot/assert APIs support deterministic integration setup |
 | G11 Assertion Ergonomics | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots |
+| G12 Public Release Readiness | Blocked on license | Public claims are tied to tests/scorecard cases; scorecard corpus has 28 release-blocking cases; owner-selected `LICENSE` is still required before community release |
 
 ## Current Public Claim
 
-Billtap is a source-only local billing sandbox. It can be built, tested, run, and smoke-checked from this repository, but it is not yet published as a package or Docker image.
+Billtap is a source-only local billing sandbox. It can be built, tested, run,
+and smoke-checked from this repository, but it is not yet published as a package
+or Docker image. It is not ready for public community release until the project
+owner adds a `LICENSE` file.
+
+## Current Compatibility Evidence
+
+- Scorecard version: `l3-public-readiness-v2`
+- Release-blocking scorecard cases: 28
+- Required scorecard release result: `mismatch=0`, `error=0`, `passed=true`
+- Coverage focus: request validation, idempotency mismatch, deterministic
+  checkout payment-error aliases
+
+## Last Local Verification
+
+Verified on 2026-05-09 from branch `codex/public-readiness-hardening`:
+
+- `go test ./...`
+- `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
+  - result: `imported=28 skipped=1 unsupported=1 mismatch=0 error=0`
+- `npm run typecheck`
+- `npm run build`
+- `npm run smoke:sample`
+- `npm run smoke:sdk`
+- `npm run smoke:web:install`
+- `npm run smoke:web`
+- `go build -o /tmp/billtap ./cmd/billtap`
+- `docker build -t billtap:local .`
+- `/tmp/billtap scenario run examples/subscription-payment-retry.yml`
+- `/tmp/billtap scenario run examples/saas-adoption-contract.yml`
+
+The license blocker remains open despite successful local verification.
 
 ## Required Release Verification
 
@@ -34,7 +66,9 @@ npm run smoke:web:install
 npm run smoke:web
 go build -o /tmp/billtap ./cmd/billtap
 docker build -t billtap:local .
+PORT=3300 npm --prefix examples/sample-app start
 go run ./cmd/billtap scenario run examples/subscription-payment-retry.yml
+curl -fsS -X POST http://127.0.0.1:3300/test/reset
 go run ./cmd/billtap scenario run examples/saas-adoption-contract.yml
 ```
 

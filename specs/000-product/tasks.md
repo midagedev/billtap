@@ -230,3 +230,22 @@ Suggested agents:
 Gate:
 
 - [x] G11 Fixture Assertion Ergonomics
+
+## Phase 12: Public Release Readiness
+
+- [x] T120 Tie public compatibility claims to automated tests and release-blocking scorecard cases
+- [x] T121 Fix JSON numeric validation so decimal integer fields are rejected instead of truncated
+- [x] T122 Add explicit validation for supported update endpoints and subscription item quantities
+- [x] T123 Expand deterministic payment-error scorecard cases for documented checkout aliases
+- [x] T124 Document source-only release state, release blockers, and public claim boundaries
+- [ ] T125 Add project-owner-selected `LICENSE` before public community release
+
+Suggested agents:
+
+- Compatibility Agent
+- Release Agent
+- Security Agent
+
+Gate:
+
+- [ ] G12 Public Release Readiness
