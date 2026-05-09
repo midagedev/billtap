@@ -84,11 +84,13 @@ Every release note must state:
 
 8. Wait for the `Container Image` workflow on the tag to publish GHCR tags.
 
-   Expected release image tags:
+Expected release image tags:
 
    - `ghcr.io/midagedev/billtap:0.1.0`
    - `ghcr.io/midagedev/billtap:0.1`
    - `ghcr.io/midagedev/billtap:sha-<short-sha>`
+
+   Images are published for `linux/amd64` and `linux/arm64`.
 
    The `main` branch image is also published as:
 
