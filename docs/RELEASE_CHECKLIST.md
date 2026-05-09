@@ -8,6 +8,8 @@ These checks are automated by the `CI / Release gate` GitHub Actions workflow an
 - `npm run typecheck`
 - `npm run build`
 - `npm run smoke:sample`
+- `npm run smoke:web:install`
+- `npm run smoke:web`
 - `go build -o /tmp/billtap ./cmd/billtap`
 - `docker build -t billtap:local .`
 - `/tmp/billtap scenario run examples/subscription-payment-retry.yml`
