@@ -24,6 +24,28 @@ fixture, a test, and an explicit compatibility note.
 | Partial | Useful for smoke tests, but not a full provider behavior model. |
 | Unsupported | Not implemented, not claimed, or intentionally out of scope. |
 
+## Compatibility Scorecard
+
+The offline compatibility scorecard can be generated without external services:
+
+```bash
+go run ./cmd/billtap compatibility scorecard --output-dir dist/compatibility
+```
+
+It writes:
+
+- `compatibility-scorecard.json`
+- `compatibility-scorecard.md`
+- `replay-bundles/*.json` for any `mismatch` or `error` case
+
+Scorecard statuses are:
+
+- `imported`: case ran against Billtap and matched the normalized expectation.
+- `skipped`: case is in the corpus but intentionally not run by the offline lane.
+- `unsupported`: case documents unsupported behavior from this compatibility contract.
+- `mismatch`: case ran but normalized actual behavior differed from expectation.
+- `error`: the scorecard runner or Billtap returned an unexpected internal error.
+
 ## Supported Stripe-Like API Subset
 
 Base path: `/v1`

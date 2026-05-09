@@ -66,6 +66,20 @@ steps:
 	}
 }
 
+func TestRunCompatibilityWritesScorecard(t *testing.T) {
+	dir := t.TempDir()
+	code := runCompatibility([]string{"scorecard", "--output-dir", dir})
+	if code != scenarios.ExitPass {
+		t.Fatalf("exit code = %d, want %d", code, scenarios.ExitPass)
+	}
+	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.json"), `"mismatch": 0`) {
+		t.Fatalf("JSON scorecard missing zero mismatch count")
+	}
+	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.md"), "# Compatibility Scorecard") {
+		t.Fatalf("Markdown scorecard missing heading")
+	}
+}
+
 func TestRunScenarioReturnsInvalidConfigExitCode(t *testing.T) {
 	dir := t.TempDir()
 	scenarioPath := filepath.Join(dir, "bad.yml")

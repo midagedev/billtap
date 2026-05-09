@@ -5,6 +5,7 @@
 These checks are automated by the `CI / Release gate` GitHub Actions workflow and should be configured as required for PRs and protected merges.
 
 - `go test ./...`
+- `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
 - `npm run typecheck`
 - `npm run build`
 - `npm run smoke:sample`

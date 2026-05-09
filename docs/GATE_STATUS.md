@@ -25,6 +25,7 @@ Billtap is a source-only local billing sandbox. It can be built, tested, run, an
 
 ```bash
 go test ./...
+go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility
 npm run typecheck
 npm run build
 npm run smoke:sample

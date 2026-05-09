@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/hckim/billtap/internal/billing"
+	"github.com/hckim/billtap/internal/compatibility"
 	"github.com/hckim/billtap/internal/config"
 	"github.com/hckim/billtap/internal/scenarios"
 	"github.com/hckim/billtap/internal/server"
@@ -22,8 +23,17 @@ import (
 )
 
 func main() {
-	if len(os.Args) > 1 && os.Args[1] == "scenario" {
-		os.Exit(runScenario(os.Args[2:]))
+	args := os.Args[1:]
+	if len(args) > 0 && args[0] == "--" {
+		args = args[1:]
+	}
+	if len(args) > 0 {
+		switch args[0] {
+		case "scenario":
+			os.Exit(runScenario(args[1:]))
+		case "compatibility":
+			os.Exit(runCompatibility(args[1:]))
+		}
 	}
 
 	configPath := flag.String("config", "", "optional path to a JSON config file")
@@ -69,6 +79,63 @@ func main() {
 		slog.Error("serve", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runCompatibility(args []string) int {
+	if len(args) == 0 || args[0] != "scorecard" {
+		fmt.Fprintln(os.Stderr, "usage: billtap compatibility scorecard [--output-dir path]")
+		return scenarios.ExitInvalidConfig
+	}
+
+	outputDir, err := parseCompatibilityScorecardArgs(args[1:])
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "usage: billtap compatibility scorecard [--output-dir path]")
+		return scenarios.ExitInvalidConfig
+	}
+
+	scorecard, err := compatibility.WriteArtifacts(context.Background(), compatibility.Options{OutputDir: outputDir})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return scenarios.ExitRuntimeFailure
+	}
+	fmt.Fprintf(os.Stdout, "compatibility scorecard wrote %s imported=%d skipped=%d unsupported=%d mismatch=%d error=%d\n",
+		outputDir,
+		scorecard.Summary.Imported,
+		scorecard.Summary.Skipped,
+		scorecard.Summary.Unsupported,
+		scorecard.Summary.Mismatch,
+		scorecard.Summary.Error,
+	)
+	if !scorecard.Summary.Passed {
+		return scenarios.ExitAssertionFailed
+	}
+	return scenarios.ExitPass
+}
+
+func parseCompatibilityScorecardArgs(args []string) (string, error) {
+	outputDir := compatibility.DefaultOutputDir
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--output-dir":
+			if i+1 >= len(args) {
+				return "", fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			outputDir = args[i]
+		case strings.HasPrefix(arg, "--output-dir="):
+			outputDir = strings.TrimPrefix(arg, "--output-dir=")
+		case strings.HasPrefix(arg, "-"):
+			return "", fmt.Errorf("unknown flag %s", arg)
+		default:
+			return "", fmt.Errorf("unexpected argument %s", arg)
+		}
+	}
+	if strings.TrimSpace(outputDir) == "" {
+		return "", fmt.Errorf("output directory is required")
+	}
+	return outputDir, nil
 }
 
 func runScenario(args []string) int {
