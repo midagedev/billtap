@@ -75,6 +75,15 @@ func TestRunCompatibilityWritesScorecard(t *testing.T) {
 	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.json"), `"mismatch": 0`) {
 		t.Fatalf("JSON scorecard missing zero mismatch count")
 	}
+	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.json"), `"error": 0`) {
+		t.Fatalf("JSON scorecard missing zero error count")
+	}
+	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.json"), `"passed": true`) {
+		t.Fatalf("JSON scorecard missing passed true")
+	}
+	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.json"), `"release_blocking": 28`) {
+		t.Fatalf("JSON scorecard missing expected release-blocking count")
+	}
 	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.md"), "# Compatibility Scorecard") {
 		t.Fatalf("Markdown scorecard missing heading")
 	}

@@ -10,6 +10,8 @@ This directory contains the public product, architecture, testing, and release n
 - `COMPATIBILITY.md`: supported and unsupported Stripe-like behavior
 - `API_VALIDATION_AND_ERROR_SIMULATION.md`: Stripe-like validation and
   deterministic error-simulation target
+- `PUBLIC_RELEASE_READINESS.md`: public release readiness bar, current evidence,
+  and blockers
 - `TESTING.md`: verification strategy and scenario coverage
 - `PRODUCTION_BOUNDARIES.md`: real-payment and relay-mode safety boundaries
 

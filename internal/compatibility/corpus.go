@@ -67,6 +67,50 @@ func builtinCorpus() []caseSpec {
 			},
 		},
 		{
+			ID:              "customers.create.unknown_param",
+			Name:            "Customer create rejects unknown parameter",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "create customer with unknown nickname",
+				Method: http.MethodPost,
+				Path:   "/v1/customers",
+				Params: map[string]string{"email": "scorecard@example.test", "nickname": "legacy"},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_unknown",
+					Param: "nickname",
+				},
+			},
+		},
+		{
+			ID:              "customers.update.unknown_param",
+			Name:            "Customer update rejects unknown parameter",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "update customer with unknown nickname",
+				Method: http.MethodPost,
+				Path:   "/v1/customers/cus_missing",
+				Params: map[string]string{"nickname": "legacy"},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_unknown",
+					Param: "nickname",
+				},
+			},
+		},
+		{
 			ID:              "prices.create.invalid_amount_type",
 			Name:            "Price create rejects invalid amount type",
 			Category:        "request-validation",
@@ -93,6 +137,81 @@ func builtinCorpus() []caseSpec {
 			},
 		},
 		{
+			ID:              "prices.create.invalid_json_amount_type",
+			Name:            "Price create rejects JSON decimal amount",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "create price with decimal JSON amount",
+				Method: http.MethodPost,
+				Path:   "/v1/prices",
+				JSON: map[string]any{
+					"product":     "prod_missing",
+					"currency":    "usd",
+					"unit_amount": 9.99,
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "unit_amount",
+				},
+			},
+		},
+		{
+			ID:              "prices.create.invalid_interval",
+			Name:            "Price create rejects invalid recurring interval",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "create price with invalid interval",
+				Method: http.MethodPost,
+				Path:   "/v1/prices",
+				Params: map[string]string{
+					"product":             "prod_missing",
+					"currency":            "usd",
+					"unit_amount":         "4900",
+					"recurring[interval]": "decade",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "recurring[interval]",
+				},
+			},
+		},
+		{
+			ID:              "prices.update.invalid_active",
+			Name:            "Price update rejects invalid active flag",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "update price with invalid active flag",
+				Method: http.MethodPost,
+				Path:   "/v1/prices/price_missing",
+				Params: map[string]string{"active": "maybe"},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "active",
+				},
+			},
+		},
+		{
 			ID:              "prices.create.missing_product",
 			Name:            "Price create requires a product",
 			Category:        "request-validation",
@@ -114,6 +233,58 @@ func builtinCorpus() []caseSpec {
 					Type:  "invalid_request_error",
 					Code:  "parameter_missing",
 					Param: "product",
+				},
+			},
+		},
+		{
+			ID:              "checkout.sessions.create.invalid_mode",
+			Name:            "Checkout session create rejects unsupported mode",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "create checkout session with payment mode",
+				Method: http.MethodPost,
+				Path:   "/v1/checkout/sessions",
+				Params: map[string]string{
+					"customer":             "cus_missing",
+					"mode":                 "payment",
+					"line_items[0][price]": "price_missing",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "mode",
+				},
+			},
+		},
+		{
+			ID:              "checkout.sessions.create.invalid_quantity",
+			Name:            "Checkout session create rejects non-positive quantity",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "create checkout session with quantity zero",
+				Method: http.MethodPost,
+				Path:   "/v1/checkout/sessions",
+				Params: map[string]string{
+					"customer":                "cus_missing",
+					"line_items[0][price]":    "price_missing",
+					"line_items[0][quantity]": "0",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "line_items[0][quantity]",
 				},
 			},
 		},
@@ -157,6 +328,127 @@ func builtinCorpus() []caseSpec {
 					Type:  "invalid_request_error",
 					Code:  "parameter_missing",
 					Param: "customer",
+				},
+			},
+		},
+		{
+			ID:              "webhook_endpoints.create.invalid_retry_max_attempts",
+			Name:            "Webhook endpoint create rejects invalid retry count",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "create webhook endpoint with invalid retry count",
+				Method: http.MethodPost,
+				Path:   "/v1/webhook_endpoints",
+				Params: map[string]string{
+					"url":                "http://127.0.0.1/webhook",
+					"retry_max_attempts": "abc",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "retry_max_attempts",
+				},
+			},
+		},
+		{
+			ID:              "webhook_endpoints.update.invalid_active",
+			Name:            "Webhook endpoint update rejects invalid active flag",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "update webhook endpoint with invalid active flag",
+				Method: http.MethodPost,
+				Path:   "/v1/webhook_endpoints/we_missing",
+				Params: map[string]string{"active": "maybe"},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "active",
+				},
+			},
+		},
+		{
+			ID:              "subscriptions.create.invalid_quantity",
+			Name:            "Subscription create rejects non-positive item quantity",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "create subscription with quantity zero",
+				Method: http.MethodPost,
+				Path:   "/v1/subscriptions",
+				Params: map[string]string{
+					"customer":           "cus_missing",
+					"items[0][price]":    "price_missing",
+					"items[0][quantity]": "0",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "items[0][quantity]",
+				},
+			},
+		},
+		{
+			ID:              "subscriptions.update.invalid_cancel_flag",
+			Name:            "Subscription update rejects invalid cancel flag",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "update subscription with invalid cancel flag",
+				Method: http.MethodPost,
+				Path:   "/v1/subscriptions/sub_missing",
+				Params: map[string]string{"cancel_at_period_end": "maybe"},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "cancel_at_period_end",
+				},
+			},
+		},
+		{
+			ID:              "subscription_items.create.invalid_quantity",
+			Name:            "Subscription item create rejects non-positive quantity",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			Steps: []requestSpec{{
+				Name:   "create subscription item with quantity zero",
+				Method: http.MethodPost,
+				Path:   "/v1/subscription_items",
+				Params: map[string]string{
+					"subscription": "sub_missing",
+					"price":        "price_missing",
+					"quantity":     "0",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "quantity",
 				},
 			},
 		},
@@ -209,7 +501,139 @@ func builtinCorpus() []caseSpec {
 					DeclineCode: "insufficient_funds",
 				},
 			},
-			Run: runInsufficientFundsAlias,
+			Run: runCheckoutPaymentAlias("pm_card_visa_chargeDeclinedInsufficientFunds"),
+		},
+		{
+			ID:              "checkout.complete.generic_decline_alias",
+			Name:            "Checkout completion maps generic decline alias to card error",
+			Category:        "error-simulation",
+			Level:           "L2",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l2---deterministic-error-simulation",
+			Expect: Observation{
+				HTTPStatus:          http.StatusOK,
+				Object:              "payment_intent",
+				PaymentIntentStatus: "requires_payment_method",
+				PaymentIntentError: &ErrorObservation{
+					Type:        "card_error",
+					Code:        "card_declined",
+					DeclineCode: "generic_decline",
+				},
+			},
+			Run: runCheckoutPaymentAlias("pm_card_visa_chargeDeclined"),
+		},
+		{
+			ID:              "checkout.complete.customer_payment_method_failed_alias",
+			Name:            "Checkout completion maps customer payment method failure alias",
+			Category:        "error-simulation",
+			Level:           "L2",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l2---deterministic-error-simulation",
+			Expect: Observation{
+				HTTPStatus:          http.StatusOK,
+				Object:              "payment_intent",
+				PaymentIntentStatus: "requires_payment_method",
+				PaymentIntentError: &ErrorObservation{
+					Type:        "card_error",
+					Code:        "card_declined",
+					DeclineCode: "do_not_honor",
+				},
+			},
+			Run: runCheckoutPaymentAlias("pm_card_chargeCustomerFail"),
+		},
+		{
+			ID:              "checkout.complete_authentication_required_alias",
+			Name:            "Checkout completion maps 3DS alias to requires_action",
+			Category:        "error-simulation",
+			Level:           "L2",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l2---deterministic-error-simulation",
+			Expect: Observation{
+				HTTPStatus:          http.StatusOK,
+				Object:              "payment_intent",
+				PaymentIntentStatus: "requires_action",
+				PaymentIntentError: &ErrorObservation{
+					Type:        "card_error",
+					Code:        "authentication_required",
+					DeclineCode: "authentication_required",
+				},
+			},
+			Run: runCheckoutPaymentAlias("pm_card_threeDSecure2Required"),
+		},
+		{
+			ID:              "checkout.complete.expired_card_outcome",
+			Name:            "Checkout completion maps expired card outcome",
+			Category:        "error-simulation",
+			Level:           "L2",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l2---deterministic-error-simulation",
+			Expect: Observation{
+				HTTPStatus:          http.StatusOK,
+				Object:              "payment_intent",
+				PaymentIntentStatus: "requires_payment_method",
+				PaymentIntentError: &ErrorObservation{
+					Type:        "card_error",
+					Code:        "expired_card",
+					DeclineCode: "expired_card",
+				},
+			},
+			Run: runCheckoutOutcome("expired_card"),
+		},
+		{
+			ID:              "checkout.complete.incorrect_cvc_outcome",
+			Name:            "Checkout completion maps incorrect CVC outcome",
+			Category:        "error-simulation",
+			Level:           "L2",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l2---deterministic-error-simulation",
+			Expect: Observation{
+				HTTPStatus:          http.StatusOK,
+				Object:              "payment_intent",
+				PaymentIntentStatus: "requires_payment_method",
+				PaymentIntentError: &ErrorObservation{
+					Type:        "card_error",
+					Code:        "incorrect_cvc",
+					DeclineCode: "incorrect_cvc",
+				},
+			},
+			Run: runCheckoutOutcome("incorrect_cvc"),
+		},
+		{
+			ID:              "checkout.complete.processing_error_outcome",
+			Name:            "Checkout completion maps processing error outcome",
+			Category:        "error-simulation",
+			Level:           "L2",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l2---deterministic-error-simulation",
+			Expect: Observation{
+				HTTPStatus:          http.StatusOK,
+				Object:              "payment_intent",
+				PaymentIntentStatus: "requires_payment_method",
+				PaymentIntentError: &ErrorObservation{
+					Type:        "card_error",
+					Code:        "processing_error",
+					DeclineCode: "processing_error",
+				},
+			},
+			Run: runCheckoutOutcome("processing_error"),
+		},
+		{
+			ID:              "checkout.complete.missing_payment_method_outcome",
+			Name:            "Checkout completion maps missing payment method outcome",
+			Category:        "error-simulation",
+			Level:           "L2",
+			ReleaseBlocking: true,
+			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l2---deterministic-error-simulation",
+			Expect: Observation{
+				HTTPStatus:          http.StatusOK,
+				Object:              "payment_intent",
+				PaymentIntentStatus: "requires_payment_method",
+				PaymentIntentError: &ErrorObservation{
+					Type: "card_error",
+					Code: "payment_method_missing",
+				},
+			},
+			Run: runCheckoutOutcome("missing_payment_method"),
 		},
 		{
 			ID:         "stripe_mock.oracle.route_parameter_lane",
@@ -230,7 +654,19 @@ func builtinCorpus() []caseSpec {
 	}
 }
 
-func runInsufficientFundsAlias(_ context.Context, h *harness) (caseExecution, error) {
+func runCheckoutPaymentAlias(paymentMethod string) func(context.Context, *harness) (caseExecution, error) {
+	return func(ctx context.Context, h *harness) (caseExecution, error) {
+		return runCheckoutCompletion(ctx, h, map[string]string{"payment_method": paymentMethod})
+	}
+}
+
+func runCheckoutOutcome(outcome string) func(context.Context, *harness) (caseExecution, error) {
+	return func(ctx context.Context, h *harness) (caseExecution, error) {
+		return runCheckoutCompletion(ctx, h, map[string]string{"outcome": outcome})
+	}
+}
+
+func runCheckoutCompletion(_ context.Context, h *harness, completionParams map[string]string) (caseExecution, error) {
 	execution := caseExecution{}
 	appendStep := func(spec requestSpec) (ReplayStep, error) {
 		step, err := h.do(spec)
@@ -308,7 +744,7 @@ func runInsufficientFundsAlias(_ context.Context, h *harness) (caseExecution, er
 		Name:             "complete checkout with insufficient funds alias",
 		Method:           http.MethodPost,
 		Path:             "/api/checkout/sessions/" + sessionID + "/complete",
-		Params:           map[string]string{"payment_method": "pm_card_visa_chargeDeclinedInsufficientFunds"},
+		Params:           completionParams,
 		ExpectHTTPStatus: http.StatusOK,
 	})
 	if err != nil {

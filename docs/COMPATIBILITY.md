@@ -19,7 +19,7 @@ fixture, a test, and an explicit compatibility note.
 
 | Level | Meaning |
 | --- | --- |
-| Supported | Implemented in the local runtime and covered by tests, examples, or fixtures. |
+| Supported | Implemented in the local runtime and covered by automated tests or release-blocking compatibility scorecard cases. Examples and fixtures are supporting evidence, not the sole basis for a supported claim. |
 | Billtap-specific | Public Billtap API, not intended to match Stripe. |
 | Partial | Useful for smoke tests, but not a full provider behavior model. |
 | Unsupported | Not implemented, not claimed, or intentionally out of scope. |
@@ -45,6 +45,17 @@ Scorecard statuses are:
 - `unsupported`: case documents unsupported behavior from this compatibility contract.
 - `mismatch`: case ran but normalized actual behavior differed from expectation.
 - `error`: the scorecard runner or Billtap returned an unexpected internal error.
+
+Current public-readiness corpus:
+
+- Scorecard version: `l3-public-readiness-v2`
+- Release-blocking cases: 28
+- Covered categories: request validation, idempotency mismatch, deterministic
+  checkout payment-error aliases
+- Required release result: `mismatch=0`, `error=0`, and `passed=true`
+
+The scorecard is intentionally a release contract for Billtap's documented
+local subset. It is not a claim of broad Stripe API parity.
 
 ## Supported Stripe-Like API Subset
 

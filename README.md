@@ -7,7 +7,7 @@ Full-stack Stripe-style billing sandbox for local development, CI scenarios, and
 - use `billtap` as the default lane for deterministic checkout, portal, webhook, fixture, and scenario tests
 - keep Stripe testmode or provider sandboxes as the high-fidelity fallback lane
 
-It provides a Go backend, React checkout/portal/dashboard UIs, a practical Stripe-compatible API subset, webhook reliability controls, YAML scenarios, fixture apply/snapshot/assert APIs, and a generic `saas` workspace profile. It is not a real payment processor and must not be used in a live payment path.
+It provides a Go backend, React checkout/portal/dashboard UIs, a practical Stripe-like API subset tested against documented local compatibility cases, webhook reliability controls, YAML scenarios, fixture apply/snapshot/assert APIs, and a generic `saas` workspace profile. It is not a real payment processor and must not be used in a live payment path.
 
 ## Why This Project Exists
 
@@ -90,14 +90,14 @@ Current distribution state: source-only. No package, Homebrew formula, or publis
 
 Requirements:
 
-- Go 1.25+
-- Node.js and npm
+- Go 1.25+ (`go.mod`); currently verified with Go 1.26.1
+- Node.js 20+ and npm; currently verified with Node 24.14.0 and npm 11.9.0
 - Docker, optional for image smoke checks
 
 Build and run locally:
 
 ```bash
-npm install
+npm ci
 npm run build
 go run ./cmd/billtap
 ```
@@ -173,9 +173,11 @@ Detailed compatibility matrix: `docs/COMPATIBILITY.md`.
 
 ```bash
 go test ./...
+go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility
 npm run typecheck
 npm run build
 npm run smoke:sample
+npm run smoke:sdk
 npm run smoke:web:install
 npm run smoke:web
 go build -o /tmp/billtap ./cmd/billtap
@@ -200,6 +202,7 @@ go run ./cmd/billtap scenario run examples/saas-adoption-contract.yml
 - Production boundaries: `docs/PRODUCTION_BOUNDARIES.md`
 - Release process: `docs/RELEASE.md`
 - Release checklist: `docs/RELEASE_CHECKLIST.md`
+- Public release readiness: `docs/PUBLIC_RELEASE_READINESS.md`
 - Roadmap: `docs/ROADMAP.md`
 - Scenario contract: `specs/000-product/contracts/scenario.md`
 - API contract: `specs/000-product/contracts/api.md`
@@ -232,4 +235,4 @@ Maintainer checklist summary:
 
 ## License
 
-License is not declared yet. Add a `LICENSE` file before publishing or accepting external contributions.
+License is not declared yet. This repository is not ready for public community release or external contributions until a `LICENSE` file is added by the project owner.
