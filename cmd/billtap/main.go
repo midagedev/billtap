@@ -142,12 +142,13 @@ func runCompatibilityInventory(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return scenarios.ExitRuntimeFailure
 	}
-	fmt.Fprintf(os.Stdout, "compatibility inventory wrote %s operations=%d implemented=%d inventory_only=%d billtap_only=%d\n",
+	fmt.Fprintf(os.Stdout, "compatibility inventory wrote %s operations=%d implemented=%d inventory_only=%d billtap_only=%d implemented_percent=%.1f\n",
 		outputDir,
 		inventory.Summary.TotalOperations,
 		inventory.Summary.ImplementedOperations,
 		inventory.Summary.InventoryOnlyOperations,
 		inventory.Summary.BilltapOnlyRoutes,
+		inventory.Summary.ImplementedPercent,
 	)
 	return scenarios.ExitPass
 }

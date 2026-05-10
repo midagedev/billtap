@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -24,25 +25,32 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if inventory.InventoryVersion != InventoryVersion {
 		t.Fatalf("inventory version = %q, want %q", inventory.InventoryVersion, InventoryVersion)
 	}
-	if inventory.Summary.TotalOperations != 10 {
-		t.Fatalf("total operations = %d, want 10", inventory.Summary.TotalOperations)
+	if inventory.Summary.TotalOperations != 14 {
+		t.Fatalf("total operations = %d, want 14", inventory.Summary.TotalOperations)
 	}
 	if inventory.Summary.ImplementedOperations != 7 {
 		t.Fatalf("implemented operations = %d, want 7", inventory.Summary.ImplementedOperations)
 	}
-	if inventory.Summary.InventoryOnlyOperations != 3 {
-		t.Fatalf("inventory-only operations = %d, want 3", inventory.Summary.InventoryOnlyOperations)
+	if inventory.Summary.InventoryOnlyOperations != 7 {
+		t.Fatalf("inventory-only operations = %d, want 7", inventory.Summary.InventoryOnlyOperations)
+	}
+	if inventory.Summary.ImplementedPercent != 50 {
+		t.Fatalf("implemented percent = %.1f, want 50.0", inventory.Summary.ImplementedPercent)
 	}
 	if inventory.Summary.BilltapOnlyRoutes != 1 {
 		t.Fatalf("billtap-only routes = %d, want 1", inventory.Summary.BilltapOnlyRoutes)
 	}
-	if inventory.Summary.ByLevel["L0"] != 3 || inventory.Summary.ByLevel["L3"] != 5 || inventory.Summary.ByLevel["L4"] != 1 || inventory.Summary.ByLevel["L5"] != 1 {
-		t.Fatalf("by level = %#v, want L0=3 L3=5 L4=1 L5=1", inventory.Summary.ByLevel)
+	if inventory.Summary.ByLevel["L0"] != 7 || inventory.Summary.ByLevel["L3"] != 5 || inventory.Summary.ByLevel["L4"] != 1 || inventory.Summary.ByLevel["L5"] != 1 {
+		t.Fatalf("by level = %#v, want L0=7 L3=5 L4=1 L5=1", inventory.Summary.ByLevel)
 	}
 
 	customerCreate := findOperation(t, inventory, http.MethodPost, "/v1/customers")
 	if !customerCreate.Implemented || customerCreate.BilltapLevel != "L3" || !customerCreate.Stateful {
 		t.Fatalf("customer create coverage = %#v, want implemented L3 stateful", customerCreate)
+	}
+	customers := findFamily(t, inventory, "customers")
+	if customers.Priority != "P1" || customers.TotalOperations != 4 || customers.ImplementedOperations != 4 || customers.ImplementedPercent != 100 {
+		t.Fatalf("customers family = %#v, want P1 4/4 100%%", customers)
 	}
 
 	checkoutCreate := findOperation(t, inventory, http.MethodPost, "/v1/checkout/sessions")
@@ -70,16 +78,42 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if accountsV2.Family != "connect" || accountsV2.BilltapLevel != "L0" || accountsV2.TargetLevel != "L2-L5" {
 		t.Fatalf("accounts v2 coverage = %#v, want connect inventory target", accountsV2)
 	}
+	accountSession := findOperation(t, inventory, http.MethodPost, "/v1/account_sessions")
+	if accountSession.Family != "connect" || accountSession.Resource != "account_session" {
+		t.Fatalf("account session coverage = %#v, want connect account_session", accountSession)
+	}
+	account := findOperation(t, inventory, http.MethodGet, "/v1/account")
+	if account.Family != "connect" || account.Resource != "account" {
+		t.Fatalf("account coverage = %#v, want connect account", account)
+	}
+	applicationFeeRefund := findOperation(t, inventory, http.MethodGet, "/v1/application_fees/{fee}/refunds")
+	if applicationFeeRefund.Family != "connect" || applicationFeeRefund.Resource != "application_fee_refund" {
+		t.Fatalf("application fee refund coverage = %#v, want connect application fee refund", applicationFeeRefund)
+	}
+	financialConnectionAccount := findOperation(t, inventory, http.MethodGet, "/v1/financial_connections/accounts")
+	if financialConnectionAccount.Family != "auxiliary" || financialConnectionAccount.Resource != "financial_connections.account" {
+		t.Fatalf("financial connection account coverage = %#v, want auxiliary financial connection account", financialConnectionAccount)
+	}
+	connect := findFamily(t, inventory, "connect")
+	if connect.Priority != "P1" || connect.TotalOperations != 4 || connect.ImplementedOperations != 0 || connect.ImplementedPercent != 0 {
+		t.Fatalf("connect family = %#v, want P1 0/4 0%%", connect)
+	}
+	if !strings.Contains(connect.NextMilestone, "Stripe-Account") {
+		t.Fatalf("connect milestone = %q, want Stripe-Account tracing", connect.NextMilestone)
+	}
 
 	jsonPath := filepath.Join(dir, "stripe-api-inventory.json")
 	mdPath := filepath.Join(dir, "stripe-api-inventory.md")
-	if !fileContains(t, jsonPath, `"inventory_version": "stripe-api-inventory-v1"`) {
+	if !fileContains(t, jsonPath, `"inventory_version": "stripe-api-inventory-v2"`) {
 		t.Fatalf("JSON inventory missing version")
+	}
+	if !fileContains(t, jsonPath, `"families"`) || !fileContains(t, jsonPath, `"implemented_percent": 50`) {
+		t.Fatalf("JSON inventory missing measurable coverage fields")
 	}
 	if !fileContains(t, jsonPath, `"billtap_only_routes"`) || !fileContains(t, jsonPath, `/v1/checkout/sessions/{id}/complete`) {
 		t.Fatalf("JSON inventory missing Billtap-specific route exception")
 	}
-	if !fileContains(t, mdPath, "# Stripe API Compatibility Inventory") || !fileContains(t, mdPath, "Billtap-Specific `/v1` Exceptions") {
+	if !fileContains(t, mdPath, "# Stripe API Compatibility Inventory") || !fileContains(t, mdPath, "Family Coverage") || !fileContains(t, mdPath, "Billtap-Specific `/v1` Exceptions") {
 		t.Fatalf("Markdown inventory missing expected sections")
 	}
 }
@@ -130,6 +164,17 @@ func findOperation(t *testing.T, inventory StripeAPIInventory, method string, pa
 	}
 	t.Fatalf("operation %s %s not found in inventory", method, path)
 	return StripeOperationCoverage{}
+}
+
+func findFamily(t *testing.T, inventory StripeAPIInventory, family string) FamilyCoverage {
+	t.Helper()
+	for _, item := range inventory.Summary.Families {
+		if item.Family == family {
+			return item
+		}
+	}
+	t.Fatalf("family %s not found in inventory summary", family)
+	return FamilyCoverage{}
 }
 
 func containsString(values []string, want string) bool {

@@ -96,11 +96,14 @@ func TestRunCompatibilityWritesInventory(t *testing.T) {
 	if code != scenarios.ExitPass {
 		t.Fatalf("exit code = %d, want %d", code, scenarios.ExitPass)
 	}
-	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"inventory_version": "stripe-api-inventory-v1"`) {
+	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"inventory_version": "stripe-api-inventory-v2"`) {
 		t.Fatalf("JSON inventory missing version")
 	}
 	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"implemented_operations": 7`) {
 		t.Fatalf("JSON inventory missing implemented operation count")
+	}
+	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"families"`) {
+		t.Fatalf("JSON inventory missing family coverage")
 	}
 	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.md"), "# Stripe API Compatibility Inventory") {
 		t.Fatalf("Markdown inventory missing heading")
