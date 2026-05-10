@@ -57,6 +57,12 @@ Current public-readiness corpus:
 The scorecard is intentionally a release contract for Billtap's documented
 local subset. It is not a claim of broad Stripe API parity.
 
+Broader Stripe API compatibility work is tracked separately in
+`STRIPE_API_COMPATIBILITY_ROADMAP.md`. New endpoint families should move through
+inventory, schema validation, fixture response, stateful local behavior,
+scenario coverage, webhook modeling, and SDK smoke levels before they become
+public claims.
+
 ## Supported Stripe-Like API Subset
 
 Base path: `/v1`

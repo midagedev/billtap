@@ -22,6 +22,9 @@ Current release status:
 - Live Stripe calls and the external `stripe-mock` oracle lane remain optional
   outside normal CI.
 
+For broader endpoint-family planning beyond the current public subset, see
+`STRIPE_API_COMPATIBILITY_ROADMAP.md`.
+
 ## Reference Inputs
 
 Use these references when deciding whether behavior is Stripe-compatible,
