@@ -60,6 +60,11 @@ evidence, and Billtap-specific `/v1` route exceptions. This is the first gate
 for expanding beyond the current public subset without silently implying full
 Stripe parity.
 
+The optional `Stripe API Inventory` GitHub Actions workflow downloads Stripe's
+public latest OpenAPI spec, runs the same command, prints the summary, and
+uploads the inventory artifacts. It is intentionally scheduled/manual so
+external OpenAPI availability does not block normal PR release gates.
+
 Fixture ergonomics for integration tests:
 
 - apply a data-driven fixture pack through `POST /api/fixtures/apply`
