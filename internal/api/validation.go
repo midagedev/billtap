@@ -17,6 +17,7 @@ const (
 
 var (
 	metadataParamRE            = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
+	expandParamRE              = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
 	enabledEventsParamRE       = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
 	retryBackoffParamRE        = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
 	checkoutLineItemRE         = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
@@ -81,6 +82,9 @@ func (p params) validate(spec paramSpec) error {
 
 	for key := range p.values {
 		if _, ok := allowed[key]; ok {
+			continue
+		}
+		if expandParamRE.MatchString(key) {
 			continue
 		}
 		if spec.AllowMetadata && metadataParamRE.MatchString(key) {

@@ -177,9 +177,9 @@ Current lane:
 - `go run ./cmd/billtap compatibility scorecard --output-dir dist/compatibility`
   runs the offline Billtap-owned corpus and writes JSON, Markdown, and replay
   bundle artifacts without requiring external Stripe services.
-- `l3-public-readiness-v3` currently has 29 release-blocking cases covering the
-  public subset's request validation, idempotency mismatch, and deterministic
-  checkout payment-error aliases.
+- `l3-public-readiness-v4` currently has 30 release-blocking cases covering the
+  public subset's request validation, protocol parameter acceptance,
+  idempotency mismatch, and deterministic checkout payment-error aliases.
 
 Gate:
 

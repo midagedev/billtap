@@ -16,7 +16,7 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G9 Release Candidate          | Passed locally | Dockerfile, sample app, public examples, release checklist                                                                                                  |
 | G10 Fixture Integration Smoke | Passed locally | Fixture apply/snapshot/assert APIs support deterministic integration setup                                                                                  |
 | G11 Assertion Ergonomics      | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots                                                                                        |
-| G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 29 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
+| G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 30 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
 | G13 Stripe API Expansion      | In progress    | Roadmap defines compatibility levels and endpoint-family priorities; OpenAPI inventory generator and optional workflow write JSON/Markdown coverage artifacts  |
 
 ## Current Public Claim
@@ -28,30 +28,21 @@ under Apache-2.0.
 
 ## Current Compatibility Evidence
 
-- Scorecard version: `l3-public-readiness-v3`
-- Release-blocking scorecard cases: 29
+- Scorecard version: `l3-public-readiness-v4`
+- Release-blocking scorecard cases: 30
 - Required scorecard release result: `mismatch=0`, `error=0`, `passed=true`
-- Coverage focus: request validation, idempotency mismatch, deterministic
-  checkout payment-error aliases
+- Coverage focus: request validation, protocol parameter acceptance,
+  idempotency mismatch, deterministic checkout payment-error aliases
 
-## Last Local Verification
+## Last Local Code Verification
 
-Verified on 2026-05-09 from branch `codex/apache-license-release-readiness`:
+Verified on 2026-05-10 from branch `codex/stripe-protocol-baseline`:
 
 - `go test ./...`
 - `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
-  - result: `imported=29 skipped=1 unsupported=1 mismatch=0 error=0`
-- `npm ci`
+  - result: `imported=30 skipped=1 unsupported=1 mismatch=0 error=0`
 - `npm run typecheck`
 - `npm run build`
-- `npm run smoke:sample`
-- `npm run smoke:sdk`
-- `npm run smoke:web:install`
-- `npm run smoke:web`
-- `go build -o /tmp/billtap ./cmd/billtap`
-- `docker build -t billtap:local .`
-- `/tmp/billtap scenario run examples/subscription-payment-retry.yml`
-- `/tmp/billtap scenario run examples/saas-adoption-contract.yml`
 
 Release verification should still be rerun on the final release branch or tag.
 

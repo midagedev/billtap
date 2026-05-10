@@ -89,6 +89,21 @@ func builtinCorpus() []caseSpec {
 			},
 		},
 		{
+			ID:              "customers.create.expand_accepted",
+			Name:            "Customer create accepts Stripe expand parameter as protocol input",
+			Category:        "protocol",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/STRIPE_API_COMPATIBILITY_ROADMAP.md#s1-protocol-compatibility-baseline",
+			Steps: []requestSpec{{
+				Name:   "create customer with ignored expand parameter",
+				Method: http.MethodPost,
+				Path:   "/v1/customers",
+				Params: map[string]string{"email": "expand@example.test", "expand[]": "subscriptions"},
+			}},
+			Expect: Observation{HTTPStatus: http.StatusOK, Object: "customer"},
+		},
+		{
 			ID:              "customers.update.unknown_param",
 			Name:            "Customer update rejects unknown parameter",
 			Category:        "request-validation",
