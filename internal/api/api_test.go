@@ -620,6 +620,108 @@ func TestStripeLikeAPIErrorEnvelope(t *testing.T) {
 	})
 }
 
+func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
+	handler := newTestHandler(t)
+
+	status, body := postFormStatusWithHeaders(t, handler, "/v1/payment_intents/pi_123/confirm", url.Values{}, map[string]string{
+		"Request-Id": "req_known_unsupported",
+	})
+	errBody := decodeErrorBody(t, body)
+	if status != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want 400", status, body)
+	}
+	if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "unsupported_endpoint" {
+		t.Fatalf("error=%#v, want unsupported_endpoint invalid_request_error", errBody.Error)
+	}
+	if !strings.Contains(errBody.Error.Message, "POST /v1/payment_intents/{id}/confirm") {
+		t.Fatalf("message=%q, want normalized known Stripe route", errBody.Error.Message)
+	}
+
+	refundStatus, refundBody := postFormStatus(t, handler, "/v1/refunds", url.Values{})
+	refundErr := decodeErrorBody(t, refundBody)
+	if refundStatus != http.StatusBadRequest || refundErr.Error.Code != "unsupported_endpoint" {
+		t.Fatalf("refund status=%d error=%#v, want known-route unsupported", refundStatus, refundErr.Error)
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/v1/customers/search", nil)
+	searchReq.Header.Set("Request-Id", "req_known_search_unsupported")
+	searchRec := httptest.NewRecorder()
+	handler.ServeHTTP(searchRec, searchReq)
+	searchErr := decodeErrorBody(t, searchRec.Body.String())
+	if searchRec.Code != http.StatusBadRequest || searchErr.Error.Code != "unsupported_endpoint" {
+		t.Fatalf("customer search status=%d error=%#v, want known-route unsupported", searchRec.Code, searchErr.Error)
+	}
+
+	v2Status, v2Body := postFormStatusWithHeaders(t, handler, "/v2/core/accounts", url.Values{}, map[string]string{
+		"Request-Id": "req_known_v2_unsupported",
+	})
+	v2Err := decodeErrorBody(t, v2Body)
+	if v2Status != http.StatusBadRequest || v2Err.Error.Code != "unsupported_endpoint" {
+		t.Fatalf("v2 account status=%d error=%#v, want known-route unsupported", v2Status, v2Err.Error)
+	}
+
+	patchReq := httptest.NewRequest(http.MethodPatch, "/v1/products", nil)
+	patchRec := httptest.NewRecorder()
+	handler.ServeHTTP(patchRec, patchReq)
+	if patchRec.Code != http.StatusMethodNotAllowed {
+		t.Fatalf("PATCH /v1/products status=%d body=%s, want existing method_not_allowed", patchRec.Code, patchRec.Body.String())
+	}
+
+	unknownReq := httptest.NewRequest(http.MethodGet, "/v1/not_a_stripe_route", nil)
+	unknownRec := httptest.NewRecorder()
+	handler.ServeHTTP(unknownRec, unknownReq)
+	if unknownRec.Code != http.StatusNotFound || strings.Contains(unknownRec.Body.String(), "unsupported_endpoint") {
+		t.Fatalf("unknown route status=%d body=%s, want plain not found outside known catalog", unknownRec.Code, unknownRec.Body.String())
+	}
+
+	v1PrefixReq := httptest.NewRequest(http.MethodGet, "/v1", nil)
+	v1PrefixRec := httptest.NewRecorder()
+	handler.ServeHTTP(v1PrefixRec, v1PrefixReq)
+	if v1PrefixRec.Code != http.StatusNotFound {
+		t.Fatalf("GET /v1 status=%d body=%s, want 404 without ServeMux redirect", v1PrefixRec.Code, v1PrefixRec.Body.String())
+	}
+	v2PrefixReq := httptest.NewRequest(http.MethodGet, "/v2", nil)
+	v2PrefixRec := httptest.NewRecorder()
+	handler.ServeHTTP(v2PrefixRec, v2PrefixReq)
+	if v2PrefixRec.Code != http.StatusNotFound {
+		t.Fatalf("GET /v2 status=%d body=%s, want 404 without ServeMux redirect", v2PrefixRec.Code, v2PrefixRec.Body.String())
+	}
+
+	traces := getJSON[struct {
+		Object string                     `json:"object"`
+		Data   []diagnostics.RequestTrace `json:"data"`
+	}](t, handler, "/api/request-traces?requestId=req_known_unsupported")
+	if traces.Object != "list" || len(traces.Data) != 1 {
+		t.Fatalf("request traces = %#v, want unsupported request trace", traces)
+	}
+	trace := traces.Data[0]
+	if trace.Status != http.StatusBadRequest || trace.ErrorCode != "unsupported_endpoint" || trace.Path != "/v1/payment_intents/pi_123/confirm" {
+		t.Fatalf("trace = %#v, want unsupported endpoint evidence", trace)
+	}
+
+	searchTraces := getJSON[struct {
+		Object string                     `json:"object"`
+		Data   []diagnostics.RequestTrace `json:"data"`
+	}](t, handler, "/api/request-traces?requestId=req_known_search_unsupported")
+	if searchTraces.Object != "list" || len(searchTraces.Data) != 1 {
+		t.Fatalf("search request traces = %#v, want unsupported request trace", searchTraces)
+	}
+	if searchTraces.Data[0].Path != "/v1/customers/search" || searchTraces.Data[0].ErrorCode != "unsupported_endpoint" {
+		t.Fatalf("search trace = %#v, want unsupported search route evidence", searchTraces.Data[0])
+	}
+
+	v2Traces := getJSON[struct {
+		Object string                     `json:"object"`
+		Data   []diagnostics.RequestTrace `json:"data"`
+	}](t, handler, "/api/request-traces?requestId=req_known_v2_unsupported")
+	if v2Traces.Object != "list" || len(v2Traces.Data) != 1 {
+		t.Fatalf("v2 request traces = %#v, want unsupported request trace", v2Traces)
+	}
+	if v2Traces.Data[0].Path != "/v2/core/accounts" || v2Traces.Data[0].ErrorCode != "unsupported_endpoint" {
+		t.Fatalf("v2 trace = %#v, want unsupported v2 endpoint evidence", v2Traces.Data[0])
+	}
+}
+
 func TestSupportedEndpointRequestValidation(t *testing.T) {
 	handler := newTestHandler(t)
 

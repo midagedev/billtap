@@ -99,3 +99,33 @@ func TestRegistryDefensivelyCopiesClaims(t *testing.T) {
 		}
 	}
 }
+
+func TestDefaultRouteCatalogContainsLatestOpenAPIRoutes(t *testing.T) {
+	catalog := DefaultRouteCatalog()
+	routes := catalog.Routes()
+	if len(routes) != 619 {
+		t.Fatalf("default known routes = %d, want 619", len(routes))
+	}
+
+	confirm, ok := catalog.Lookup(http.MethodPost, "/v1/payment_intents/pi_123/confirm")
+	if !ok || confirm.Path != "/v1/payment_intents/{id}/confirm" {
+		t.Fatalf("payment intent confirm route = %#v ok=%t, want normalized known route", confirm, ok)
+	}
+	if confirm.Source == "" {
+		t.Fatalf("payment intent confirm source = empty")
+	}
+
+	if _, ok := catalog.Lookup(http.MethodGet, "/v1/not_a_stripe_route"); ok {
+		t.Fatalf("unknown route unexpectedly matched known catalog")
+	}
+}
+
+func TestNewRouteCatalogRejectsDuplicateRoutes(t *testing.T) {
+	_, err := NewRouteCatalog([]Route{
+		{Method: http.MethodGet, Path: "/v1/customers/{customer}"},
+		{Method: http.MethodGet, Path: "/v1/customers/{id}"},
+	})
+	if err == nil {
+		t.Fatalf("NewRouteCatalog returned nil error for duplicate normalized route")
+	}
+}

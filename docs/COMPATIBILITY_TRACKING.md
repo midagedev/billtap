@@ -23,6 +23,11 @@ The command writes:
 - `stripe-api-inventory.json`: machine-readable source for agents and CI.
 - `stripe-api-inventory.md`: reviewable compatibility table for humans.
 
+The runtime also carries a generated known-route catalog from the same public
+Stripe OpenAPI lane. That catalog is diagnostic-only: matching a route there
+returns `unsupported_endpoint` for unimplemented operations, but it does not
+increase `summary.implemented_operations`.
+
 `dist/` is intentionally ignored. PRs should quote the before/after summary
 instead of committing generated artifacts.
 
