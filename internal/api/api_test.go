@@ -171,7 +171,9 @@ func TestInvoicePayRetriesFailedCheckout(t *testing.T) {
 		AmountPaid         int64  `json:"amount_paid"`
 		NextPaymentAttempt *int64 `json:"next_payment_attempt"`
 	}](t, handler, "/v1/invoices/"+failedInvoice.ID+"/pay", url.Values{
-		"payment_method": {"pm_card_visa_chargeDeclined"},
+		"source":      {"pm_card_visa_chargeDeclined"},
+		"off_session": {"true"},
+		"mandate":     {"mandate_123"},
 	})
 	if declined.Status != "open" || declined.AttemptCount != failedInvoice.AttemptCount+1 || declined.AmountDue != 9900 || declined.AmountPaid != 0 || declined.NextPaymentAttempt == nil {
 		t.Fatalf("declined retry invoice = %#v, want open invoice with retry evidence", declined)

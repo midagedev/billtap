@@ -26,6 +26,7 @@ type BillingService interface {
 	CompleteCheckout(context.Context, string, string) (billing.CheckoutSession, error)
 	CompleteCheckoutAt(context.Context, string, string, time.Time) (billing.CheckoutSession, error)
 	GetSubscription(context.Context, string) (billing.Subscription, error)
+	PatchSubscription(context.Context, string, billing.SubscriptionPatch) (billing.Subscription, error)
 	GetInvoice(context.Context, string) (billing.Invoice, error)
 	GetPaymentIntent(context.Context, string) (billing.PaymentIntent, error)
 	PayInvoice(context.Context, string, billing.InvoicePaymentOptions) (billing.InvoicePaymentResult, error)
@@ -209,6 +210,8 @@ func (r *Runner) runStep(ctx context.Context, scenario Scenario, step Step, stat
 		return finish(r.createCheckout(ctx, step, params, state))
 	case "checkout.complete":
 		return finish(r.completeCheckout(ctx, scenario, step, params, state))
+	case "subscription.update":
+		return finish(r.updateSubscription(ctx, scenario, step, params, state))
 	case "clock.advance":
 		return finish(r.advanceClock(ctx, scenario, step, params, state))
 	case "invoice.retry":
@@ -399,6 +402,38 @@ func (r *Runner) advanceClock(ctx context.Context, scenario Scenario, step Step,
 		if len(events) > 0 {
 			output["events"] = events
 		}
+	}
+	state.results[step.ID] = output
+	return output, nil
+}
+
+func (r *Runner) updateSubscription(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
+	if r.Billing == nil {
+		return nil, errors.New("billing service is required for subscription.update")
+	}
+	subscriptionID := firstString(params, "subscriptionRef", "subscription", "subscription_id", "id")
+	if subscriptionID == "" {
+		return nil, fmt.Errorf("%w: subscription.update requires subscriptionRef", ErrInvalidConfig)
+	}
+	patch := billing.SubscriptionPatch{}
+	if _, ok := params["cancel_at_period_end"]; ok {
+		cancelAtPeriodEnd := boolValue(params, "cancel_at_period_end", false)
+		patch.CancelAtPeriodEnd = &cancelAtPeriodEnd
+	} else if _, ok := params["cancelAtPeriodEnd"]; ok {
+		cancelAtPeriodEnd := boolValue(params, "cancelAtPeriodEnd", false)
+		patch.CancelAtPeriodEnd = &cancelAtPeriodEnd
+	}
+	subscription, err := r.Billing.PatchSubscription(ctx, subscriptionID, patch)
+	if err != nil {
+		return nil, err
+	}
+	output := map[string]any{"subscription": subscription}
+	events, err := r.emitSubscriptionWebhook(ctx, scenario, "customer.subscription.updated", subscription, state)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		output["events"] = events
 	}
 	state.results[step.ID] = output
 	return output, nil
@@ -599,7 +634,7 @@ func (r *Runner) emitClockAdvanceWebhooks(ctx context.Context, scenario Scenario
 	}
 	var events []webhooks.Event
 	for _, renewal := range advance.Renewals {
-		emitted, err := r.emitInvoicePaymentWebhooks(ctx, scenario, renewal, state)
+		emitted, err := r.emitRenewalWebhooks(ctx, scenario, renewal, state)
 		if err != nil {
 			return events, err
 		}
@@ -626,6 +661,54 @@ func (r *Runner) emitClockAdvanceWebhooks(ctx context.Context, scenario Scenario
 		events = append(events, event)
 	}
 	return events, nil
+}
+
+func (r *Runner) emitRenewalWebhooks(ctx context.Context, scenario Scenario, result billing.InvoicePaymentResult, state *runState) ([]webhooks.Event, error) {
+	if r.Webhooks == nil {
+		return nil, nil
+	}
+	var events []webhooks.Event
+	for _, item := range renewalWebhookPayloads(result) {
+		state.sequence++
+		event, _, err := r.Webhooks.CreateEvent(ctx, webhooks.EventInput{
+			Type:           item.eventType,
+			ObjectPayload:  item.payload,
+			RequestID:      "req_" + item.objectID,
+			IdempotencyKey: "billtap:" + item.eventType + ":" + item.objectID,
+			ScenarioRunID:  scenario.Name,
+			Source:         webhooks.SourceScenario,
+			Sequence:       state.sequence,
+		})
+		if err != nil {
+			return events, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func (r *Runner) emitSubscriptionWebhook(ctx context.Context, scenario Scenario, eventType string, subscription billing.Subscription, state *runState) ([]webhooks.Event, error) {
+	if r.Webhooks == nil || subscription.ID == "" {
+		return nil, nil
+	}
+	raw, err := json.Marshal(subscription)
+	if err != nil {
+		return nil, err
+	}
+	state.sequence++
+	event, _, err := r.Webhooks.CreateEvent(ctx, webhooks.EventInput{
+		Type:           eventType,
+		ObjectPayload:  raw,
+		RequestID:      "req_" + subscription.ID,
+		IdempotencyKey: "billtap:" + eventType + ":" + subscription.ID,
+		ScenarioRunID:  scenario.Name,
+		Source:         webhooks.SourceScenario,
+		Sequence:       state.sequence,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return []webhooks.Event{event}, nil
 }
 
 func replayOptions(params map[string]any) webhooks.ReplayOptions {
@@ -714,6 +797,36 @@ func invoicePaymentWebhookPayloads(result billing.InvoicePaymentResult) []webhoo
 	return out
 }
 
+func renewalWebhookPayloads(result billing.InvoicePaymentResult) []webhookPayload {
+	var out []webhookPayload
+	appendPayload := func(eventType string, objectID string, value any) {
+		if eventType == "" || objectID == "" {
+			return
+		}
+		raw, err := json.Marshal(value)
+		if err == nil {
+			out = append(out, webhookPayload{eventType: eventType, objectID: objectID, payload: raw})
+		}
+	}
+	if result.Invoice.ID != "" {
+		appendPayload("invoice.created", result.Invoice.ID, result.Invoice)
+		appendPayload("invoice.finalized", result.Invoice.ID, result.Invoice)
+	}
+	if result.PaymentIntent.ID != "" {
+		appendPayload("payment_intent.created", result.PaymentIntent.ID, result.PaymentIntent)
+		appendPayload(paymentIntentTerminalEvent(result.PaymentIntent.Status), result.PaymentIntent.ID, result.PaymentIntent)
+	}
+	if result.Invoice.ID != "" {
+		for _, eventType := range invoiceTerminalEvents(result.Invoice.Status, result.PaymentIntent.Status) {
+			appendPayload(eventType, result.Invoice.ID, result.Invoice)
+		}
+	}
+	if result.Subscription.ID != "" {
+		appendPayload("customer.subscription.updated", result.Subscription.ID, result.Subscription)
+	}
+	return out
+}
+
 func paymentIntentTerminalEvent(status string) string {
 	switch status {
 	case "succeeded":
@@ -739,7 +852,7 @@ func checkoutSessionEvent(status string) string {
 func invoiceTerminalEvents(status string, paymentIntentStatus string) []string {
 	switch status {
 	case "paid":
-		return []string{"invoice.payment_succeeded"}
+		return []string{"invoice.payment_succeeded", "invoice.paid"}
 	case "void":
 		return []string{"invoice.voided"}
 	case "open":

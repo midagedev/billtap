@@ -129,6 +129,9 @@ Numeric path segments address list entries, for example
 use `duplicate`, `delay` or `delay_seconds`, `outOfOrder`, `responseStatus`,
 `responseBody`, `timeout`, `error`, and `signatureMismatch` parameters.
 
+`subscription.update` accepts `subscriptionRef`/`subscription` and currently
+supports `cancel_at_period_end` for local lifecycle scenarios.
+
 `invoice.retry` mutates the local billing graph when the runner has a billing
 service and the step supplies `invoiceRef`/`invoice`. It also accepts
 `payment_method` or `outcome`. Successful retries mark the invoice paid, clear

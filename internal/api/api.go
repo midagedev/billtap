@@ -810,9 +810,16 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		paymentMethodID := p.string("payment_method")
+		if paymentMethodID == "" {
+			paymentMethodID = p.string("source")
+		}
+		outcome := paymentMethodID
+		forgive := p.boolDefault("forgive", false)
 		result, err := h.billing.PayInvoice(r.Context(), id, billing.InvoicePaymentOptions{
-			PaymentMethodID: p.string("payment_method"),
-			PaidOutOfBand:   p.boolDefault("paid_out_of_band", false),
+			Outcome:         outcome,
+			PaymentMethodID: paymentMethodID,
+			PaidOutOfBand:   p.boolDefault("paid_out_of_band", false) || forgive,
 		})
 		if err == nil {
 			h.emitInvoicePaymentWebhooks(r, result, webhooks.SourceAPI)

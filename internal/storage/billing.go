@@ -384,6 +384,36 @@ func updateInvoiceTx(ctx context.Context, tx *sql.Tx, invoice billing.Invoice) e
 	return nil
 }
 
+func updateOpenInvoicePaymentTx(ctx context.Context, tx *sql.Tx, invoice billing.Invoice) error {
+	expectedAttemptCount := invoice.AttemptCount - 1
+	if expectedAttemptCount < 0 {
+		expectedAttemptCount = 0
+	}
+	result, err := tx.ExecContext(ctx, `UPDATE invoices
+		SET status = ?, currency = ?, subtotal = ?, total = ?, amount_due = ?, amount_paid = ?, attempt_count = ?, next_payment_attempt = ?, payment_intent_id = ?
+		WHERE id = ? AND status = 'open' AND attempt_count = ?`,
+		invoice.Status, invoice.Currency, invoice.Subtotal, invoice.Total, invoice.AmountDue, invoice.AmountPaid, invoice.AttemptCount, encodeOptionalTime(invoice.NextPaymentAttempt), invoice.PaymentIntentID, invoice.ID, expectedAttemptCount)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed > 0 {
+		return nil
+	}
+	var status string
+	err = tx.QueryRowContext(ctx, `SELECT status FROM invoices WHERE id = ?`, invoice.ID).Scan(&status)
+	if errors.Is(err, sql.ErrNoRows) {
+		return billing.ErrNotFound
+	}
+	if err != nil {
+		return err
+	}
+	return billing.ErrInvalidInput
+}
+
 func updatePaymentIntentTx(ctx context.Context, tx *sql.Tx, pi billing.PaymentIntent) error {
 	result, err := tx.ExecContext(ctx, `UPDATE payment_intents
 		SET customer_id = ?, invoice_id = ?, amount = ?, currency = ?, status = ?, capture_method = ?, failure_code = ?, failure_decline_code = ?, failure_message = ?, payment_method_id = ?
@@ -466,7 +496,7 @@ func (s *SQLiteStore) UpdateInvoicePayment(ctx context.Context, sub billing.Subs
 	if err := updateSubscriptionTx(ctx, tx, sub); err != nil {
 		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
 	}
-	if err := updateInvoiceTx(ctx, tx, invoice); err != nil {
+	if err := updateOpenInvoicePaymentTx(ctx, tx, invoice); err != nil {
 		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
 	}
 	if err := updatePaymentIntentTx(ctx, tx, pi); err != nil {

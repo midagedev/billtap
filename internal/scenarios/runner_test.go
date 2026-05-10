@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/hckim/billtap/internal/billing"
 	"github.com/hckim/billtap/internal/storage"
@@ -135,6 +134,68 @@ steps:
 	}
 }
 
+func TestRunnerInvoiceRetryCanDeclineThenSucceedAtSameClock(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	report, err := NewRunner(billing.NewService(store), nil).Run(ctx, mustLoad(t, `
+name: invoice-retry-same-clock
+clock:
+  start: "2026-05-08T00:00:00Z"
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: retry@example.test
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_failed
+  - id: decline-retry
+    action: invoice.retry
+    params:
+      invoiceRef: complete-checkout.invoice.id
+      payment_method: pm_card_visa_chargeDeclined
+  - id: successful-retry
+    action: invoice.retry
+    params:
+      invoiceRef: complete-checkout.invoice.id
+      payment_method: pm_card_visa
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+	declined := report.Steps[3].Output["invoice"].(billing.Invoice)
+	paid := report.Steps[4].Output["invoice"].(billing.Invoice)
+	if declined.Status != "open" || paid.Status != "paid" || paid.AttemptCount != declined.AttemptCount+1 {
+		t.Fatalf("declined=%#v paid=%#v, want same-clock decline then paid retry", declined, paid)
+	}
+}
+
 func TestRunnerInvoiceRetryWithoutInvoiceKeepsEvidenceFallback(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
@@ -180,7 +241,7 @@ func TestRunnerClockAdvanceRenewsAndCancelsSubscriptions(t *testing.T) {
 		}
 	})
 
-	report, err := NewRunner(billing.NewService(store), nil).Run(ctx, mustLoad(t, `
+	report, err := NewRunner(billing.NewService(store), webhooks.NewService(store)).Run(ctx, mustLoad(t, `
 name: clock-renewal-cancel
 clock:
   start: "2026-05-08T00:00:00Z"
@@ -213,6 +274,15 @@ steps:
     action: clock.advance
     params:
       duration: 31d
+  - id: schedule-cancel
+    action: subscription.update
+    params:
+      subscriptionRef: advance-renewal.billing.renewals.0.subscription.id
+      cancel_at_period_end: true
+  - id: advance-cancel
+    action: clock.advance
+    params:
+      duration: 60d
 `))
 	if err != nil {
 		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
@@ -224,20 +294,31 @@ steps:
 	if advance.Renewals[0].Invoice.Status != "paid" || advance.Renewals[0].Subscription.LatestInvoiceID != advance.Renewals[0].Invoice.ID {
 		t.Fatalf("renewal = %#v, want paid invoice and latest invoice update", advance.Renewals[0])
 	}
+	events, ok := report.Steps[3].Output["events"].([]webhooks.Event)
+	if !ok {
+		t.Fatalf("advance events = %#v, want webhook events", report.Steps[3].Output["events"])
+	}
+	seen := map[string]bool{}
+	for _, event := range events {
+		seen[event.Type] = true
+	}
+	for _, eventType := range []string{"invoice.created", "invoice.finalized", "payment_intent.created", "payment_intent.succeeded", "invoice.payment_succeeded", "invoice.paid", "customer.subscription.updated"} {
+		if !seen[eventType] {
+			t.Fatalf("advance events missing %s: %#v", eventType, events)
+		}
+	}
 
-	sub := advance.Renewals[0].Subscription
-	sub.CancelAtPeriodEnd = true
-	canceledAt := time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC)
-	sub.CanceledAt = &canceledAt
-	if _, err := store.UpdateSubscription(ctx, sub, nil); err != nil {
-		t.Fatalf("UpdateSubscription: %v", err)
+	scheduled := report.Steps[4].Output["subscription"].(billing.Subscription)
+	if !scheduled.CancelAtPeriodEnd {
+		t.Fatalf("scheduled subscription = %#v, want cancel_at_period_end", scheduled)
 	}
-	result, err := billing.NewService(store).AdvanceClock(ctx, sub.CurrentPeriodEnd)
-	if err != nil {
-		t.Fatalf("AdvanceClock cancel: %v", err)
-	}
+	boundary := scheduled.CurrentPeriodEnd
+	result := report.Steps[5].Output["billing"].(billing.ClockAdvanceResult)
 	if result.CanceledCount != 1 || len(result.Canceled) != 1 || result.Canceled[0].Status != "canceled" {
 		t.Fatalf("cancel advance = %#v, want canceled subscription", result)
+	}
+	if result.Canceled[0].CanceledAt == nil || !result.Canceled[0].CanceledAt.Equal(boundary) {
+		t.Fatalf("cancel advance canceled_at = %v, want boundary %v", result.Canceled[0].CanceledAt, boundary)
 	}
 }
 

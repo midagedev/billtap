@@ -4,8 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-
-	"github.com/hckim/billtap/internal/billing"
+	"strings"
 )
 
 func builtinCorpus() []caseSpec {
@@ -871,7 +870,7 @@ func builtinCorpus() []caseSpec {
 			Level:           "L4",
 			ReleaseBlocking: true,
 			Reference:       "docs/COMPATIBILITY.md#scenario-claim",
-			Expect:          Observation{HTTPStatus: http.StatusOK, Object: "subscription", ObjectStatus: "canceled"},
+			Expect:          Observation{HTTPStatus: http.StatusOK, Object: "scenario_report", ObjectStatus: "passed"},
 			Run:             runClockAdvanceCancelAtPeriodEnd(),
 		},
 		{
@@ -1316,41 +1315,45 @@ func runClockAdvanceRenewalScenario() func(context.Context, *harness) (caseExecu
 
 func runClockAdvanceCancelAtPeriodEnd() func(context.Context, *harness) (caseExecution, error) {
 	return func(ctx context.Context, h *harness) (caseExecution, error) {
-		execution, _, subscriptionID, _, err := runPaidCheckoutSetup(h)
-		if err != nil {
-			return execution, err
+		_ = ctx
+		scenario := map[string]any{
+			"name": "scorecard-clock-cancel",
+			"clock": map[string]any{
+				"start": "2026-05-08T00:00:00Z",
+			},
+			"catalog": map[string]any{
+				"products": []map[string]any{{"id": "prod_pro", "name": "Pro"}},
+				"prices": []map[string]any{{
+					"id":         "price_pro_monthly",
+					"product":    "prod_pro",
+					"currency":   "usd",
+					"unitAmount": 4900,
+					"interval":   "month",
+				}},
+			},
+			"steps": []map[string]any{
+				{"id": "create-customer", "action": "customer.create", "params": map[string]any{"email": "scorecard-cancel@example.test"}},
+				{"id": "checkout", "action": "checkout.create", "params": map[string]any{"customerRef": "create-customer.customer.id", "price": "price_pro_monthly"}},
+				{"id": "complete-checkout", "action": "checkout.complete", "params": map[string]any{"sessionRef": "checkout.session.id", "outcome": "payment_succeeded"}},
+				{"id": "schedule-cancel", "action": "subscription.update", "params": map[string]any{"subscriptionRef": "checkout.subscription.id", "cancel_at_period_end": true}},
+				{"id": "advance-cancel", "action": "clock.advance", "params": map[string]any{"duration": "60d"}},
+			},
 		}
-		cancel, err := h.do(requestSpec{
-			Name:             "schedule period-end cancellation",
-			Method:           http.MethodPost,
-			Path:             "/v1/subscriptions/" + subscriptionID,
-			Params:           map[string]string{"cancel_at_period_end": "true"},
-			ExpectHTTPStatus: http.StatusOK,
+		return runScenarioReport(h, scenario, func(decoded any) error {
+			canceled := nestedSliceNumber(decoded, "steps", 4, "output", "billing", "canceled_count")
+			if canceled != 1 {
+				return fmt.Errorf("canceled_count = %.0f, want 1", canceled)
+			}
+			status := nestedSliceString(decoded, "steps", 4, "output", "billing", "canceled", "0", "status")
+			if status != "canceled" {
+				return fmt.Errorf("canceled subscription status = %q, want canceled", status)
+			}
+			canceledAt := nestedSliceString(decoded, "steps", 4, "output", "billing", "canceled", "0", "canceled_at")
+			if !strings.HasPrefix(canceledAt, "2026-06-08T00:00:00") {
+				return fmt.Errorf("canceled_at = %q, want period boundary", canceledAt)
+			}
+			return nil
 		})
-		execution.Steps = append(execution.Steps, cancel)
-		if err != nil {
-			return execution, err
-		}
-		service := billing.NewService(h.store)
-		sub, err := service.GetSubscription(ctx, subscriptionID)
-		if err != nil {
-			return execution, err
-		}
-		if _, err := service.AdvanceClock(ctx, sub.CurrentPeriodEnd); err != nil {
-			return execution, err
-		}
-		got, err := h.do(requestSpec{
-			Name:             "retrieve canceled subscription",
-			Method:           http.MethodGet,
-			Path:             "/v1/subscriptions/" + subscriptionID,
-			ExpectHTTPStatus: http.StatusOK,
-		})
-		execution.Steps = append(execution.Steps, got)
-		if err != nil {
-			return execution, err
-		}
-		execution.Actual = *got.Actual
-		return execution, nil
 	}
 }
 

@@ -474,6 +474,9 @@ func (s *Service) PayInvoice(ctx context.Context, invoiceID string, opts Invoice
 	timeline := invoicePaymentTimeline(subscription, invoice, intent, success, at)
 	subscription, invoice, intent, err = s.repo.UpdateInvoicePayment(ctx, subscription, invoice, intent, timeline)
 	if err != nil {
+		if errors.Is(err, ErrInvalidInput) {
+			return InvoicePaymentResult{}, fmt.Errorf("%w: status must be open or payment attempt is stale", ErrInvalidInput)
+		}
 		return InvoicePaymentResult{}, err
 	}
 	return InvoicePaymentResult{Invoice: invoice, Subscription: subscription, PaymentIntent: intent}, nil
@@ -497,7 +500,7 @@ func (s *Service) AdvanceClock(ctx context.Context, at time.Time) (ClockAdvanceR
 		for cycles := 0; !current.CurrentPeriodEnd.IsZero() && !current.CurrentPeriodEnd.After(at) && cycles < 24; cycles++ {
 			result.Processed++
 			if current.CancelAtPeriodEnd {
-				canceled, err := s.cancelSubscriptionAtClock(ctx, current, at)
+				canceled, err := s.cancelSubscriptionAtClock(ctx, current, current.CurrentPeriodEnd)
 				if err != nil {
 					return result, err
 				}
@@ -986,10 +989,8 @@ func (s *Service) SimulatePaymentMethodUpdate(ctx context.Context, customerID st
 func (s *Service) cancelSubscriptionAtClock(ctx context.Context, sub Subscription, at time.Time) (Subscription, error) {
 	sub.Status = "canceled"
 	sub.CancelAtPeriodEnd = false
-	if sub.CanceledAt == nil {
-		canceledAt := at
-		sub.CanceledAt = &canceledAt
-	}
+	canceledAt := at
+	sub.CanceledAt = &canceledAt
 	sub.Metadata = copyMap(sub.Metadata)
 	sub.Metadata["billtap_clock_canceled_at"] = at.Format(time.RFC3339Nano)
 	delete(sub.Metadata, "cancel_at")
@@ -1122,18 +1123,19 @@ func (s *Service) nextPeriodEnd(ctx context.Context, items []LineItem, start tim
 
 func invoicePaymentTimeline(sub Subscription, invoice Invoice, intent PaymentIntent, success bool, at time.Time) []TimelineEntry {
 	source := "invoice.pay"
+	attemptSuffix := fmt.Sprintf("_attempt_%d_%s", invoice.AttemptCount, at.Format(time.RFC3339Nano))
 	entries := []TimelineEntry{
-		billingTimelineEntry("invoice_pay_payment_intent_"+intent.ID+"_"+at.Format(time.RFC3339Nano), paymentIntentEvent(intent.Status), "Invoice payment intent "+intent.Status, ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": intent.Status}, at),
+		billingTimelineEntry("invoice_pay_payment_intent_"+intent.ID+attemptSuffix, paymentIntentEvent(intent.Status), "Invoice payment intent "+intent.Status, ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": intent.Status}, at),
 	}
 	if success {
 		entries = append(entries,
-			billingTimelineEntry("invoice_pay_succeeded_"+invoice.ID+"_"+at.Format(time.RFC3339Nano), "invoice.payment_succeeded", "Invoice payment succeeded", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
-			billingTimelineEntry("invoice_paid_"+invoice.ID+"_"+at.Format(time.RFC3339Nano), "invoice.paid", "Invoice paid", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
+			billingTimelineEntry("invoice_pay_succeeded_"+invoice.ID+attemptSuffix, "invoice.payment_succeeded", "Invoice payment succeeded", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
+			billingTimelineEntry("invoice_paid_"+invoice.ID+attemptSuffix, "invoice.paid", "Invoice paid", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
 		)
 	} else {
-		entries = append(entries, billingTimelineEntry("invoice_pay_failed_"+invoice.ID+"_"+at.Format(time.RFC3339Nano), "invoice.payment_failed", "Invoice payment failed", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at))
+		entries = append(entries, billingTimelineEntry("invoice_pay_failed_"+invoice.ID+attemptSuffix, "invoice.payment_failed", "Invoice payment failed", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at))
 	}
-	entries = append(entries, billingTimelineEntry("invoice_pay_subscription_"+sub.ID+"_"+at.Format(time.RFC3339Nano), "customer.subscription.updated", "Subscription updated after invoice payment attempt", ObjectSubscription, sub.ID, sub.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": sub.Status}, at))
+	entries = append(entries, billingTimelineEntry("invoice_pay_subscription_"+sub.ID+attemptSuffix, "customer.subscription.updated", "Subscription updated after invoice payment attempt", ObjectSubscription, sub.ID, sub.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": sub.Status}, at))
 	return entries
 }
 
