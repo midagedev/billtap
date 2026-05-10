@@ -54,7 +54,10 @@ func TestWriteArtifactsGeneratesPassingScorecard(t *testing.T) {
 		`"id": "openapi.account_sessions.invalid_deep_nested_boolean"`,
 		`"id": "checkout.complete.processing_error_outcome"`,
 		`"id": "payment_intents.create.confirm.succeeds"`,
+		`"id": "payment_intents.capture.manual.succeeds"`,
+		`"id": "payment_intents.confirm.missing_payment_method"`,
 		`"id": "setup_intents.create.confirm.succeeds"`,
+		`"id": "setup_intents.cancel.succeeded_rejected"`,
 	} {
 		if !fileContains(t, jsonPath, id) {
 			t.Fatalf("JSON scorecard missing %s", id)

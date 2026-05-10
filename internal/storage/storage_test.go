@@ -4,6 +4,9 @@ import (
 	"context"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/hckim/billtap/internal/billing"
 )
 
 func TestSQLiteMigrationsRun(t *testing.T) {
@@ -37,5 +40,47 @@ func TestMemoryStoreWorksInTests(t *testing.T) {
 	}
 	if err := store.Ping(ctx); err == nil {
 		t.Fatal("Ping after Close succeeded, want error")
+	}
+}
+
+func TestDirectIntentSchemaAllowsOptionalCustomerAndPreservesForeignKeys(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.CreatePaymentIntent(ctx, billing.PaymentIntent{
+		ID:            "pi_direct_no_customer",
+		Amount:        1000,
+		Currency:      "usd",
+		Status:        "requires_payment_method",
+		CaptureMethod: "automatic",
+		CreatedAt:     time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("CreatePaymentIntent without customer returned error: %v", err)
+	}
+
+	if _, err := store.CreatePaymentIntent(ctx, billing.PaymentIntent{
+		ID:            "pi_direct_bad_customer",
+		CustomerID:    "cus_missing",
+		Amount:        1000,
+		Currency:      "usd",
+		Status:        "requires_payment_method",
+		CaptureMethod: "automatic",
+		CreatedAt:     time.Now().UTC(),
+	}); err == nil {
+		t.Fatalf("CreatePaymentIntent with missing customer succeeded, want FK error")
+	}
+
+	if _, err := store.CreateSetupIntent(ctx, billing.SetupIntent{
+		ID:         "seti_direct_bad_customer",
+		CustomerID: "cus_missing",
+		Status:     "requires_payment_method",
+		Usage:      "off_session",
+		CreatedAt:  time.Now().UTC(),
+	}); err == nil {
+		t.Fatalf("CreateSetupIntent with missing customer succeeded, want FK error")
 	}
 }

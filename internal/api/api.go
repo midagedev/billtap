@@ -902,7 +902,7 @@ func (h *Handler) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		intent, err = h.billing.CapturePaymentIntent(r.Context(), id)
+		intent, err = h.billing.CapturePaymentIntent(r.Context(), id, p.int64("amount_to_capture"))
 		if err == nil {
 			h.emitPaymentIntentWebhook(r, "payment_intent.succeeded", intent)
 		}

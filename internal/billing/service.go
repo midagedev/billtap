@@ -423,10 +423,16 @@ func (s *Service) ConfirmPaymentIntent(ctx context.Context, id string, paymentMe
 	if err != nil {
 		return PaymentIntent{}, err
 	}
+	if err := ensurePaymentIntentConfirmable(intent); err != nil {
+		return PaymentIntent{}, err
+	}
+	if firstNonEmpty(paymentMethodID, intent.PaymentMethodID, outcome) == "" {
+		return PaymentIntent{}, fmt.Errorf("%w: payment_method is required", ErrInvalidInput)
+	}
 	if paymentMethodID != "" {
 		intent.PaymentMethodID = paymentMethodID
 	}
-	spec, ok := intentOutcomeSpec(firstNonEmpty(outcome, intent.PaymentMethodID, "payment_succeeded"))
+	spec, ok := intentOutcomeSpec(firstNonEmpty(outcome, intent.PaymentMethodID))
 	if !ok {
 		return PaymentIntent{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
 	}
@@ -446,14 +452,20 @@ func (s *Service) ConfirmPaymentIntent(ctx context.Context, id string, paymentMe
 	}
 	now := s.now()
 	return s.repo.UpdatePaymentIntent(ctx, intent, []TimelineEntry{
-		timelineEntry("pi_"+intent.ID+"_confirmed", paymentIntentEvent(intent.Status), "Payment intent "+intent.Status, ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status}, now),
+		timelineEntry("pi_"+intent.ID+"_confirmed_"+now.Format(time.RFC3339Nano), paymentIntentEvent(intent.Status), "Payment intent "+intent.Status, ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status}, now),
 	})
 }
 
-func (s *Service) CapturePaymentIntent(ctx context.Context, id string) (PaymentIntent, error) {
+func (s *Service) CapturePaymentIntent(ctx context.Context, id string, amountToCapture int64) (PaymentIntent, error) {
 	intent, err := s.repo.GetPaymentIntent(ctx, id)
 	if err != nil {
 		return PaymentIntent{}, err
+	}
+	if intent.Status != "requires_capture" {
+		return PaymentIntent{}, fmt.Errorf("%w: status must be requires_capture", ErrInvalidInput)
+	}
+	if amountToCapture != 0 && amountToCapture != intent.Amount {
+		return PaymentIntent{}, fmt.Errorf("%w: amount_to_capture must be %d", ErrInvalidInput, intent.Amount)
 	}
 	intent.Status = "succeeded"
 	intent.FailureCode = ""
@@ -461,7 +473,7 @@ func (s *Service) CapturePaymentIntent(ctx context.Context, id string) (PaymentI
 	intent.FailureMessage = ""
 	now := s.now()
 	return s.repo.UpdatePaymentIntent(ctx, intent, []TimelineEntry{
-		timelineEntry("pi_"+intent.ID+"_captured", "payment_intent.succeeded", "Payment intent captured", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status}, now),
+		timelineEntry("pi_"+intent.ID+"_captured_"+now.Format(time.RFC3339Nano), "payment_intent.succeeded", "Payment intent captured", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status}, now),
 	})
 }
 
@@ -470,10 +482,13 @@ func (s *Service) CancelPaymentIntent(ctx context.Context, id string) (PaymentIn
 	if err != nil {
 		return PaymentIntent{}, err
 	}
+	if intent.Status == "succeeded" || intent.Status == "canceled" {
+		return PaymentIntent{}, fmt.Errorf("%w: status must be non-terminal", ErrInvalidInput)
+	}
 	intent.Status = "canceled"
 	now := s.now()
 	return s.repo.UpdatePaymentIntent(ctx, intent, []TimelineEntry{
-		timelineEntry("pi_"+intent.ID+"_canceled", "payment_intent.canceled", "Payment intent canceled", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status}, now),
+		timelineEntry("pi_"+intent.ID+"_canceled_"+now.Format(time.RFC3339Nano), "payment_intent.canceled", "Payment intent canceled", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status}, now),
 	})
 }
 
@@ -510,10 +525,16 @@ func (s *Service) ConfirmSetupIntent(ctx context.Context, id string, paymentMeth
 	if err != nil {
 		return SetupIntent{}, err
 	}
+	if intent.Status == "succeeded" || intent.Status == "canceled" {
+		return SetupIntent{}, fmt.Errorf("%w: status must be non-terminal", ErrInvalidInput)
+	}
+	if firstNonEmpty(paymentMethodID, intent.PaymentMethodID, outcome) == "" {
+		return SetupIntent{}, fmt.Errorf("%w: payment_method is required", ErrInvalidInput)
+	}
 	if paymentMethodID != "" {
 		intent.PaymentMethodID = paymentMethodID
 	}
-	spec, ok := intentOutcomeSpec(firstNonEmpty(outcome, intent.PaymentMethodID, "payment_succeeded"))
+	spec, ok := intentOutcomeSpec(firstNonEmpty(outcome, intent.PaymentMethodID))
 	if !ok {
 		return SetupIntent{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
 	}
@@ -536,7 +557,7 @@ func (s *Service) ConfirmSetupIntent(ctx context.Context, id string, paymentMeth
 	}
 	now := s.now()
 	return s.repo.UpdateSetupIntent(ctx, intent, []TimelineEntry{
-		timelineEntry("seti_"+intent.ID+"_confirmed", setupIntentEvent(intent.Status), "Setup intent "+intent.Status, ObjectSetupIntent, intent.ID, intent.CustomerID, "", "", "", map[string]string{"status": intent.Status}, now),
+		timelineEntry("seti_"+intent.ID+"_confirmed_"+now.Format(time.RFC3339Nano), setupIntentEvent(intent.Status), "Setup intent "+intent.Status, ObjectSetupIntent, intent.ID, intent.CustomerID, "", "", "", map[string]string{"status": intent.Status}, now),
 	})
 }
 
@@ -545,10 +566,13 @@ func (s *Service) CancelSetupIntent(ctx context.Context, id string) (SetupIntent
 	if err != nil {
 		return SetupIntent{}, err
 	}
+	if intent.Status == "succeeded" || intent.Status == "canceled" {
+		return SetupIntent{}, fmt.Errorf("%w: status must be non-terminal", ErrInvalidInput)
+	}
 	intent.Status = "canceled"
 	now := s.now()
 	return s.repo.UpdateSetupIntent(ctx, intent, []TimelineEntry{
-		timelineEntry("seti_"+intent.ID+"_canceled", "setup_intent.canceled", "Setup intent canceled", ObjectSetupIntent, intent.ID, intent.CustomerID, "", "", "", map[string]string{"status": intent.Status}, now),
+		timelineEntry("seti_"+intent.ID+"_canceled_"+now.Format(time.RFC3339Nano), "setup_intent.canceled", "Setup intent canceled", ObjectSetupIntent, intent.ID, intent.CustomerID, "", "", "", map[string]string{"status": intent.Status}, now),
 	})
 }
 
@@ -931,6 +955,15 @@ func portalTimeline(seed, action, message string, sub Subscription, data map[str
 		InvoiceID:      sub.LatestInvoiceID,
 		Data:           compactMetadata(data),
 		CreatedAt:      at,
+	}
+}
+
+func ensurePaymentIntentConfirmable(intent PaymentIntent) error {
+	switch intent.Status {
+	case "", "requires_payment_method", "requires_action":
+		return nil
+	default:
+		return fmt.Errorf("%w: status must be requires_payment_method", ErrInvalidInput)
 	}
 }
 

@@ -1,7 +1,7 @@
 CREATE TABLE payment_intents_new (
 	id TEXT PRIMARY KEY,
-	customer_id TEXT NOT NULL DEFAULT '',
-	invoice_id TEXT NOT NULL DEFAULT '',
+	customer_id TEXT REFERENCES customers(id),
+	invoice_id TEXT REFERENCES invoices(id),
 	amount INTEGER NOT NULL,
 	currency TEXT NOT NULL,
 	status TEXT NOT NULL,
@@ -48,7 +48,7 @@ ALTER TABLE payment_intents_new RENAME TO payment_intents;
 
 CREATE TABLE IF NOT EXISTS setup_intents (
 	id TEXT PRIMARY KEY,
-	customer_id TEXT NOT NULL DEFAULT '',
+	customer_id TEXT REFERENCES customers(id),
 	status TEXT NOT NULL,
 	usage TEXT NOT NULL DEFAULT 'off_session',
 	failure_code TEXT NOT NULL DEFAULT '',

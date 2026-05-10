@@ -57,11 +57,11 @@ Scorecard statuses are:
 Current public-readiness corpus:
 
 - Scorecard version: `l3-public-readiness-v6`
-- Release-blocking cases: 38
+- Release-blocking cases: 44
 - Covered categories: request validation, protocol parameter acceptance,
   OpenAPI-backed fallback validation, idempotency mismatch, deterministic
   checkout payment-error aliases, and direct PaymentIntent/SetupIntent state
-  transitions
+  transitions, including invalid terminal-state transitions
 - Required release result: `mismatch=0`, `error=0`, and `passed=true`
 
 The scorecard is intentionally a release contract for Billtap's documented

@@ -422,7 +422,7 @@ func validateSubscriptionItemCreate(p params) error {
 }
 
 func validatePaymentIntentCreate(p params) error {
-	return p.validate(paramSpec{
+	if err := p.validate(paramSpec{
 		Allowed: []string{
 			"id",
 			"amount",
@@ -448,7 +448,13 @@ func validatePaymentIntentCreate(p params) error {
 			"setup_future_usage": {"on_session", "off_session"},
 		},
 		AllowMetadata: true,
-	})
+	}); err != nil {
+		return err
+	}
+	if p.boolDefault("confirm", false) && !p.hasAny("payment_method", "outcome") {
+		return missingParam("payment_method")
+	}
+	return nil
 }
 
 func validatePaymentIntentConfirm(p params) error {
@@ -488,7 +494,7 @@ func validatePaymentIntentCancel(p params) error {
 }
 
 func validateSetupIntentCreate(p params) error {
-	return p.validate(paramSpec{
+	if err := p.validate(paramSpec{
 		Allowed: []string{
 			"id",
 			"customer",
@@ -506,7 +512,13 @@ func validateSetupIntentCreate(p params) error {
 			"usage": {"on_session", "off_session"},
 		},
 		AllowMetadata: true,
-	})
+	}); err != nil {
+		return err
+	}
+	if p.boolDefault("confirm", false) && !p.hasAny("payment_method", "outcome") {
+		return missingParam("payment_method")
+	}
+	return nil
 }
 
 func validateSetupIntentConfirm(p params) error {
