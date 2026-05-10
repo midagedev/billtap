@@ -13,7 +13,7 @@ Every emitted event is stored and delivered with this envelope:
   "type": "checkout.session.completed",
   "created": 1710000000,
   "livemode": false,
-  "api_version": "billtap-2026-05-08",
+  "api_version": "2025-12-15.clover",
   "pending_webhooks": 1,
   "request": {
     "id": "req_...",
@@ -30,29 +30,33 @@ Every emitted event is stored and delivered with this envelope:
 }
 ```
 
+`api_version` defaults to `2025-12-15.clover` and can be overridden with
+`BILLTAP_WEBHOOK_API_VERSION` for applications pinned to a different Stripe SDK
+API version.
+
 Required fields for delivery are `id`, `object`, `type`, `created`, `livemode`, `data.object`, and `billtap.sequence`.
 
 ## MVP Event Types
 
-| Event type | Emitted when | `data.object` |
-| --- | --- | --- |
-| `customer.created` | a customer is created | customer snapshot |
-| `customer.updated` | a customer is updated | customer snapshot |
-| `product.created` | a product is created | product snapshot |
-| `price.created` | a price is created | price snapshot |
-| `checkout.session.created` | a checkout session is created | checkout session snapshot |
-| `checkout.session.completed` | checkout succeeds or enters async pending state | checkout session snapshot |
-| `checkout.session.expired` | checkout is canceled or expires | checkout session snapshot |
-| `customer.subscription.created` | a subscription is created | subscription snapshot |
-| `customer.subscription.updated` | subscription plan, period, status, or cancellation state changes | subscription snapshot |
-| `customer.subscription.deleted` | subscription is canceled immediately | subscription snapshot |
-| `invoice.created` | an invoice is created | invoice snapshot |
-| `invoice.finalized` | an invoice is finalized | invoice snapshot |
-| `invoice.payment_succeeded` | invoice payment succeeds | invoice snapshot |
-| `invoice.payment_failed` | invoice payment fails | invoice snapshot |
-| `payment_intent.created` | a payment intent is created | payment intent snapshot |
-| `payment_intent.succeeded` | a payment intent succeeds | payment intent snapshot |
-| `payment_intent.payment_failed` | a payment intent fails | payment intent snapshot |
+| Event type                      | Emitted when                                                     | `data.object`             |
+| ------------------------------- | ---------------------------------------------------------------- | ------------------------- |
+| `customer.created`              | a customer is created                                            | customer snapshot         |
+| `customer.updated`              | a customer is updated                                            | customer snapshot         |
+| `product.created`               | a product is created                                             | product snapshot          |
+| `price.created`                 | a price is created                                               | price snapshot            |
+| `checkout.session.created`      | a checkout session is created                                    | checkout session snapshot |
+| `checkout.session.completed`    | checkout succeeds or enters async pending state                  | checkout session snapshot |
+| `checkout.session.expired`      | checkout is canceled or expires                                  | checkout session snapshot |
+| `customer.subscription.created` | a subscription is created                                        | subscription snapshot     |
+| `customer.subscription.updated` | subscription plan, period, status, or cancellation state changes | subscription snapshot     |
+| `customer.subscription.deleted` | subscription is canceled immediately                             | subscription snapshot     |
+| `invoice.created`               | an invoice is created                                            | invoice snapshot          |
+| `invoice.finalized`             | an invoice is finalized                                          | invoice snapshot          |
+| `invoice.payment_succeeded`     | invoice payment succeeds                                         | invoice snapshot          |
+| `invoice.payment_failed`        | invoice payment fails                                            | invoice snapshot          |
+| `payment_intent.created`        | a payment intent is created                                      | payment intent snapshot   |
+| `payment_intent.succeeded`      | a payment intent succeeds                                        | payment intent snapshot   |
+| `payment_intent.payment_failed` | a payment intent fails                                           | payment intent snapshot   |
 
 SaaS profile events may add `saas.*` profile evidence events, but generic Stripe-like billing events remain the compatibility surface.
 

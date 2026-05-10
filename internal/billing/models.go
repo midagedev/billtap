@@ -52,21 +52,23 @@ type LineItem struct {
 }
 
 type CheckoutSession struct {
-	ID              string     `json:"id"`
-	Object          string     `json:"object"`
-	CustomerID      string     `json:"customer"`
-	Mode            string     `json:"mode"`
-	LineItems       []LineItem `json:"line_items"`
-	SuccessURL      string     `json:"success_url,omitempty"`
-	CancelURL       string     `json:"cancel_url,omitempty"`
-	URL             string     `json:"url"`
-	Status          string     `json:"status"`
-	PaymentStatus   string     `json:"payment_status"`
-	SubscriptionID  string     `json:"subscription,omitempty"`
-	InvoiceID       string     `json:"invoice,omitempty"`
-	PaymentIntentID string     `json:"payment_intent,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	ID                  string     `json:"id"`
+	Object              string     `json:"object"`
+	CustomerID          string     `json:"customer"`
+	Mode                string     `json:"mode"`
+	LineItems           []LineItem `json:"line_items"`
+	SuccessURL          string     `json:"success_url,omitempty"`
+	CancelURL           string     `json:"cancel_url,omitempty"`
+	AllowPromotionCodes bool       `json:"allow_promotion_codes,omitempty"`
+	TrialPeriodDays     int64      `json:"trial_period_days,omitempty"`
+	URL                 string     `json:"url"`
+	Status              string     `json:"status"`
+	PaymentStatus       string     `json:"payment_status"`
+	SubscriptionID      string     `json:"subscription,omitempty"`
+	InvoiceID           string     `json:"invoice,omitempty"`
+	PaymentIntentID     string     `json:"payment_intent,omitempty"`
+	CreatedAt           time.Time  `json:"created_at"`
+	CompletedAt         *time.Time `json:"completed_at,omitempty"`
 }
 
 type Subscription struct {

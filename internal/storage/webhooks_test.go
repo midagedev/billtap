@@ -42,7 +42,7 @@ func TestWebhookPersistenceAndDeliveryAttempt(t *testing.T) {
 		Object:          webhooks.ObjectEvent,
 		Type:            "invoice.payment_succeeded",
 		Created:         1778233312,
-		APIVersion:      webhooks.APIVersion,
+		APIVersion:      webhooks.DefaultAPIVersion,
 		PendingWebhooks: 1,
 		Data:            webhooks.EventData{Object: json.RawMessage(`{"id":"in_test"}`)},
 		Billtap:         webhooks.EventMetadata{Source: webhooks.SourceCheckout, Sequence: 1},
@@ -134,11 +134,19 @@ func TestWebhookServiceCanUseStripeSignatureHeader(t *testing.T) {
 	defer store.Close()
 
 	var gotStripeSignature string
+	var gotAPIVersion string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotStripeSignature = r.Header.Get(webhooks.StripeSignatureHeaderName)
 		if r.Header.Get(webhooks.SignatureHeaderName) != "" {
 			t.Fatalf("received legacy signature header in Stripe mode")
 		}
+		var payload struct {
+			APIVersion string `json:"api_version"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode webhook payload: %v", err)
+		}
+		gotAPIVersion = payload.APIVersion
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -146,6 +154,7 @@ func TestWebhookServiceCanUseStripeSignatureHeader(t *testing.T) {
 	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{
 		StoreRawPayloads:    true,
 		SignatureHeaderName: webhooks.StripeSignatureHeaderName,
+		APIVersion:          "2025-03-31.basil",
 	})
 	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
 		t.Fatalf("CreateEndpoint returned error: %v", err)
@@ -164,6 +173,9 @@ func TestWebhookServiceCanUseStripeSignatureHeader(t *testing.T) {
 	}
 	if gotStripeSignature == "" {
 		t.Fatal("test server did not receive Stripe-Signature")
+	}
+	if gotAPIVersion != "2025-03-31.basil" {
+		t.Fatalf("api_version = %q, want configured Stripe API version", gotAPIVersion)
 	}
 	if webhooks.SignatureHeaderValue(attempts[0].RequestHeaders) == "" {
 		t.Fatal("SignatureHeaderValue did not find configured Stripe-Signature")
@@ -268,7 +280,7 @@ func TestRetentionRedactsOldWebhookEvidence(t *testing.T) {
 		Object:          webhooks.ObjectEvent,
 		Type:            "invoice.paid",
 		Created:         old.Unix(),
-		APIVersion:      webhooks.APIVersion,
+		APIVersion:      webhooks.DefaultAPIVersion,
 		PendingWebhooks: 1,
 		Data:            webhooks.EventData{Object: json.RawMessage(`{"id":"in_old"}`)},
 		Billtap:         webhooks.EventMetadata{Source: webhooks.SourceCheckout, Sequence: 1},

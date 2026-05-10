@@ -226,6 +226,14 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	now := s.now()
 	periodEnd := now.AddDate(0, 1, 0)
 	paid := outcomeSpec.Paid
+	trialing := paid && session.TrialPeriodDays > 0
+	if trialing {
+		periodEnd = now.AddDate(0, 0, int(session.TrialPeriodDays))
+	}
+	invoiceTotal := total
+	if trialing {
+		invoiceTotal = 0
+	}
 
 	sub := Subscription{
 		ID:                 firstNonEmpty(opts.SubscriptionID, id("sub")),
@@ -237,6 +245,12 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		CurrentPeriodEnd:   periodEnd,
 		Metadata:           map[string]string{"checkout_session": session.ID},
 	}
+	if trialing {
+		sub.Status = "trialing"
+		sub.Metadata["trial_period_days"] = fmt.Sprintf("%d", session.TrialPeriodDays)
+		sub.Metadata["trial_start"] = now.Format(time.RFC3339Nano)
+		sub.Metadata["trial_end"] = periodEnd.Format(time.RFC3339Nano)
+	}
 	invoice := Invoice{
 		ID:             firstNonEmpty(opts.InvoiceID, id("in")),
 		Object:         ObjectInvoice,
@@ -244,10 +258,10 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		SubscriptionID: sub.ID,
 		Status:         "paid",
 		Currency:       currency,
-		Subtotal:       total,
-		Total:          total,
+		Subtotal:       invoiceTotal,
+		Total:          invoiceTotal,
 		AmountDue:      0,
-		AmountPaid:     total,
+		AmountPaid:     invoiceTotal,
 		AttemptCount:   1,
 		CreatedAt:      now,
 	}
@@ -256,7 +270,7 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		Object:          ObjectPaymentIntent,
 		CustomerID:      session.CustomerID,
 		InvoiceID:       invoice.ID,
-		Amount:          total,
+		Amount:          invoiceTotal,
 		Currency:        currency,
 		Status:          outcomeSpec.PaymentIntentStatus,
 		PaymentMethodID: outcomeSpec.PaymentMethodID,
@@ -319,9 +333,19 @@ func (s *Service) PatchSubscription(ctx context.Context, subscriptionID string, 
 		}
 	}
 	if patch.CancelAtPeriodEnd != nil {
+		sub.Metadata = copyMap(sub.Metadata)
 		sub.CancelAtPeriodEnd = *patch.CancelAtPeriodEnd
-		if !*patch.CancelAtPeriodEnd {
+		if *patch.CancelAtPeriodEnd {
+			if sub.CanceledAt == nil {
+				canceledAt := s.now()
+				sub.CanceledAt = &canceledAt
+			}
+			sub.Metadata["cancel_at"] = sub.CurrentPeriodEnd.Format(time.RFC3339Nano)
+		} else {
 			sub.CanceledAt = nil
+			delete(sub.Metadata, "cancel_at")
+			delete(sub.Metadata, "cancellation_details_comment")
+			delete(sub.Metadata, "cancellation_details_feedback")
 			if sub.Status == "canceled" {
 				sub.Status = "active"
 			}
@@ -523,9 +547,14 @@ func (s *Service) CancelPortalSubscription(ctx context.Context, subscriptionID s
 	message := "Portal cancellation scheduled"
 	if mode == "period" {
 		sub.CancelAtPeriodEnd = true
+		if sub.CanceledAt == nil {
+			sub.CanceledAt = &now
+		}
+		sub.Metadata["cancel_at"] = sub.CurrentPeriodEnd.Format(time.RFC3339Nano)
 	} else {
 		sub.Status = "canceled"
 		sub.CancelAtPeriodEnd = false
+		delete(sub.Metadata, "cancel_at")
 		if sub.CanceledAt == nil {
 			sub.CanceledAt = &now
 		}
@@ -558,6 +587,9 @@ func (s *Service) ResumePortalSubscription(ctx context.Context, subscriptionID s
 	sub.CancelAtPeriodEnd = false
 	sub.CanceledAt = nil
 	sub.Metadata = copyMap(sub.Metadata)
+	delete(sub.Metadata, "cancel_at")
+	delete(sub.Metadata, "cancellation_details_comment")
+	delete(sub.Metadata, "cancellation_details_feedback")
 	sub.Metadata["portal_last_action"] = "resume"
 	sub.Metadata["portal_updated_at"] = now.Format(time.RFC3339Nano)
 

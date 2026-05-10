@@ -341,11 +341,13 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			}
 		}
 		session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
-			CustomerID: p.first("customer", "customer_id"),
-			Mode:       p.stringDefault("mode", "subscription"),
-			LineItems:  p.lineItems(),
-			SuccessURL: p.string("success_url"),
-			CancelURL:  p.string("cancel_url"),
+			CustomerID:          p.first("customer", "customer_id"),
+			Mode:                p.stringDefault("mode", "subscription"),
+			LineItems:           p.lineItems(),
+			SuccessURL:          p.string("success_url"),
+			CancelURL:           p.string("cancel_url"),
+			AllowPromotionCodes: p.boolDefault("allow_promotion_codes", false),
+			TrialPeriodDays:     p.int64("subscription_data[trial_period_days]"),
 		})
 		if err == nil {
 			session.URL = h.absoluteURL(r, session.URL)
@@ -583,12 +585,18 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		subscription, err := h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
 			Items:             items,
 			ReplaceItems:      replaceItems,
-			Metadata:          p.metadata(),
+			Metadata:          subscriptionUpdateMetadata(p),
 			CancelAtPeriodEnd: p.boolPtr("cancel_at_period_end"),
 		})
+		if err == nil {
+			h.emitSubscriptionWebhook(r, "customer.subscription.updated", subscription, webhooks.SourceAPI)
+		}
 		writeResult(w, h.stripeSubscription(r, subscription), err)
 	case http.MethodDelete:
 		subscription, err := h.billing.CancelPortalSubscription(r.Context(), id, billing.PortalCancel{Mode: "immediate"})
+		if err == nil {
+			h.emitSubscriptionWebhook(r, "customer.subscription.deleted", subscription, webhooks.SourceAPI)
+		}
 		writeResult(w, h.stripeSubscription(r, subscription), err)
 	default:
 		methodNotAllowed(w, "GET, POST, DELETE")
@@ -1390,6 +1398,11 @@ func (h *Handler) handlePortalSubscription(w http.ResponseWriter, r *http.Reques
 		writeResult(w, nil, err)
 		return
 	}
+	eventType := "customer.subscription.updated"
+	if action == "cancel" && sub.Status == "canceled" {
+		eventType = "customer.subscription.deleted"
+	}
+	h.emitSubscriptionWebhook(r, eventType, sub, webhooks.SourcePortal)
 	state, stateErr := h.billing.PortalState(r.Context(), sub.CustomerID)
 	writeResult(w, map[string]any{"object": "portal_action", "action": action, "subscription": sub, "state": state}, stateErr)
 }
@@ -1815,23 +1828,25 @@ func stripePrices(prices []billing.Price) []map[string]any {
 
 func stripeCheckoutSession(session billing.CheckoutSession) map[string]any {
 	return map[string]any{
-		"id":             session.ID,
-		"object":         billing.ObjectCheckoutSession,
-		"customer":       session.CustomerID,
-		"mode":           session.Mode,
-		"line_items":     session.LineItems,
-		"success_url":    session.SuccessURL,
-		"cancel_url":     session.CancelURL,
-		"url":            session.URL,
-		"status":         session.Status,
-		"payment_status": session.PaymentStatus,
-		"subscription":   emptyToNil(session.SubscriptionID),
-		"invoice":        emptyToNil(session.InvoiceID),
-		"payment_intent": emptyToNil(session.PaymentIntentID),
-		"created":        unix(session.CreatedAt),
-		"created_at":     session.CreatedAt,
-		"completed_at":   session.CompletedAt,
-		"livemode":       false,
+		"id":                    session.ID,
+		"object":                billing.ObjectCheckoutSession,
+		"customer":              session.CustomerID,
+		"mode":                  session.Mode,
+		"line_items":            nil,
+		"success_url":           session.SuccessURL,
+		"cancel_url":            session.CancelURL,
+		"allow_promotion_codes": session.AllowPromotionCodes,
+		"trial_period_days":     session.TrialPeriodDays,
+		"url":                   session.URL,
+		"status":                session.Status,
+		"payment_status":        session.PaymentStatus,
+		"subscription":          emptyToNil(session.SubscriptionID),
+		"invoice":               emptyToNil(session.InvoiceID),
+		"payment_intent":        emptyToNil(session.PaymentIntentID),
+		"created":               unix(session.CreatedAt),
+		"created_at":            session.CreatedAt,
+		"completed_at":          session.CompletedAt,
+		"livemode":              false,
 	}
 }
 
@@ -1851,10 +1866,10 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		"start_date":           unix(sub.CurrentPeriodStart),
 		"cancel_at_period_end": sub.CancelAtPeriodEnd,
 		"canceled_at":          optionalUnix(sub.CanceledAt),
-		"cancel_at":            nil,
+		"cancel_at":            subscriptionCancelAt(sub),
 		"ended_at":             nil,
-		"trial_start":          nil,
-		"trial_end":            nil,
+		"trial_start":          metadataUnix(sub.Metadata["trial_start"]),
+		"trial_end":            metadataUnix(sub.Metadata["trial_end"]),
 		"latest_invoice":       emptyToNil(sub.LatestInvoiceID),
 		"metadata":             nonNilMap(sub.Metadata),
 		"collection_method":    stringDefault(sub.Metadata["collection_method"], "charge_automatically"),
@@ -1863,7 +1878,25 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		"livemode":             false,
 		"pause_collection":     nil,
 		"pending_update":       nil,
-		"cancellation_details": map[string]any{"comment": nil, "feedback": nil, "reason": nil},
+		"cancellation_details": subscriptionCancellationDetails(sub),
+	}
+}
+
+func subscriptionCancelAt(sub billing.Subscription) any {
+	if !sub.CancelAtPeriodEnd {
+		return nil
+	}
+	if value := metadataUnix(sub.Metadata["cancel_at"]); value != nil {
+		return value
+	}
+	return unix(sub.CurrentPeriodEnd)
+}
+
+func subscriptionCancellationDetails(sub billing.Subscription) map[string]any {
+	return map[string]any{
+		"comment":  emptyToNil(sub.Metadata["cancellation_details_comment"]),
+		"feedback": emptyToNil(sub.Metadata["cancellation_details_feedback"]),
+		"reason":   nil,
 	}
 }
 
@@ -2092,6 +2125,25 @@ func subscriptionCreateItemsFromParams(p params) []billing.LineItem {
 	return out
 }
 
+func subscriptionUpdateMetadata(p params) map[string]string {
+	metadata := p.metadata()
+	for _, item := range []struct {
+		param string
+		key   string
+	}{
+		{param: "cancellation_details[comment]", key: "cancellation_details_comment"},
+		{param: "cancellation_details[feedback]", key: "cancellation_details_feedback"},
+	} {
+		if value := p.string(item.param); value != "" {
+			if metadata == nil {
+				metadata = map[string]string{}
+			}
+			metadata[item.key] = value
+		}
+	}
+	return metadata
+}
+
 func (h *Handler) findSubscriptionItem(r *http.Request, itemID string) (billing.Subscription, int, bool, error) {
 	subscriptions, err := h.billing.ListSubscriptions(r.Context())
 	if err != nil {
@@ -2119,6 +2171,17 @@ func optionalUnix(t *time.Time) any {
 		return nil
 	}
 	return t.Unix()
+}
+
+func metadataUnix(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil || parsed.IsZero() {
+		return nil
+	}
+	return parsed.Unix()
 }
 
 func optionalPaidAt(invoice billing.Invoice) any {
@@ -2254,6 +2317,29 @@ func (h *Handler) emitCheckoutWebhooks(r *http.Request, result map[string]any) [
 		}
 	}
 	return emitted
+}
+
+func (h *Handler) emitSubscriptionWebhook(r *http.Request, eventType string, subscription billing.Subscription, source string) []webhooks.Event {
+	if h.webhooks == nil || subscription.ID == "" {
+		return nil
+	}
+	raw, err := json.Marshal(h.stripeSubscription(r, subscription))
+	if err != nil {
+		return nil
+	}
+	sequence := time.Now().UTC().UnixNano()
+	event, _, err := h.webhooks.CreateEvent(r.Context(), webhooks.EventInput{
+		Type:           eventType,
+		ObjectPayload:  raw,
+		RequestID:      "req_" + subscription.ID,
+		IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", eventType, subscription.ID, sequence),
+		Source:         source,
+		Sequence:       sequence,
+	})
+	if err != nil {
+		return nil
+	}
+	return []webhooks.Event{event}
 }
 
 func (h *Handler) deliveryAttemptResponses(r *http.Request, attempts []webhooks.DeliveryAttempt) []map[string]any {

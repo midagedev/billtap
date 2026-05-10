@@ -1392,6 +1392,8 @@ function apiOutcome(outcome: CheckoutOutcomeId): string {
   if (outcome === "declined") return "payment_failed";
   if (outcome === "funds") return "insufficient_funds";
   if (outcome === "expired") return "expired_card";
+  if (outcome === "incorrect_cvc") return "incorrect_cvc";
+  if (outcome === "processing_error") return "processing_error";
   if (outcome === "action") return "requires_action";
   if (outcome === "cancel") return "canceled";
   if (outcome === "pending") return "payment_pending";

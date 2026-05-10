@@ -701,6 +701,66 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("checkout accepts Stripe SDK promotion and trial params", func(t *testing.T) {
+		session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                             {customer.ID},
+			"line_items[0][price]":                 {price.ID},
+			"allow_promotion_codes":                {"true"},
+			"subscription_data[trial_period_days]": {"14"},
+		})
+		if !session.AllowPromotionCodes || session.TrialPeriodDays != 14 {
+			t.Fatalf("session = %#v, want promotion codes and 14-day trial", session)
+		}
+
+		completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+			"outcome": "payment_succeeded",
+		})
+		var completed billing.CheckoutSession
+		if err := json.Unmarshal(completion["session"], &completed); err != nil {
+			t.Fatalf("decode completed session: %v", err)
+		}
+		if completed.PaymentStatus != "no_payment_required" {
+			t.Fatalf("completed payment_status = %q, want no_payment_required", completed.PaymentStatus)
+		}
+		var sub billing.Subscription
+		if err := json.Unmarshal(completion["subscription"], &sub); err != nil {
+			t.Fatalf("decode subscription: %v", err)
+		}
+		if sub.Status != "trialing" || sub.Metadata["trial_period_days"] != "14" {
+			t.Fatalf("subscription = %#v, want trialing with trial metadata", sub)
+		}
+	})
+
+	t.Run("checkout promotion flag must be boolean", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":              {customer.ID},
+			"line_items[0][price]":  {price.ID},
+			"allow_promotion_codes": {"sometimes"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "allow_promotion_codes" {
+			t.Fatalf("error=%#v, want invalid allow_promotion_codes", errBody.Error)
+		}
+	})
+
+	t.Run("checkout trial period must be positive integer", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                             {customer.ID},
+			"line_items[0][price]":                 {price.ID},
+			"subscription_data[trial_period_days]": {"0"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "subscription_data[trial_period_days]" {
+			t.Fatalf("error=%#v, want invalid trial_period_days", errBody.Error)
+		}
+	})
+
 	t.Run("checkout quantity must be positive", func(t *testing.T) {
 		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
 			"customer":                {customer.ID},
@@ -1222,6 +1282,55 @@ func TestStripeCompatCatalogAndPortalEndpoints(t *testing.T) {
 	}](t, handler, "/v1/payment_methods?customer="+customer.ID+"&type=card")
 	if len(methods.Data) != 1 || methods.Data[0].Card.Last4 != "4242" {
 		t.Fatalf("payment methods = %#v", methods)
+	}
+
+	subscription := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {customer.ID},
+		"items[0][price]": {price.ID},
+	})
+
+	canceled := postForm[struct {
+		ID                  string `json:"id"`
+		CancelAtPeriodEnd   bool   `json:"cancel_at_period_end"`
+		CancelAt            *int64 `json:"cancel_at"`
+		CanceledAt          *int64 `json:"canceled_at"`
+		CancellationDetails struct {
+			Comment  *string `json:"comment"`
+			Feedback *string `json:"feedback"`
+		} `json:"cancellation_details"`
+	}](t, handler, "/v1/subscriptions/"+subscription.ID, url.Values{
+		"cancel_at_period_end":           {"true"},
+		"cancellation_details[comment]":  {"too expensive"},
+		"cancellation_details[feedback]": {"too_expensive"},
+	})
+	if !canceled.CancelAtPeriodEnd || canceled.CancelAt == nil || canceled.CanceledAt == nil {
+		t.Fatalf("canceled subscription = %#v, want pending cancellation timestamps", canceled)
+	}
+	if canceled.CancellationDetails.Comment == nil || *canceled.CancellationDetails.Comment != "too expensive" {
+		t.Fatalf("cancellation comment = %#v, want preserved", canceled.CancellationDetails.Comment)
+	}
+	if canceled.CancellationDetails.Feedback == nil || *canceled.CancellationDetails.Feedback != "too_expensive" {
+		t.Fatalf("cancellation feedback = %#v, want preserved", canceled.CancellationDetails.Feedback)
+	}
+
+	resumed := postForm[struct {
+		CancelAtPeriodEnd   bool   `json:"cancel_at_period_end"`
+		CancelAt            *int64 `json:"cancel_at"`
+		CanceledAt          *int64 `json:"canceled_at"`
+		CancellationDetails struct {
+			Comment  *string `json:"comment"`
+			Feedback *string `json:"feedback"`
+		} `json:"cancellation_details"`
+	}](t, handler, "/v1/subscriptions/"+subscription.ID, url.Values{
+		"cancel_at_period_end": {"false"},
+	})
+	if resumed.CancelAtPeriodEnd || resumed.CancelAt != nil || resumed.CanceledAt != nil {
+		t.Fatalf("resumed subscription = %#v, want cancellation cleared", resumed)
+	}
+	if resumed.CancellationDetails.Comment != nil || resumed.CancellationDetails.Feedback != nil {
+		t.Fatalf("resumed cancellation details = %#v, want cleared", resumed.CancellationDetails)
 	}
 }
 

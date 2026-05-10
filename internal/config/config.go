@@ -19,11 +19,13 @@ const (
 	envRawPayloadStorage      = "BILLTAP_RAW_PAYLOAD_STORAGE"
 	envRetentionDays          = "BILLTAP_RETENTION_DAYS"
 	envWebhookSignatureHeader = "BILLTAP_WEBHOOK_SIGNATURE_HEADER"
+	envWebhookAPIVersion      = "BILLTAP_WEBHOOK_API_VERSION"
 
 	RawPayloadStore        = "store"
 	RawPayloadMetadataOnly = "metadata_only"
 
 	DefaultWebhookSignatureHeader = "Billtap-Signature"
+	DefaultWebhookAPIVersion      = "2025-12-15.clover"
 )
 
 type LookupFunc func(string) (string, bool)
@@ -38,6 +40,7 @@ type Config struct {
 	RawPayloadStorage      string `json:"raw_payload_storage"`
 	RetentionDays          int    `json:"retention_days"`
 	WebhookSignatureHeader string `json:"webhook_signature_header"`
+	WebhookAPIVersion      string `json:"webhook_api_version"`
 }
 
 func Default() Config {
@@ -50,6 +53,7 @@ func Default() Config {
 		RawPayloadStorage:      RawPayloadStore,
 		RetentionDays:          30,
 		WebhookSignatureHeader: DefaultWebhookSignatureHeader,
+		WebhookAPIVersion:      DefaultWebhookAPIVersion,
 	}
 }
 
@@ -108,6 +112,9 @@ func LoadWithLookup(path string, lookup LookupFunc) (Config, error) {
 	if value, ok := lookup(envWebhookSignatureHeader); ok {
 		cfg.WebhookSignatureHeader = value
 	}
+	if value, ok := lookup(envWebhookAPIVersion); ok {
+		cfg.WebhookAPIVersion = value
+	}
 	if cfg.RelayMode {
 		cfg.RawPayloadStorage = RawPayloadMetadataOnly
 	}
@@ -141,6 +148,9 @@ func (c Config) Validate() error {
 	}
 	if c.WebhookSignatureHeader == "" {
 		return errors.New("webhook_signature_header is required")
+	}
+	if c.WebhookAPIVersion == "" {
+		return errors.New("webhook_api_version is required")
 	}
 	return nil
 }
@@ -188,6 +198,9 @@ func merge(base Config, override Config) Config {
 	}
 	if override.WebhookSignatureHeader != "" {
 		base.WebhookSignatureHeader = override.WebhookSignatureHeader
+	}
+	if override.WebhookAPIVersion != "" {
+		base.WebhookAPIVersion = override.WebhookAPIVersion
 	}
 	return base
 }

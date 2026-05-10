@@ -10,15 +10,22 @@ const testDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(testDir, "../..");
 const smokeDir = resolve(repoRoot, ".billtap/sdk-smoke");
 const binaryPath = resolve(smokeDir, "billtap");
-const timeoutMs = Number(process.env.BILLTAP_STRIPE_SDK_SMOKE_TIMEOUT_MS ?? 30_000);
-const providedBaseURL = firstEnv("BILLTAP_STRIPE_SDK_SMOKE_BASE_URL", "BILLTAP_BASE_URL");
+const timeoutMs = Number(
+  process.env.BILLTAP_STRIPE_SDK_SMOKE_TIMEOUT_MS ?? 30_000,
+);
+const providedBaseURL = firstEnv(
+  "BILLTAP_STRIPE_SDK_SMOKE_BASE_URL",
+  "BILLTAP_BASE_URL",
+);
 const reportJSONPath = resolve(
   repoRoot,
-  process.env.BILLTAP_STRIPE_SDK_SMOKE_REPORT_JSON ?? ".billtap/sdk-smoke/stripe-sdk-smoke-report.json",
+  process.env.BILLTAP_STRIPE_SDK_SMOKE_REPORT_JSON ??
+    ".billtap/sdk-smoke/stripe-sdk-smoke-report.json",
 );
 const reportMDPath = resolve(
   repoRoot,
-  process.env.BILLTAP_STRIPE_SDK_SMOKE_REPORT_MD ?? ".billtap/sdk-smoke/stripe-sdk-smoke-report.md",
+  process.env.BILLTAP_STRIPE_SDK_SMOKE_REPORT_MD ??
+    ".billtap/sdk-smoke/stripe-sdk-smoke-report.md",
 );
 
 const report = {
@@ -47,7 +54,9 @@ async function main() {
   let receiver = null;
   try {
     localServer = providedBaseURL ? null : await startBilltap();
-    const baseURL = providedBaseURL ? normalizeBaseURL(providedBaseURL) : localServer.baseURL;
+    const baseURL = providedBaseURL
+      ? normalizeBaseURL(providedBaseURL)
+      : localServer.baseURL;
     const runId = smokeRunId(Boolean(providedBaseURL));
     report.billtap.baseURL = baseURL;
     report.runId = runId;
@@ -72,7 +81,9 @@ async function main() {
 
     await runStripeSDKSmoke(stripe, receiver, runId, Boolean(localServer));
     report.status = "passed";
-    console.log(`stripe SDK smoke passed: ${report.checks.map((item) => item.name).join(", ")}`);
+    console.log(
+      `stripe SDK smoke passed: ${report.checks.map((item) => item.name).join(", ")}`,
+    );
   } catch (error) {
     report.status = "failed";
     report.error = messageFor(error);
@@ -107,7 +118,10 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
     const retrieved = await stripe.customers.retrieve(created.id);
     assertEqual(retrieved.id, created.id, "retrieved customer id");
 
-    const listed = await stripe.customers.list({ email: created.email, limit: 10 });
+    const listed = await stripe.customers.list({
+      email: created.email,
+      limit: 10,
+    });
     assertListContains(listed, created.id, "customer list");
     return created;
   });
@@ -164,103 +178,227 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
   });
   report.objects.price = pick(price, ["id", "object", "product", "lookup_key"]);
 
-  const webhookEndpoint = await check("webhook endpoint create/retrieve/list", async () => {
-    const created = await stripe.webhookEndpoints.create({
-      url: receiver.url,
-      enabled_events: ["checkout.session.completed", "invoice.*"],
-    });
-    assertEqual(created.object, "webhook_endpoint", "webhook endpoint object");
+  const webhookEndpoint = await check(
+    "webhook endpoint create/retrieve/list",
+    async () => {
+      const created = await stripe.webhookEndpoints.create({
+        url: receiver.url,
+        enabled_events: ["checkout.session.completed", "invoice.*"],
+      });
+      assertEqual(
+        created.object,
+        "webhook_endpoint",
+        "webhook endpoint object",
+      );
 
-    const retrieved = await stripe.webhookEndpoints.retrieve(created.id);
-    assertEqual(retrieved.id, created.id, "retrieved webhook endpoint id");
+      const retrieved = await stripe.webhookEndpoints.retrieve(created.id);
+      assertEqual(retrieved.id, created.id, "retrieved webhook endpoint id");
 
-    const listed = await stripe.webhookEndpoints.list({ limit: 100 });
-    assertListContains(listed, created.id, "webhook endpoint list");
+      const listed = await stripe.webhookEndpoints.list({ limit: 100 });
+      assertListContains(listed, created.id, "webhook endpoint list");
 
-    const updated = await stripe.webhookEndpoints.update(created.id, {
-      active: true,
-      enabled_events: ["checkout.session.completed", "invoice.*", "payment_intent.*"],
-    });
-    assertEqual(updated.active, true, "updated webhook endpoint active");
-    return updated;
-  });
-  report.objects.webhookEndpoint = pick(webhookEndpoint, ["id", "object", "url", "enabled_events", "active"]);
+      const updated = await stripe.webhookEndpoints.update(created.id, {
+        active: true,
+        enabled_events: [
+          "checkout.session.completed",
+          "invoice.*",
+          "payment_intent.*",
+        ],
+      });
+      assertEqual(updated.active, true, "updated webhook endpoint active");
+      return updated;
+    },
+  );
+  report.objects.webhookEndpoint = pick(webhookEndpoint, [
+    "id",
+    "object",
+    "url",
+    "enabled_events",
+    "active",
+  ]);
 
-  const checkoutSession = await check("checkout session create/retrieve/list", async () => {
-    const created = await stripe.checkout.sessions.create({
-      customer: customer.id,
-      mode: "subscription",
-      line_items: [
-        {
-          price: price.id,
-          quantity: 2,
+  const checkoutSession = await check(
+    "checkout session create/retrieve/list",
+    async () => {
+      const optionalParamSession = await stripe.checkout.sessions.create({
+        customer: customer.id,
+        mode: "subscription",
+        line_items: [
+          {
+            price: price.id,
+            quantity: 1,
+          },
+        ],
+        allow_promotion_codes: true,
+        subscription_data: {
+          trial_period_days: 14,
         },
-      ],
-      success_url: "http://127.0.0.1/success",
-      cancel_url: "http://127.0.0.1/cancel",
-    });
-    assertEqual(created.object, "checkout.session", "checkout session object");
-    assertEqual(created.customer, customer.id, "checkout session customer");
+        success_url: "http://127.0.0.1/trial-success",
+      });
+      assertEqual(
+        optionalParamSession.object,
+        "checkout.session",
+        "checkout session optional params object",
+      );
 
-    const retrieved = await stripe.checkout.sessions.retrieve(created.id);
-    assertEqual(retrieved.id, created.id, "retrieved checkout session id");
+      const created = await stripe.checkout.sessions.create({
+        customer: customer.id,
+        mode: "subscription",
+        line_items: [
+          {
+            price: price.id,
+            quantity: 2,
+          },
+        ],
+        success_url: "http://127.0.0.1/success",
+        cancel_url: "http://127.0.0.1/cancel",
+      });
+      assertEqual(
+        created.object,
+        "checkout.session",
+        "checkout session object",
+      );
+      assertEqual(created.customer, customer.id, "checkout session customer");
 
-    const listed = await stripe.checkout.sessions.list({ limit: 100 });
-    assertListContains(listed, created.id, "checkout session list");
-    return created;
-  });
-  report.objects.checkoutSession = pick(checkoutSession, ["id", "object", "customer", "status", "payment_status"]);
+      const retrieved = await stripe.checkout.sessions.retrieve(created.id);
+      assertEqual(retrieved.id, created.id, "retrieved checkout session id");
 
-  const completion = await check("checkout completion via raw SDK request", async () => {
-    const completed = await stripe.rawRequest(
-      "POST",
-      `/v1/checkout/sessions/${encodeURIComponent(checkoutSession.id)}/complete`,
-      { outcome: "payment_succeeded" },
-    );
-    assertEqual(completed.session.payment_status, "paid", "completed checkout payment status");
-    assert(completed.session.subscription, "completed checkout should include subscription");
-    assert(completed.session.invoice, "completed checkout should include invoice");
-    assert(completed.session.payment_intent, "completed checkout should include payment intent");
-    return completed;
-  });
+      const listed = await stripe.checkout.sessions.list({ limit: 100 });
+      assertListContains(listed, created.id, "checkout session list");
+      return created;
+    },
+  );
+  report.objects.checkoutSession = pick(checkoutSession, [
+    "id",
+    "object",
+    "customer",
+    "status",
+    "payment_status",
+  ]);
+
+  const completion = await check(
+    "checkout completion via raw SDK request",
+    async () => {
+      const completed = await stripe.rawRequest(
+        "POST",
+        `/v1/checkout/sessions/${encodeURIComponent(checkoutSession.id)}/complete`,
+        { outcome: "payment_succeeded" },
+      );
+      assertEqual(
+        completed.session.payment_status,
+        "paid",
+        "completed checkout payment status",
+      );
+      assert(
+        completed.session.subscription,
+        "completed checkout should include subscription",
+      );
+      assert(
+        completed.session.invoice,
+        "completed checkout should include invoice",
+      );
+      assert(
+        completed.session.payment_intent,
+        "completed checkout should include payment intent",
+      );
+      return completed;
+    },
+  );
   report.objects.subscription = { id: completion.session.subscription };
   report.objects.invoice = { id: completion.session.invoice };
   report.objects.paymentIntent = { id: completion.session.payment_intent };
 
   await check("completed checkout retrieval flows", async () => {
-    const completedSession = await stripe.checkout.sessions.retrieve(checkoutSession.id);
-    assertEqual(completedSession.payment_status, "paid", "retrieved completed checkout payment status");
+    const completedSession = await stripe.checkout.sessions.retrieve(
+      checkoutSession.id,
+    );
+    assertEqual(
+      completedSession.payment_status,
+      "paid",
+      "retrieved completed checkout payment status",
+    );
 
-    const subscriptions = await stripe.subscriptions.list({ customer: customer.id, status: "all", limit: 10 });
-    assertListContains(subscriptions, completedSession.subscription, "subscription list");
+    const subscriptions = await stripe.subscriptions.list({
+      customer: customer.id,
+      status: "all",
+      limit: 10,
+    });
+    assertListContains(
+      subscriptions,
+      completedSession.subscription,
+      "subscription list",
+    );
 
-    const subscription = await stripe.subscriptions.retrieve(completedSession.subscription);
-    assertEqual(subscription.customer, customer.id, "retrieved subscription customer");
+    const subscription = await stripe.subscriptions.retrieve(
+      completedSession.subscription,
+    );
+    assertEqual(
+      subscription.customer,
+      customer.id,
+      "retrieved subscription customer",
+    );
 
-    const invoices = await stripe.invoices.list({ customer: customer.id, subscription: subscription.id, limit: 10 });
+    const invoices = await stripe.invoices.list({
+      customer: customer.id,
+      subscription: subscription.id,
+      limit: 10,
+    });
     assertListContains(invoices, completedSession.invoice, "invoice list");
 
     const invoice = await stripe.invoices.retrieve(completedSession.invoice);
-    assertEqual(invoice.subscription, subscription.id, "retrieved invoice subscription");
+    assertEqual(
+      invoice.subscription,
+      subscription.id,
+      "retrieved invoice subscription",
+    );
 
     const paymentIntents = await stripe.paymentIntents.list({ limit: 100 });
-    assertListContains(paymentIntents, completedSession.payment_intent, "payment intent list");
+    assertListContains(
+      paymentIntents,
+      completedSession.payment_intent,
+      "payment intent list",
+    );
 
-    const paymentIntent = await stripe.paymentIntents.retrieve(completedSession.payment_intent);
-    assertEqual(paymentIntent.status, "succeeded", "retrieved payment intent status");
+    const paymentIntent = await stripe.paymentIntents.retrieve(
+      completedSession.payment_intent,
+    );
+    assertEqual(
+      paymentIntent.status,
+      "succeeded",
+      "retrieved payment intent status",
+    );
 
-    const paymentMethods = await stripe.paymentMethods.list({ customer: customer.id, type: "card", limit: 10 });
-    assert(paymentMethods.data.length > 0, "payment method list should return a sandbox card");
+    const paymentMethods = await stripe.paymentMethods.list({
+      customer: customer.id,
+      type: "card",
+      limit: 10,
+    });
+    assert(
+      paymentMethods.data.length > 0,
+      "payment method list should return a sandbox card",
+    );
   });
 
   const checkoutEvent = await check("event list/retrieve", async () => {
-    const events = await stripe.events.list({ type: "checkout.session.completed", limit: 100 });
-    const event = events.data.find((candidate) => candidate.data?.object?.id === checkoutSession.id);
-    assert(event, "events list should include completed checkout session event");
+    const events = await stripe.events.list({
+      type: "checkout.session.completed",
+      limit: 100,
+    });
+    const event = events.data.find(
+      (candidate) => candidate.data?.object?.id === checkoutSession.id,
+    );
+    assert(
+      event,
+      "events list should include completed checkout session event",
+    );
 
     const retrieved = await stripe.events.retrieve(event.id);
     assertEqual(retrieved.id, event.id, "retrieved event id");
-    assertEqual(retrieved.type, "checkout.session.completed", "retrieved event type");
+    assertEqual(
+      retrieved.type,
+      "checkout.session.completed",
+      "retrieved event type",
+    );
     return retrieved;
   });
   report.objects.event = pick(checkoutEvent, ["id", "object", "type"]);
@@ -270,12 +408,20 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
     assertEqual(deleted.active, false, "deleted webhook endpoint active flag");
   });
 
-  const expectDelivery = ownsBilltapServer || process.env.BILLTAP_STRIPE_SDK_SMOKE_EXPECT_DELIVERY === "1";
+  const expectDelivery =
+    ownsBilltapServer ||
+    process.env.BILLTAP_STRIPE_SDK_SMOKE_EXPECT_DELIVERY === "1";
   if (expectDelivery) {
     await check("webhook receiver observed delivery", async () => {
-      await waitFor(() => receiver.received.length > 0, timeoutMs, "webhook delivery");
+      await waitFor(
+        () => receiver.received.length > 0,
+        timeoutMs,
+        "webhook delivery",
+      );
       assert(
-        receiver.received.some((event) => event.type === "checkout.session.completed"),
+        receiver.received.some(
+          (event) => event.type === "checkout.session.completed",
+        ),
         "webhook receiver should observe checkout.session.completed",
       );
     });
@@ -284,7 +430,8 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
 
 async function startBilltap() {
   await run("go", ["build", "-o", binaryPath, "./cmd/billtap"]);
-  const port = Number(process.env.BILLTAP_STRIPE_SDK_SMOKE_PORT) || await findOpenPort();
+  const port =
+    Number(process.env.BILLTAP_STRIPE_SDK_SMOKE_PORT) || (await findOpenPort());
   const baseURL = `http://127.0.0.1:${port}`;
   const databasePath = resolve(smokeDir, `stripe-sdk-smoke-${process.pid}.db`);
   await removeDatabase(databasePath);
@@ -301,8 +448,12 @@ async function startBilltap() {
     stdio: ["ignore", "pipe", "pipe"],
   });
 
-  child.stdout.on("data", (chunk) => process.stdout.write(`[billtap] ${chunk}`));
-  child.stderr.on("data", (chunk) => process.stderr.write(`[billtap] ${chunk}`));
+  child.stdout.on("data", (chunk) =>
+    process.stdout.write(`[billtap] ${chunk}`),
+  );
+  child.stderr.on("data", (chunk) =>
+    process.stderr.write(`[billtap] ${chunk}`),
+  );
 
   try {
     await waitForReady(`${baseURL}/healthz`, child);
@@ -355,7 +506,8 @@ async function startWebhookReceiver() {
         id: parsed.id,
         type: parsed.type,
         body,
-        signature: req.headers["billtap-signature"] || req.headers["stripe-signature"],
+        signature:
+          req.headers["billtap-signature"] || req.headers["stripe-signature"],
       });
       res.writeHead(200, { "Content-Type": "application/json" });
       res.end(JSON.stringify({ received: true }));
@@ -385,21 +537,29 @@ async function startWebhookReceiver() {
 
 function stripeClient(baseURL) {
   const url = new URL(baseURL);
-  return new Stripe(process.env.BILLTAP_STRIPE_SDK_SMOKE_API_KEY ?? "sk_test_billtap_sdk_smoke", {
-    host: url.hostname,
-    port: url.port || (url.protocol === "https:" ? "443" : "80"),
-    protocol: url.protocol.replace(":", ""),
-    maxNetworkRetries: 0,
-    telemetry: false,
-    timeout: timeoutMs,
-  });
+  return new Stripe(
+    process.env.BILLTAP_STRIPE_SDK_SMOKE_API_KEY ?? "sk_test_billtap_sdk_smoke",
+    {
+      host: url.hostname,
+      port: url.port || (url.protocol === "https:" ? "443" : "80"),
+      protocol: url.protocol.replace(":", ""),
+      maxNetworkRetries: 0,
+      telemetry: false,
+      timeout: timeoutMs,
+    },
+  );
 }
 
 async function check(name, fn) {
   const startedAt = new Date().toISOString();
   try {
     const value = await fn();
-    report.checks.push({ name, status: "passed", startedAt, finishedAt: new Date().toISOString() });
+    report.checks.push({
+      name,
+      status: "passed",
+      startedAt,
+      finishedAt: new Date().toISOString(),
+    });
     return value;
   } catch (error) {
     report.checks.push({
@@ -426,23 +586,31 @@ async function run(command, args) {
         resolvePromise();
         return;
       }
-      reject(new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`));
+      reject(
+        new Error(`${command} ${args.join(" ")} exited with ${signal ?? code}`),
+      );
     });
   });
 }
 
 async function waitForReady(url, child) {
-  await waitFor(async () => {
-    if (child && (child.exitCode !== null || child.signalCode !== null)) {
-      throw new Error(`billtap server exited before readiness with ${child.signalCode ?? child.exitCode}`);
-    }
-    try {
-      const response = await fetch(url);
-      return response.ok;
-    } catch {
-      return false;
-    }
-  }, timeoutMs, url);
+  await waitFor(
+    async () => {
+      if (child && (child.exitCode !== null || child.signalCode !== null)) {
+        throw new Error(
+          `billtap server exited before readiness with ${child.signalCode ?? child.exitCode}`,
+        );
+      }
+      try {
+        const response = await fetch(url);
+        return response.ok;
+      } catch {
+        return false;
+      }
+    },
+    timeoutMs,
+    url,
+  );
 }
 
 async function waitFor(predicate, timeout, label) {
@@ -514,12 +682,22 @@ function markdownReport() {
     "",
   ];
   for (const checkResult of report.checks) {
-    lines.push(`- ${checkResult.status === "passed" ? "PASS" : "FAIL"} ${checkResult.name}`);
+    lines.push(
+      `- ${checkResult.status === "passed" ? "PASS" : "FAIL"} ${checkResult.name}`,
+    );
     if (checkResult.error) {
       lines.push(`  - ${checkResult.error}`);
     }
   }
-  lines.push("", "## Objects", "", "```json", JSON.stringify(report.objects, null, 2), "```", "");
+  lines.push(
+    "",
+    "## Objects",
+    "",
+    "```json",
+    JSON.stringify(report.objects, null, 2),
+    "```",
+    "",
+  );
   if (report.error) {
     lines.push("## Error", "", "```text", report.error, "```", "");
   }
@@ -534,13 +712,18 @@ function assert(value, message) {
 
 function assertEqual(actual, expected, label) {
   if (actual !== expected) {
-    throw new Error(`${label}: got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`);
+    throw new Error(
+      `${label}: got ${JSON.stringify(actual)}, want ${JSON.stringify(expected)}`,
+    );
   }
 }
 
 function assertListContains(list, id, label) {
   assert(Array.isArray(list.data), `${label} should be a Stripe list`);
-  assert(list.data.some((item) => item.id === id), `${label} should include ${id}`);
+  assert(
+    list.data.some((item) => item.id === id),
+    `${label} should include ${id}`,
+  );
 }
 
 function pick(value, keys) {

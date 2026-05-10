@@ -48,6 +48,7 @@ func (s *Server) routes() {
 				StoreRawPayloads:    s.cfg.RawPayloadStorage != config.RawPayloadMetadataOnly,
 				RetentionDays:       s.cfg.RetentionDays,
 				SignatureHeaderName: s.cfg.WebhookSignatureHeader,
+				APIVersion:          s.cfg.WebhookAPIVersion,
 			})
 		}
 		var diagnosticsService *diagnostics.Service

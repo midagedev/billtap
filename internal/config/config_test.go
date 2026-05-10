@@ -24,12 +24,15 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.WebhookSignatureHeader != DefaultWebhookSignatureHeader {
 		t.Fatalf("WebhookSignatureHeader = %q, want %q", cfg.WebhookSignatureHeader, DefaultWebhookSignatureHeader)
 	}
+	if cfg.WebhookAPIVersion != DefaultWebhookAPIVersion {
+		t.Fatalf("WebhookAPIVersion = %q, want %q", cfg.WebhookAPIVersion, DefaultWebhookAPIVersion)
+	}
 }
 
 func TestLoadConfigFileThenEnvOverrides(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "billtap.json")
-	body := `{"addr":":9000","database_url":"file.db","static_dir":"static","public_base_url":"https://billtap.example.test","environment":"test","raw_payload_storage":"metadata_only","retention_days":7,"webhook_signature_header":"Billtap-Signature"}`
+	body := `{"addr":":9000","database_url":"file.db","static_dir":"static","public_base_url":"https://billtap.example.test","environment":"test","raw_payload_storage":"metadata_only","retention_days":7,"webhook_signature_header":"Billtap-Signature","webhook_api_version":"2025-03-31.basil"}`
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatalf("write config file: %v", err)
 	}
@@ -39,6 +42,7 @@ func TestLoadConfigFileThenEnvOverrides(t *testing.T) {
 		envDatabaseURL:            ":memory:",
 		envPublicBaseURL:          "http://127.0.0.1:18080",
 		envWebhookSignatureHeader: "Stripe-Signature",
+		envWebhookAPIVersion:      "2025-12-15.clover",
 	}
 	cfg, err := LoadWithLookup(path, func(key string) (string, bool) {
 		value, ok := env[key]
@@ -65,6 +69,9 @@ func TestLoadConfigFileThenEnvOverrides(t *testing.T) {
 	}
 	if cfg.WebhookSignatureHeader != "Stripe-Signature" {
 		t.Fatalf("WebhookSignatureHeader = %q, want env override", cfg.WebhookSignatureHeader)
+	}
+	if cfg.WebhookAPIVersion != "2025-12-15.clover" {
+		t.Fatalf("WebhookAPIVersion = %q, want env override", cfg.WebhookAPIVersion)
 	}
 }
 

@@ -2,21 +2,21 @@
 
 This is the public gate snapshot. Internal adoption evidence and raw handoff notes are preserved locally under `.private/`.
 
-| Gate | Status | Public evidence |
-| --- | --- | --- |
-| G0 Spec Readiness | Passed | Constitution, product spec, plan, tasks, gates, and docs exist |
-| G1 Runtime Contract | Passed | Go server, config loading, SQLite storage, in-memory test storage, health endpoints |
-| G2 Checkout MVP | Passed | Customer/product/price/checkout APIs, checkout UI, checkout completion state |
-| G3 Webhook Reliability | Passed | Signed delivery, attempts, retry, duplicate, delay, out-of-order, replay |
-| G4 Debuggability | Passed | Dashboard objects, request traces, timeline, webhook detail, app response evidence, diagnostic/debug bundles |
-| G5 CI Contract | Passed | YAML scenario runner, local clock, app assertions, JSON/Markdown reports, exit codes |
-| G6 Portal Coverage | Passed | Portal UI, plan change, seat change, cancellation, resume, payment-method simulation, invoice history |
-| G7 SaaS Workspace Profile | Passed | Generic `saas` scenario pack for workspace plans, seats, members, export quota, extra export payment, payment history, support bundle, and webhook evidence |
-| G8 Production Boundary | Passed | Secret masking, card-data rejection, relay metadata-only raw payload storage, retention redaction, audit log |
-| G9 Release Candidate | Passed locally | Dockerfile, sample app, public examples, release checklist |
-| G10 Fixture Integration Smoke | Passed locally | Fixture apply/snapshot/assert APIs support deterministic integration setup |
-| G11 Assertion Ergonomics | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots |
-| G12 Public Release Readiness | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 28 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present |
+| Gate                          | Status         | Public evidence                                                                                                                                             |
+| ----------------------------- | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| G0 Spec Readiness             | Passed         | Constitution, product spec, plan, tasks, gates, and docs exist                                                                                              |
+| G1 Runtime Contract           | Passed         | Go server, config loading, SQLite storage, in-memory test storage, health endpoints                                                                         |
+| G2 Checkout MVP               | Passed         | Customer/product/price/checkout APIs, checkout UI, checkout completion state                                                                                |
+| G3 Webhook Reliability        | Passed         | Signed delivery, attempts, retry, duplicate, delay, out-of-order, replay                                                                                    |
+| G4 Debuggability              | Passed         | Dashboard objects, request traces, timeline, webhook detail, app response evidence, diagnostic/debug bundles                                                |
+| G5 CI Contract                | Passed         | YAML scenario runner, local clock, app assertions, JSON/Markdown reports, exit codes                                                                        |
+| G6 Portal Coverage            | Passed         | Portal UI, plan change, seat change, cancellation, resume, payment-method simulation, invoice history                                                       |
+| G7 SaaS Workspace Profile     | Passed         | Generic `saas` scenario pack for workspace plans, seats, members, export quota, extra export payment, payment history, support bundle, and webhook evidence |
+| G8 Production Boundary        | Passed         | Secret masking, card-data rejection, relay metadata-only raw payload storage, retention redaction, audit log                                                |
+| G9 Release Candidate          | Passed locally | Dockerfile, sample app, public examples, release checklist                                                                                                  |
+| G10 Fixture Integration Smoke | Passed locally | Fixture apply/snapshot/assert APIs support deterministic integration setup                                                                                  |
+| G11 Assertion Ergonomics      | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots                                                                                        |
+| G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 29 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
 
 ## Current Public Claim
 
@@ -27,8 +27,8 @@ under Apache-2.0.
 
 ## Current Compatibility Evidence
 
-- Scorecard version: `l3-public-readiness-v2`
-- Release-blocking scorecard cases: 28
+- Scorecard version: `l3-public-readiness-v3`
+- Release-blocking scorecard cases: 29
 - Required scorecard release result: `mismatch=0`, `error=0`, `passed=true`
 - Coverage focus: request validation, idempotency mismatch, deterministic
   checkout payment-error aliases
@@ -39,7 +39,7 @@ Verified on 2026-05-09 from branch `codex/apache-license-release-readiness`:
 
 - `go test ./...`
 - `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
-  - result: `imported=28 skipped=1 unsupported=1 mismatch=0 error=0`
+  - result: `imported=29 skipped=1 unsupported=1 mismatch=0 error=0`
 - `npm ci`
 - `npm run typecheck`
 - `npm run build`
