@@ -17,7 +17,8 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G10 Fixture Integration Smoke | Passed locally | Fixture apply/snapshot/assert APIs support deterministic integration setup                                                                                  |
 | G11 Assertion Ergonomics      | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots                                                                                        |
 | G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 30 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
-| G13 Stripe API Expansion      | In progress    | Roadmap defines compatibility levels and endpoint-family priorities; OpenAPI inventory generator and optional workflow write JSON/Markdown coverage artifacts  |
+| G13 Stripe API Expansion      | Passed locally | Roadmap defines compatibility levels and endpoint-family priorities; OpenAPI inventory generator and optional workflow write JSON/Markdown coverage artifacts  |
+| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 37/619 baseline, family thresholds, and chunk plan                              |
 
 ## Current Public Claim
 
@@ -33,6 +34,9 @@ under Apache-2.0.
 - Required scorecard release result: `mismatch=0`, `error=0`, `passed=true`
 - Coverage focus: request validation, protocol parameter acceptance,
   idempotency mismatch, deterministic checkout payment-error aliases
+- OpenAPI operation baseline: `37 / 619`, `6.0%`
+- Long-running OpenAPI operation target: at least `558 / 619`, `90.0%`, at
+  `L1+` with deeper P0/P1 behavior gates
 
 ## Last Local Code Verification
 

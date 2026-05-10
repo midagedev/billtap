@@ -178,6 +178,19 @@ Pass criteria:
 - OpenAPI inventory, scorecard expansion, and optional oracle lanes are
   documented before broad endpoint work starts
 - new compatibility claims require fixtures, tests, and `docs/COMPATIBILITY.md`
+
+## G14: Stripe API 90% Coverage Program
+
+Pass criteria:
+
+- `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines the concrete 90% target,
+  current baseline, minimum operation count, and maximum `L0` budget
+- generated `stripe-api-inventory.json` reports `summary.implemented_percent >= 90.0`
+  before the target can be marked passed
+- P0/P1 families have explicit minimum levels separate from broad L1/L2
+  auxiliary coverage
+- every coverage-increasing PR records the before/after family rows from the
+  generated inventory
   updates
 - docs continue to distinguish Billtap's stateful local billing lab from full
   Stripe parity and real payment processing

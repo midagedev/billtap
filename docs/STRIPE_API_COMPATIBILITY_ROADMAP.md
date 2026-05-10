@@ -58,6 +58,21 @@ This keeps the project honest: broad compatibility helps SDKs and integrations
 start, while deep compatibility is reserved for flows where Billtap can provide
 real local testing value.
 
+## Long-Running 90% Goal
+
+The concrete expansion target is defined in
+`docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
+
+- reach at least `90.0%` OpenAPI operation coverage at `L1+`
+- move from the current `37 / 619` baseline to at least `558 / 619`
+- keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
+  matters
+- use broad `L1-L2` validation/fixture coverage for safe low-state and
+  auxiliary endpoints
+
+This goal is intentionally not a claim of complete Stripe parity or real
+payment processing.
+
 ## Endpoint Family Priorities
 
 | Priority | Family                         | Target level | Rationale                                                                                 |
