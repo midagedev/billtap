@@ -36,6 +36,9 @@ Do not describe Billtap as:
 - Error simulation: checkout completion can simulate success, card declines,
   insufficient funds, expired cards, incorrect CVC, processing errors, missing
   payment methods, and authentication-required states.
+- Direct intent state machines: PaymentIntent and SetupIntent create, confirm,
+  capture/cancel, and deterministic failure aliases can run without Stripe
+  testmode or real card data.
 - Webhook lab: delivery attempts record signature evidence, retry scheduling,
   duplicate delivery, delay, out-of-order metadata, replay, endpoint failure,
   timeout, and signature-mismatch evidence.
@@ -78,8 +81,8 @@ The scorecard evidence should state:
 
 Current scorecard evidence on 2026-05-10:
 
-- Scorecard version: `l3-public-readiness-v5`
-- Scorecard result: `imported=35 skipped=1 unsupported=1 mismatch=0 error=0`
+- Scorecard version: `l3-public-readiness-v6`
+- Scorecard result: `imported=44 skipped=1 unsupported=1 mismatch=0 error=0`
 - Apache-2.0 `LICENSE`, `NOTICE`, `package.json`, and `package-lock.json`
   metadata are aligned.
 

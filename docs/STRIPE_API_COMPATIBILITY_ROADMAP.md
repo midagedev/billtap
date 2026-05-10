@@ -64,7 +64,7 @@ The concrete expansion target is defined in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
 
 - reach at least `90.0%` OpenAPI operation coverage at `L1+`
-- move from the current `37 / 619` baseline to at least `558 / 619`
+- move from the current `46 / 619` baseline to at least `558 / 619`
 - keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
   matters
 - use broad `L1-L2` validation/fixture coverage for safe low-state and
@@ -352,8 +352,8 @@ Each chunk should use the PR -> review -> fix -> merge workflow.
 | S2-B  | Fixture response harness  | Low-state fixture response engine for inventory-only endpoints                   | Fixture-shape scorecard                           |
 | S3-A  | Renewal/test clock        | Renewal invoices, trial end, retry mutation, local clock event sequences         | Scenario reports and webhook tests                |
 | S3-B  | Discounts/credits/meters  | Coupons, promotion codes, discounts, credit notes, usage/meter events            | Scenario and billing engine tests                 |
-| S4-A  | Direct payment intents    | Create/confirm/capture/cancel state machine and failure aliases                  | SDK smoke and API tests                           |
-| S4-B  | Setup/payment methods     | SetupIntent and PaymentMethod attach/detach/update lifecycle                     | SDK smoke and no-card-data boundary tests         |
+| S4-A  | Direct payment intents    | Create/confirm/capture/cancel state machine and failure aliases                  | API tests landed; SDK smoke remains               |
+| S4-B  | Setup/payment methods     | SetupIntent state machine landed; PaymentMethod attach/detach/update lifecycle   | SDK smoke and no-card-data boundary tests         |
 | S5-A  | Refund/dispute history    | Refunds, disputes, balance transactions, support/debug evidence                  | Scenario reports and dashboard/debug bundle tests |
 | S6-A  | Connect smoke             | Connected-account fixtures, transfer/application fee/payout evidence             | Webhook routing tests and sample platform smoke   |
 | S7-A  | SDK matrix                | Node, Go, Java, Python, Ruby smoke lanes and reports                             | CI/manual workflow artifacts                      |
@@ -380,7 +380,7 @@ protocol baseline, broad compatibility will become a pile of ad hoc routes.
 After S0/S1, the highest-value implementation order is:
 
 1. Renewal/test clock/retry mutation for subscriptions and invoices.
-2. Direct PaymentIntent and SetupIntent lifecycle.
-3. Coupons, discounts, credit notes, refunds, and payment history.
+2. Coupons, discounts, credit notes, refunds, and payment history.
+3. Connect smoke fixtures and connected-account webhook routing.
 4. OpenAPI-derived L1 validation for broad low-state endpoint coverage.
 5. Official SDK matrix and optional stripe-mock oracle lane.

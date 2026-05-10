@@ -320,6 +320,165 @@ func TestCheckoutPaymentErrorSimulation(t *testing.T) {
 	}
 }
 
+func TestDirectPaymentIntentAndSetupIntentStateMachines(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"direct-intents@example.test"}})
+
+	created := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents", url.Values{
+		"amount":   {"4900"},
+		"currency": {"usd"},
+		"customer": {customer.ID},
+	})
+	if created.Status != "requires_payment_method" || created.CustomerID != customer.ID || created.Amount != 4900 {
+		t.Fatalf("created payment intent = %#v, want requires_payment_method with customer/amount", created)
+	}
+
+	confirmed := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents/"+created.ID+"/confirm", url.Values{
+		"payment_method": {"pm_card_visa"},
+	})
+	if confirmed.Status != "succeeded" || confirmed.PaymentMethodID != "pm_card_visa" {
+		t.Fatalf("confirmed payment intent = %#v, want succeeded with payment method", confirmed)
+	}
+	reconfirmStatus, reconfirmBody := postFormStatus(t, handler, "/v1/payment_intents/"+confirmed.ID+"/confirm", url.Values{
+		"payment_method": {"pm_card_visa"},
+	})
+	reconfirmErr := decodeErrorBody(t, reconfirmBody)
+	if reconfirmStatus != http.StatusBadRequest || reconfirmErr.Error.Code != "parameter_invalid" || reconfirmErr.Error.Param != "status" {
+		t.Fatalf("reconfirm status=%d error=%#v, want invalid terminal status", reconfirmStatus, reconfirmErr.Error)
+	}
+	cancelSucceededStatus, cancelSucceededBody := postFormStatus(t, handler, "/v1/payment_intents/"+confirmed.ID+"/cancel", url.Values{})
+	cancelSucceededErr := decodeErrorBody(t, cancelSucceededBody)
+	if cancelSucceededStatus != http.StatusBadRequest || cancelSucceededErr.Error.Code != "parameter_invalid" || cancelSucceededErr.Error.Param != "status" {
+		t.Fatalf("cancel succeeded status=%d error=%#v, want invalid terminal status", cancelSucceededStatus, cancelSucceededErr.Error)
+	}
+
+	captureBeforeConfirmStatus, captureBeforeConfirmBody := postFormStatus(t, handler, "/v1/payment_intents/"+created.ID+"/capture", url.Values{})
+	captureBeforeConfirmErr := decodeErrorBody(t, captureBeforeConfirmBody)
+	if captureBeforeConfirmStatus != http.StatusBadRequest || captureBeforeConfirmErr.Error.Code != "parameter_invalid" || captureBeforeConfirmErr.Error.Param != "status" {
+		t.Fatalf("capture before confirm status=%d error=%#v, want invalid status", captureBeforeConfirmStatus, captureBeforeConfirmErr.Error)
+	}
+
+	manual := postForm[struct {
+		ID                string `json:"id"`
+		Status            string `json:"status"`
+		CaptureMethod     string `json:"capture_method"`
+		AmountCapturable  int64  `json:"amount_capturable"`
+		AmountReceived    int64  `json:"amount_received"`
+		LastPaymentError  any    `json:"last_payment_error"`
+		PaymentMethodID   string `json:"payment_method"`
+		ClientSecret      string `json:"client_secret"`
+		CreatedUnix       int64  `json:"created"`
+		CreatedAtNotEmpty any    `json:"created_at"`
+	}](t, handler, "/v1/payment_intents", url.Values{
+		"amount":         {"6600"},
+		"currency":       {"usd"},
+		"capture_method": {"manual"},
+		"payment_method": {"pm_card_visa"},
+		"confirm":        {"true"},
+	})
+	if manual.Status != "requires_capture" || manual.CaptureMethod != "manual" || manual.AmountCapturable != 6600 || manual.AmountReceived != 0 {
+		t.Fatalf("manual payment intent = %#v, want requires_capture with capturable amount", manual)
+	}
+	partialCaptureStatus, partialCaptureBody := postFormStatus(t, handler, "/v1/payment_intents/"+manual.ID+"/capture", url.Values{
+		"amount_to_capture": {"100"},
+	})
+	partialCaptureErr := decodeErrorBody(t, partialCaptureBody)
+	if partialCaptureStatus != http.StatusBadRequest || partialCaptureErr.Error.Code != "parameter_invalid" || partialCaptureErr.Error.Param != "amount_to_capture" {
+		t.Fatalf("partial capture status=%d error=%#v, want invalid amount_to_capture", partialCaptureStatus, partialCaptureErr.Error)
+	}
+	captured := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents/"+manual.ID+"/capture", url.Values{
+		"amount_to_capture": {"6600"},
+	})
+	if captured.Status != "succeeded" {
+		t.Fatalf("captured payment intent = %#v, want succeeded", captured)
+	}
+
+	declined := postForm[struct {
+		ID               string `json:"id"`
+		Status           string `json:"status"`
+		LastPaymentError struct {
+			Type        string `json:"type"`
+			Code        string `json:"code"`
+			DeclineCode string `json:"decline_code"`
+			Message     string `json:"message"`
+		} `json:"last_payment_error"`
+	}](t, handler, "/v1/payment_intents", url.Values{
+		"amount":         {"4900"},
+		"currency":       {"usd"},
+		"payment_method": {"pm_card_visa_chargeDeclined"},
+		"confirm":        {"true"},
+	})
+	if declined.Status != "requires_payment_method" || declined.LastPaymentError.Type != "card_error" || declined.LastPaymentError.Code != "card_declined" || declined.LastPaymentError.DeclineCode != "generic_decline" {
+		t.Fatalf("declined payment intent = %#v, want card_declined generic_decline", declined)
+	}
+
+	canceled := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents/"+declined.ID+"/cancel", url.Values{
+		"cancellation_reason": {"requested_by_customer"},
+	})
+	if canceled.Status != "canceled" {
+		t.Fatalf("canceled payment intent = %#v, want canceled", canceled)
+	}
+
+	setup := postForm[billing.SetupIntent](t, handler, "/v1/setup_intents", url.Values{
+		"customer":       {customer.ID},
+		"payment_method": {"pm_card_visa"},
+		"usage":          {"off_session"},
+		"confirm":        {"true"},
+	})
+	if setup.Status != "succeeded" || setup.CustomerID != customer.ID || setup.PaymentMethodID != "pm_card_visa" {
+		t.Fatalf("setup intent = %#v, want succeeded with customer/payment_method", setup)
+	}
+	setupList := getJSON[struct {
+		Object string                `json:"object"`
+		Data   []billing.SetupIntent `json:"data"`
+	}](t, handler, "/v1/setup_intents?customer="+customer.ID)
+	if setupList.Object != "list" || len(setupList.Data) != 1 || setupList.Data[0].ID != setup.ID {
+		t.Fatalf("setup intent list = %#v, want one setup intent for customer", setupList)
+	}
+	cancelableSetup := postForm[billing.SetupIntent](t, handler, "/v1/setup_intents", url.Values{
+		"customer": {customer.ID},
+		"usage":    {"off_session"},
+	})
+	setupCanceled := postForm[billing.SetupIntent](t, handler, "/v1/setup_intents/"+cancelableSetup.ID+"/cancel", url.Values{})
+	if setupCanceled.Status != "canceled" {
+		t.Fatalf("canceled setup intent = %#v, want canceled", setupCanceled)
+	}
+	setupCancelSucceededStatus, setupCancelSucceededBody := postFormStatus(t, handler, "/v1/setup_intents/"+setup.ID+"/cancel", url.Values{})
+	setupCancelSucceededErr := decodeErrorBody(t, setupCancelSucceededBody)
+	if setupCancelSucceededStatus != http.StatusBadRequest || setupCancelSucceededErr.Error.Code != "parameter_invalid" || setupCancelSucceededErr.Error.Param != "status" {
+		t.Fatalf("setup cancel succeeded status=%d error=%#v, want invalid terminal status", setupCancelSucceededStatus, setupCancelSucceededErr.Error)
+	}
+	setupConfirmCanceledStatus, setupConfirmCanceledBody := postFormStatus(t, handler, "/v1/setup_intents/"+setupCanceled.ID+"/confirm", url.Values{
+		"payment_method": {"pm_card_visa"},
+	})
+	setupConfirmCanceledErr := decodeErrorBody(t, setupConfirmCanceledBody)
+	if setupConfirmCanceledStatus != http.StatusBadRequest || setupConfirmCanceledErr.Error.Code != "parameter_invalid" || setupConfirmCanceledErr.Error.Param != "status" {
+		t.Fatalf("setup confirm canceled status=%d error=%#v, want invalid terminal status", setupConfirmCanceledStatus, setupConfirmCanceledErr.Error)
+	}
+
+	timeline := getJSON[struct {
+		Object string                  `json:"object"`
+		Data   []billing.TimelineEntry `json:"data"`
+	}](t, handler, "/api/timeline?paymentIntentId="+created.ID)
+	if len(timeline.Data) < 2 {
+		t.Fatalf("direct payment intent timeline entries = %d, want create and confirm evidence", len(timeline.Data))
+	}
+
+	events := getJSON[struct {
+		Object string           `json:"object"`
+		Data   []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events")
+	eventTypes := map[string]bool{}
+	for _, event := range events.Data {
+		eventTypes[event.Type] = true
+	}
+	for _, eventType := range []string{"payment_intent.created", "payment_intent.succeeded", "payment_intent.amount_capturable_updated", "payment_intent.canceled", "setup_intent.created", "setup_intent.succeeded", "setup_intent.canceled"} {
+		if !eventTypes[eventType] {
+			t.Fatalf("events missing %s in %#v", eventType, eventTypes)
+		}
+	}
+}
+
 func TestWebhookEndpointDeliveryAndReplay(t *testing.T) {
 	var signatures []string
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -623,7 +782,7 @@ func TestStripeLikeAPIErrorEnvelope(t *testing.T) {
 func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 	handler := newTestHandler(t)
 
-	status, body := postFormStatusWithHeaders(t, handler, "/v1/payment_intents/pi_123/confirm", url.Values{}, map[string]string{
+	status, body := postFormStatusWithHeaders(t, handler, "/v1/payment_intents/pi_123/apply_customer_balance", url.Values{}, map[string]string{
 		"Request-Id": "req_known_unsupported",
 	})
 	errBody := decodeErrorBody(t, body)
@@ -633,7 +792,7 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 	if errBody.Error.Type != "invalid_request_error" || errBody.Error.Code != "unsupported_endpoint" {
 		t.Fatalf("error=%#v, want unsupported_endpoint invalid_request_error", errBody.Error)
 	}
-	if !strings.Contains(errBody.Error.Message, "POST /v1/payment_intents/{id}/confirm") {
+	if !strings.Contains(errBody.Error.Message, "POST /v1/payment_intents/{id}/apply_customer_balance") {
 		t.Fatalf("message=%q, want normalized known Stripe route", errBody.Error.Message)
 	}
 
@@ -740,7 +899,7 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 		t.Fatalf("request traces = %#v, want unsupported request trace", traces)
 	}
 	trace := traces.Data[0]
-	if trace.Status != http.StatusBadRequest || trace.ErrorCode != "unsupported_endpoint" || trace.Path != "/v1/payment_intents/pi_123/confirm" {
+	if trace.Status != http.StatusBadRequest || trace.ErrorCode != "unsupported_endpoint" || trace.Path != "/v1/payment_intents/pi_123/apply_customer_balance" {
 		t.Fatalf("trace = %#v, want unsupported endpoint evidence", trace)
 	}
 
@@ -918,6 +1077,97 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		"unit_amount": {"9900"},
 	})
 	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"validator@example.test"}})
+
+	t.Run("payment intent create requires amount", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/payment_intents", url.Values{
+			"currency": {"usd"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "amount" {
+			t.Fatalf("status=%d error=%#v, want missing amount", status, errBody.Error)
+		}
+	})
+
+	t.Run("payment intent create validates amount", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/payment_intents", url.Values{
+			"amount":   {"0"},
+			"currency": {"usd"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "amount" {
+			t.Fatalf("status=%d error=%#v, want invalid amount", status, errBody.Error)
+		}
+	})
+
+	t.Run("payment intent create validates capture method", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/payment_intents", url.Values{
+			"amount":         {"4900"},
+			"currency":       {"usd"},
+			"capture_method": {"later"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "capture_method" {
+			t.Fatalf("status=%d error=%#v, want invalid capture_method", status, errBody.Error)
+		}
+	})
+
+	t.Run("payment intent create confirm requires payment method or outcome", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/payment_intents", url.Values{
+			"amount":   {"4900"},
+			"currency": {"usd"},
+			"confirm":  {"true"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "payment_method" {
+			t.Fatalf("status=%d error=%#v, want missing payment_method", status, errBody.Error)
+		}
+	})
+
+	t.Run("payment intent confirm requires payment method or outcome", func(t *testing.T) {
+		intent := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents", url.Values{
+			"amount":   {"4900"},
+			"currency": {"usd"},
+		})
+		status, body := postFormStatus(t, handler, "/v1/payment_intents/"+intent.ID+"/confirm", url.Values{})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "payment_method" {
+			t.Fatalf("status=%d error=%#v, want missing payment_method", status, errBody.Error)
+		}
+	})
+
+	t.Run("payment intent confirm rejects unknown parameter", func(t *testing.T) {
+		intent := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents", url.Values{
+			"amount":   {"4900"},
+			"currency": {"usd"},
+		})
+		status, body := postFormStatus(t, handler, "/v1/payment_intents/"+intent.ID+"/confirm", url.Values{
+			"nickname": {"unused"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_unknown" || errBody.Error.Param != "nickname" {
+			t.Fatalf("status=%d error=%#v, want unknown nickname", status, errBody.Error)
+		}
+	})
+
+	t.Run("setup intent create validates usage", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/setup_intents", url.Values{
+			"usage": {"recurring"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "usage" {
+			t.Fatalf("status=%d error=%#v, want invalid usage", status, errBody.Error)
+		}
+	})
+
+	t.Run("setup intent create confirm requires payment method or outcome", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/setup_intents", url.Values{
+			"confirm": {"true"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "payment_method" {
+			t.Fatalf("status=%d error=%#v, want missing payment_method", status, errBody.Error)
+		}
+	})
 
 	t.Run("checkout line item price required", func(t *testing.T) {
 		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{

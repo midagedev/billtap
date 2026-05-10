@@ -413,8 +413,17 @@ func (s *SQLiteStore) ListInvoicesFiltered(ctx context.Context, filter billing.I
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) CreatePaymentIntent(ctx context.Context, pi billing.PaymentIntent) (billing.PaymentIntent, error) {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO payment_intents (id, customer_id, invoice_id, amount, currency, status, capture_method, failure_code, failure_decline_code, failure_message, payment_method_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		pi.ID, encodeOptionalString(pi.CustomerID), encodeOptionalString(pi.InvoiceID), pi.Amount, pi.Currency, pi.Status, pi.CaptureMethod, pi.FailureCode, pi.DeclineCode, pi.FailureMessage, pi.PaymentMethodID, encodeTime(pi.CreatedAt)); err != nil {
+		return billing.PaymentIntent{}, err
+	}
+	return s.GetPaymentIntent(ctx, pi.ID)
+}
+
 func (s *SQLiteStore) GetPaymentIntent(ctx context.Context, id string) (billing.PaymentIntent, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_decline_code, failure_message, payment_method_id, created_at FROM payment_intents WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, capture_method, failure_code, failure_decline_code, failure_message, payment_method_id, created_at FROM payment_intents WHERE id = ?`, id)
 	pi, err := scanPaymentIntent(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.PaymentIntent{}, billing.ErrNotFound
@@ -422,8 +431,40 @@ func (s *SQLiteStore) GetPaymentIntent(ctx context.Context, id string) (billing.
 	return pi, err
 }
 
+func (s *SQLiteStore) UpdatePaymentIntent(ctx context.Context, pi billing.PaymentIntent, timeline []billing.TimelineEntry) (billing.PaymentIntent, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.PaymentIntent{}, err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `UPDATE payment_intents
+		SET customer_id = ?, invoice_id = ?, amount = ?, currency = ?, status = ?, capture_method = ?, failure_code = ?, failure_decline_code = ?, failure_message = ?, payment_method_id = ?
+		WHERE id = ?`,
+		encodeOptionalString(pi.CustomerID), encodeOptionalString(pi.InvoiceID), pi.Amount, pi.Currency, pi.Status, pi.CaptureMethod, pi.FailureCode, pi.DeclineCode, pi.FailureMessage, pi.PaymentMethodID, pi.ID)
+	if err != nil {
+		return billing.PaymentIntent{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return billing.PaymentIntent{}, err
+	}
+	if changed == 0 {
+		return billing.PaymentIntent{}, billing.ErrNotFound
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.PaymentIntent{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.PaymentIntent{}, err
+	}
+	return s.GetPaymentIntent(ctx, pi.ID)
+}
+
 func (s *SQLiteStore) ListPaymentIntents(ctx context.Context) ([]billing.PaymentIntent, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_decline_code, failure_message, payment_method_id, created_at FROM payment_intents ORDER BY created_at DESC, id DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, capture_method, failure_code, failure_decline_code, failure_message, payment_method_id, created_at FROM payment_intents ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -457,7 +498,7 @@ func (s *SQLiteStore) ListPaymentIntentsFiltered(ctx context.Context, filter bil
 		}
 		clauses = append(clauses, "invoice_id IN ("+strings.Join(placeholders, ",")+")")
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, failure_code, failure_decline_code, failure_message, payment_method_id, created_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, status, capture_method, failure_code, failure_decline_code, failure_message, payment_method_id, created_at
 		FROM payment_intents WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at DESC, id DESC`, args...)
 	if err != nil {
 		return nil, err
@@ -470,6 +511,73 @@ func (s *SQLiteStore) ListPaymentIntentsFiltered(ctx context.Context, filter bil
 			return nil, err
 		}
 		out = append(out, pi)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) CreateSetupIntent(ctx context.Context, intent billing.SetupIntent) (billing.SetupIntent, error) {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO setup_intents (id, customer_id, status, usage, failure_code, failure_decline_code, failure_message, payment_method_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		intent.ID, encodeOptionalString(intent.CustomerID), intent.Status, intent.Usage, intent.FailureCode, intent.DeclineCode, intent.FailureMessage, intent.PaymentMethodID, encodeTime(intent.CreatedAt)); err != nil {
+		return billing.SetupIntent{}, err
+	}
+	return s.GetSetupIntent(ctx, intent.ID)
+}
+
+func (s *SQLiteStore) GetSetupIntent(ctx context.Context, id string) (billing.SetupIntent, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, status, usage, failure_code, failure_decline_code, failure_message, payment_method_id, created_at FROM setup_intents WHERE id = ?`, id)
+	intent, err := scanSetupIntent(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return billing.SetupIntent{}, billing.ErrNotFound
+	}
+	return intent, err
+}
+
+func (s *SQLiteStore) UpdateSetupIntent(ctx context.Context, intent billing.SetupIntent, timeline []billing.TimelineEntry) (billing.SetupIntent, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.SetupIntent{}, err
+	}
+	defer tx.Rollback()
+
+	result, err := tx.ExecContext(ctx, `UPDATE setup_intents
+		SET customer_id = ?, status = ?, usage = ?, failure_code = ?, failure_decline_code = ?, failure_message = ?, payment_method_id = ?
+		WHERE id = ?`,
+		encodeOptionalString(intent.CustomerID), intent.Status, intent.Usage, intent.FailureCode, intent.DeclineCode, intent.FailureMessage, intent.PaymentMethodID, intent.ID)
+	if err != nil {
+		return billing.SetupIntent{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return billing.SetupIntent{}, err
+	}
+	if changed == 0 {
+		return billing.SetupIntent{}, billing.ErrNotFound
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.SetupIntent{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.SetupIntent{}, err
+	}
+	return s.GetSetupIntent(ctx, intent.ID)
+}
+
+func (s *SQLiteStore) ListSetupIntents(ctx context.Context) ([]billing.SetupIntent, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, status, usage, failure_code, failure_decline_code, failure_message, payment_method_id, created_at FROM setup_intents ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []billing.SetupIntent
+	for rows.Next() {
+		intent, err := scanSetupIntent(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, intent)
 	}
 	return out, rows.Err()
 }
@@ -625,12 +733,28 @@ func scanInvoice(row scanner) (billing.Invoice, error) {
 func scanPaymentIntent(row scanner) (billing.PaymentIntent, error) {
 	var pi billing.PaymentIntent
 	var createdAt string
-	if err := row.Scan(&pi.ID, &pi.CustomerID, &pi.InvoiceID, &pi.Amount, &pi.Currency, &pi.Status, &pi.FailureCode, &pi.DeclineCode, &pi.FailureMessage, &pi.PaymentMethodID, &createdAt); err != nil {
+	var customerID, invoiceID sql.NullString
+	if err := row.Scan(&pi.ID, &customerID, &invoiceID, &pi.Amount, &pi.Currency, &pi.Status, &pi.CaptureMethod, &pi.FailureCode, &pi.DeclineCode, &pi.FailureMessage, &pi.PaymentMethodID, &createdAt); err != nil {
 		return pi, err
 	}
 	pi.Object = billing.ObjectPaymentIntent
+	pi.CustomerID = customerID.String
+	pi.InvoiceID = invoiceID.String
 	pi.CreatedAt = decodeTime(createdAt)
 	return pi, nil
+}
+
+func scanSetupIntent(row scanner) (billing.SetupIntent, error) {
+	var intent billing.SetupIntent
+	var createdAt string
+	var customerID sql.NullString
+	if err := row.Scan(&intent.ID, &customerID, &intent.Status, &intent.Usage, &intent.FailureCode, &intent.DeclineCode, &intent.FailureMessage, &intent.PaymentMethodID, &createdAt); err != nil {
+		return intent, err
+	}
+	intent.Object = billing.ObjectSetupIntent
+	intent.CustomerID = customerID.String
+	intent.CreatedAt = decodeTime(createdAt)
+	return intent, nil
 }
 
 func scanTimelineEntry(row scanner) (billing.TimelineEntry, error) {
@@ -728,6 +852,13 @@ func encodeOptionalTime(t *time.Time) any {
 		return nil
 	}
 	return encodeTime(*t)
+}
+
+func encodeOptionalString(value string) any {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return value
 }
 
 func decodeTime(raw string) time.Time {

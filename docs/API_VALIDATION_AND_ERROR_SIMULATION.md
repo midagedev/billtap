@@ -98,6 +98,10 @@ Required behavior:
   - `POST /v1/checkout/sessions`: `line_items`, each item `price` or
     `price_data`, and redirect URL rules for hosted checkout modes
   - `POST /v1/billing_portal/sessions`: `customer`
+  - `POST /v1/payment_intents` and direct intent actions: amount/currency,
+    capture method, deterministic outcome aliases, and cancellation reason
+  - `POST /v1/setup_intents` and direct setup actions: usage, deterministic
+    outcome aliases, and cancellation reason
 - Preserve Billtap's no-real-card-data boundary for JSON and form requests.
 - Return Stripe-like JSON error envelopes:
 
@@ -177,10 +181,12 @@ Current lane:
 - `go run ./cmd/billtap compatibility scorecard --output-dir dist/compatibility`
   runs the offline Billtap-owned corpus and writes JSON, Markdown, and replay
   bundle artifacts without requiring external Stripe services.
-- `l3-public-readiness-v5` currently has 35 release-blocking cases covering the
+- `l3-public-readiness-v6` currently has 44 release-blocking cases covering the
   public subset's request validation, protocol parameter acceptance,
-  OpenAPI-backed fallback validation, idempotency mismatch, and deterministic
-  checkout payment-error aliases.
+  OpenAPI-backed fallback validation, idempotency mismatch, deterministic
+  checkout payment-error aliases, and direct PaymentIntent/SetupIntent state
+  transitions, including capture, cancel, failure aliases, and invalid
+  terminal-state transitions.
 
 Gate:
 

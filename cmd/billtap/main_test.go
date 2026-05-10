@@ -81,7 +81,7 @@ func TestRunCompatibilityWritesScorecard(t *testing.T) {
 	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.json"), `"passed": true`) {
 		t.Fatalf("JSON scorecard missing passed true")
 	}
-	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.json"), `"release_blocking": 35`) {
+	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.json"), `"release_blocking": 44`) {
 		t.Fatalf("JSON scorecard missing expected release-blocking count")
 	}
 	if !fileContains(t, filepath.Join(dir, "compatibility-scorecard.md"), "# Compatibility Scorecard") {
@@ -99,7 +99,7 @@ func TestRunCompatibilityWritesInventory(t *testing.T) {
 	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"inventory_version": "stripe-api-inventory-v2"`) {
 		t.Fatalf("JSON inventory missing version")
 	}
-	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"implemented_operations": 7`) {
+	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"implemented_operations": 8`) {
 		t.Fatalf("JSON inventory missing implemented operation count")
 	}
 	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"schema_validated_operations": 0`) {

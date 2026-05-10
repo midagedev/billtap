@@ -8,8 +8,8 @@ import (
 func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	registry := DefaultRegistry()
 	claims := registry.Claims()
-	if len(claims) != 37 {
-		t.Fatalf("default claims = %d, want 37", len(claims))
+	if len(claims) != 46 {
+		t.Fatalf("default claims = %d, want 46", len(claims))
 	}
 
 	checkout, ok := registry.Lookup(http.MethodPost, "/v1/checkout/sessions")
@@ -32,6 +32,15 @@ func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 
 	if _, ok := registry.Lookup(http.MethodGet, "/v1/accounts/{account}"); ok {
 		t.Fatalf("connect account should not be claimed before T6")
+	}
+
+	confirm, ok := registry.Lookup(http.MethodPost, "/v1/payment_intents/pi_123/confirm")
+	if !ok || confirm.Level != "L3" || !confirm.Stateful {
+		t.Fatalf("payment intent confirm claim = %#v ok=%t, want L3 stateful", confirm, ok)
+	}
+	setupConfirm, ok := registry.Lookup(http.MethodPost, "/v1/setup_intents/seti_123/confirm")
+	if !ok || setupConfirm.Level != "L3" || !setupConfirm.Stateful {
+		t.Fatalf("setup intent confirm claim = %#v ok=%t, want L3 stateful", setupConfirm, ok)
 	}
 }
 
