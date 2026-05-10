@@ -31,6 +31,9 @@ func newIdempotencyStore() *idempotencyStore {
 }
 
 func (h *Handler) serveWithIdempotency(w http.ResponseWriter, r *http.Request) {
+	if h.writeKnownUnsupportedRoute(w, r) {
+		return
+	}
 	if r.Method != http.MethodPost {
 		h.mux.ServeHTTP(w, r)
 		return

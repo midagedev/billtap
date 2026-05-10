@@ -38,6 +38,7 @@ type Handler struct {
 	mux         *http.ServeMux
 	idem        *idempotencyStore
 	compat      stripecompat.Registry
+	knownRoutes stripecompat.RouteCatalog
 }
 
 func New(opts Options) http.Handler {
@@ -49,13 +50,14 @@ func New(opts Options) http.Handler {
 		mux:         http.NewServeMux(),
 		idem:        newIdempotencyStore(),
 		compat:      stripecompat.DefaultRegistry(),
+		knownRoutes: stripecompat.DefaultRouteCatalog(),
 	}
 	h.routes()
 	return h
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h.diagnostics != nil && strings.HasPrefix(r.URL.Path, "/v1/") {
+	if h.diagnostics != nil && isStripeAPIPath(r.URL.Path) {
 		h.serveWithRequestTrace(w, r)
 		return
 	}
@@ -87,6 +89,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/webhook_endpoints/", h.handleWebhookEndpoint)
 	h.mux.HandleFunc("/v1/events", h.handleEvents)
 	h.mux.HandleFunc("/v1/events/", h.handleEvent)
+	h.mux.HandleFunc("/v1", h.handleStripeFallback)
+	h.mux.HandleFunc("/v1/", h.handleStripeFallback)
+	h.mux.HandleFunc("/v2", h.handleStripeFallback)
+	h.mux.HandleFunc("/v2/", h.handleStripeFallback)
 	h.mux.HandleFunc("/api/checkout/sessions/", h.handleCheckoutCompletion)
 	h.mux.HandleFunc("/api/objects", h.handleObjects)
 	h.mux.HandleFunc("/api/debug-bundles", h.handleDebugBundles)
@@ -106,8 +112,50 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/api/events/", h.handleEventAction)
 }
 
+func isStripeAPIPath(path string) bool {
+	return strings.HasPrefix(path, "/v1/") || strings.HasPrefix(path, "/v2/")
+}
+
 func (h *Handler) compatibilityClaim(r *http.Request) (stripecompat.Claim, bool) {
 	return h.compat.Lookup(r.Method, r.URL.Path)
+}
+
+func (h *Handler) handleStripeFallback(w http.ResponseWriter, r *http.Request) {
+	if h.writeKnownUnsupportedRoute(w, r) {
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (h *Handler) notFound(w http.ResponseWriter, r *http.Request) {
+	if h.writeKnownUnsupportedRoute(w, r) {
+		return
+	}
+	http.NotFound(w, r)
+}
+
+func (h *Handler) methodNotAllowed(w http.ResponseWriter, r *http.Request, allow string) {
+	if h.writeKnownUnsupportedRoute(w, r) {
+		return
+	}
+	methodNotAllowed(w, allow)
+}
+
+func (h *Handler) writeKnownUnsupportedRoute(w http.ResponseWriter, r *http.Request) bool {
+	route, ok := h.knownRoutes.Lookup(r.Method, r.URL.Path)
+	if !ok {
+		return false
+	}
+	if claim, ok := h.compatibilityClaim(r); ok && stripecompat.NormalizePath(claim.Path) == stripecompat.NormalizePath(route.Path) {
+		return false
+	}
+	message := fmt.Sprintf("Billtap knows this Stripe API route from %s but does not implement it yet: %s %s.", route.Source, route.Method, route.Path)
+	writeStripeError(w, http.StatusBadRequest, stripeAPIError{
+		Type:    stripeErrorInvalidReq,
+		Message: message,
+		Code:    "unsupported_endpoint",
+	})
+	return true
 }
 
 func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
@@ -143,14 +191,14 @@ func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
 		}
 		writeResult(w, stripeList(r.URL.Path, data), err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
 func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/customers/")
 	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	switch r.Method {
@@ -174,7 +222,7 @@ func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 		})
 		writeResult(w, stripeCustomer(customer), err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
@@ -202,13 +250,13 @@ func (h *Handler) handleProducts(w http.ResponseWriter, r *http.Request) {
 		products, err := h.billing.ListProducts(r.Context())
 		writeResult(w, stripeList(r.URL.Path, stripeProducts(products)), err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
 func (h *Handler) handleProductSearch(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	products, err := h.billing.ListProducts(r.Context())
@@ -224,7 +272,7 @@ func (h *Handler) handleProductSearch(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) handleProduct(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/products/")
 	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	switch r.Method {
@@ -249,7 +297,7 @@ func (h *Handler) handleProduct(w http.ResponseWriter, r *http.Request) {
 		})
 		writeResult(w, stripeProduct(product), err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
@@ -285,14 +333,14 @@ func (h *Handler) handlePrices(w http.ResponseWriter, r *http.Request) {
 		prices, err := h.billing.ListPrices(r.Context())
 		writeResult(w, stripeList(r.URL.Path, stripePrices(filterPrices(prices, r))), err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
 func (h *Handler) handlePrice(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/prices/")
 	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	switch r.Method {
@@ -321,7 +369,7 @@ func (h *Handler) handlePrice(w http.ResponseWriter, r *http.Request) {
 		})
 		writeResult(w, stripePrice(price), err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
@@ -369,7 +417,7 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 		}
 		writeResult(w, stripeList(r.URL.Path, data), err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
@@ -381,11 +429,11 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if rest == "" || strings.Contains(rest, "/") {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	session, err := h.billing.GetCheckoutSession(r.Context(), rest)
@@ -397,7 +445,7 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	p, err := parseParams(r)
@@ -430,7 +478,7 @@ func (h *Handler) handleCheckoutCompletion(w http.ResponseWriter, r *http.Reques
 	rest := strings.TrimPrefix(r.URL.Path, "/api/checkout/sessions/")
 	id, suffix, _ := strings.Cut(rest, "/")
 	if id == "" || suffix != "complete" {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	h.completeCheckout(w, r, id)
@@ -438,7 +486,7 @@ func (h *Handler) handleCheckoutCompletion(w http.ResponseWriter, r *http.Reques
 
 func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	previous, _ := h.billing.GetCheckoutSession(r.Context(), id)
@@ -500,7 +548,7 @@ func (h *Handler) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 		subscription, err := h.createSubscriptionFromParams(r)
 		writeResult(w, h.stripeSubscription(r, subscription), err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
@@ -562,7 +610,7 @@ func (h *Handler) createSubscriptionFromParams(r *http.Request) (billing.Subscri
 func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/subscriptions/")
 	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	switch r.Method {
@@ -606,13 +654,13 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		}
 		writeResult(w, h.stripeSubscription(r, subscription), err)
 	default:
-		methodNotAllowed(w, "GET, POST, DELETE")
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
 	}
 }
 
 func (h *Handler) handleSubscriptionItems(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	p, err := parseParams(r)
@@ -659,11 +707,11 @@ func (h *Handler) handleSubscriptionItems(w http.ResponseWriter, r *http.Request
 func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/subscription_items/")
 	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if r.Method != http.MethodDelete {
-		methodNotAllowed(w, "DELETE")
+		h.methodNotAllowed(w, r, "DELETE")
 		return
 	}
 	subscription, idx, found, err := h.findSubscriptionItem(r, id)
@@ -690,7 +738,7 @@ func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) handleInvoicePreview(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	now := time.Now().UTC().Unix()
@@ -711,7 +759,7 @@ func (h *Handler) handleInvoicePreview(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleInvoices(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	items, err := h.billing.ListInvoices(r.Context())
@@ -731,10 +779,10 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/invoices/")
 	if id == "" || strings.Contains(id, "/") || r.Method != http.MethodGet {
 		if r.Method != http.MethodGet {
-			methodNotAllowed(w, "GET")
+			h.methodNotAllowed(w, r, "GET")
 			return
 		}
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	invoice, err := h.billing.GetInvoice(r.Context(), id)
@@ -743,7 +791,7 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handlePaymentIntents(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	items, err := h.billing.ListPaymentIntents(r.Context())
@@ -758,10 +806,10 @@ func (h *Handler) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/payment_intents/")
 	if id == "" || strings.Contains(id, "/") || r.Method != http.MethodGet {
 		if r.Method != http.MethodGet {
-			methodNotAllowed(w, "GET")
+			h.methodNotAllowed(w, r, "GET")
 			return
 		}
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	paymentIntent, err := h.billing.GetPaymentIntent(r.Context(), id)
@@ -770,7 +818,7 @@ func (h *Handler) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handlePaymentMethods(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	customerID := r.URL.Query().Get("customer")
@@ -801,7 +849,7 @@ func (h *Handler) handlePaymentMethods(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleObjects(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	objects, err := h.collectObjects(r)
@@ -836,7 +884,7 @@ func (h *Handler) handleWebhookEndpoints(w http.ResponseWriter, r *http.Request)
 		endpoints, err := h.webhooks.ListEndpoints(r.Context(), webhooks.EndpointFilter{})
 		writeResult(w, map[string]any{"object": "list", "data": maskEndpoints(endpoints)}, err)
 	default:
-		methodNotAllowed(w, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
 }
 
@@ -847,7 +895,7 @@ func (h *Handler) handleWebhookEndpoint(w http.ResponseWriter, r *http.Request) 
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/v1/webhook_endpoints/")
 	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	switch r.Method {
@@ -877,7 +925,7 @@ func (h *Handler) handleWebhookEndpoint(w http.ResponseWriter, r *http.Request) 
 		endpoint, err := h.webhooks.DeleteEndpoint(r.Context(), id)
 		writeResult(w, maskEndpoint(endpoint), err)
 	default:
-		methodNotAllowed(w, "GET, POST, DELETE")
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
 	}
 }
 
@@ -887,7 +935,7 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	q := r.URL.Query()
@@ -905,11 +953,11 @@ func (h *Handler) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 	id := strings.TrimPrefix(r.URL.Path, "/v1/events/")
 	if id == "" || strings.Contains(id, "/") {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	event, err := h.webhooks.GetEvent(r.Context(), id)
@@ -918,7 +966,7 @@ func (h *Handler) handleEvent(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	q := r.URL.Query()
@@ -934,7 +982,7 @@ func (h *Handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleDebugBundles(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	p, err := parseParams(r)
@@ -978,7 +1026,7 @@ func (h *Handler) handleDebugBundles(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleRequestTraces(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	traces, err := h.listRequestTraces(r.Context(), requestTraceFilter(r))
@@ -991,7 +1039,7 @@ func (h *Handler) handleRequestTraces(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	filter := diagnosticTimelineFilter(r)
@@ -1035,7 +1083,7 @@ func (h *Handler) handleDiagnostics(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleFixtureApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	body, err := readSafeFixtureBody(r)
@@ -1062,7 +1110,7 @@ func (h *Handler) handleFixtureApply(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleFixtureSnapshot(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	snapshot, err := fixtures.NewService(h.billing).Snapshot(r.Context(), fixtureSnapshotFilter(r))
@@ -1071,7 +1119,7 @@ func (h *Handler) handleFixtureSnapshot(w http.ResponseWriter, r *http.Request) 
 
 func (h *Handler) handleFixtureAssert(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	body, err := readSafeFixtureBody(r)
@@ -1304,7 +1352,7 @@ func compactStringMap(in map[string]string) map[string]string {
 
 func (h *Handler) handlePortal(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	customerID := firstQuery(r, "customerId", "customer_id", "customer", "id")
@@ -1328,12 +1376,12 @@ func (h *Handler) handlePortalCustomer(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/portal/customers/")
 	customerID, action, hasAction := strings.Cut(rest, "/")
 	if customerID == "" {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if !hasAction {
 		if r.Method != http.MethodGet {
-			methodNotAllowed(w, "GET")
+			h.methodNotAllowed(w, r, "GET")
 			return
 		}
 		state, err := h.billing.PortalState(r.Context(), customerID)
@@ -1341,11 +1389,11 @@ func (h *Handler) handlePortalCustomer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if action != "payment-method" {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	p, err := parseParams(r)
@@ -1366,11 +1414,11 @@ func (h *Handler) handlePortalSubscription(w http.ResponseWriter, r *http.Reques
 	rest := strings.TrimPrefix(r.URL.Path, "/api/portal/subscriptions/")
 	subscriptionID, action, found := strings.Cut(rest, "/")
 	if subscriptionID == "" || !found {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	p, err := parseParams(r)
@@ -1398,7 +1446,7 @@ func (h *Handler) handlePortalSubscription(w http.ResponseWriter, r *http.Reques
 	case "resume":
 		sub, err = h.billing.ResumePortalSubscription(r.Context(), subscriptionID)
 	default:
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if err != nil {
@@ -1426,7 +1474,7 @@ func firstQuery(r *http.Request, keys ...string) string {
 
 func (h *Handler) handleDeliveryAttempts(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	if h.webhooks == nil {
@@ -1448,7 +1496,7 @@ func (h *Handler) handleDeliveryAttempts(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
-		methodNotAllowed(w, "GET")
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	if h.webhooks == nil {
@@ -1464,7 +1512,7 @@ func (h *Handler) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleRetentionApply(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	if h.webhooks == nil {
@@ -1477,7 +1525,7 @@ func (h *Handler) handleRetentionApply(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) handleScenarioRun(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	var scenario scenarios.Scenario
@@ -1531,11 +1579,11 @@ func (h *Handler) handleEventAction(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/events/")
 	id, action, found := strings.Cut(rest, "/")
 	if id == "" || !found || action != "replay" {
-		http.NotFound(w, r)
+		h.notFound(w, r)
 		return
 	}
 	if r.Method != http.MethodPost {
-		methodNotAllowed(w, "POST")
+		h.methodNotAllowed(w, r, "POST")
 		return
 	}
 	p, err := parseParams(r)

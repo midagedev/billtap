@@ -15,6 +15,13 @@ The compatibility promise is intentionally narrow:
 Anything outside this document should be treated as unsupported until it has a
 fixture, a test, and an explicit compatibility note.
 
+Known Stripe OpenAPI routes that are not implemented by Billtap return a
+Stripe-shaped `invalid_request_error` with code `unsupported_endpoint` instead
+of silently approximating provider behavior. When diagnostics are enabled, the
+request trace captures that error code and the original path so agents can
+distinguish unsupported coverage gaps from missing local data or webhook
+failures.
+
 ## Compatibility Levels
 
 | Level            | Meaning                                                                                                                                                                                                     |
