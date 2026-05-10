@@ -48,6 +48,9 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if !customerCreate.Implemented || customerCreate.BilltapLevel != "L3" || !customerCreate.Stateful {
 		t.Fatalf("customer create coverage = %#v, want implemented L3 stateful", customerCreate)
 	}
+	if customerCreate.Docs == "" {
+		t.Fatalf("customer create docs = empty, want traceable compatibility docs")
+	}
 	customers := findFamily(t, inventory, "customers")
 	if customers.Priority != "P1" || customers.TotalOperations != 4 || customers.ImplementedOperations != 4 || customers.ImplementedPercent != 100 {
 		t.Fatalf("customers family = %#v, want P1 4/4 100%%", customers)

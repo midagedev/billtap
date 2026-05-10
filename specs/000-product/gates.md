@@ -187,10 +187,10 @@ Pass criteria:
   current baseline, minimum operation count, and maximum `L0` budget
 - generated `stripe-api-inventory.json` reports `summary.implemented_percent >= 90.0`
   before the target can be marked passed
-- P0/P1 families have explicit minimum levels separate from broad L1/L2
-  auxiliary coverage
+- generated `summary.families[].by_level` supports explicit depth checks:
+  P0 families must have at least 85% at `L3+`, and P1 families must have at
+  least 75% at `L2+`
 - every coverage-increasing PR records the before/after family rows from the
   generated inventory
-  updates
 - docs continue to distinguish Billtap's stateful local billing lab from full
   Stripe parity and real payment processing

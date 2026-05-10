@@ -53,7 +53,8 @@ Each compatibility PR should follow this loop:
 3. Add tests proving the new level: validation for `L1`, fixtures for `L2`,
    storage behavior for `L3`, scenario evidence for `L4`, webhook delivery for
    `L5`, and SDK/adoption smoke for `L6`.
-4. Update `currentStripeRouteCoverage()` only after the test evidence exists.
+4. Add or update claims in `internal/stripecompat.DefaultClaims()` only after
+   the test evidence exists; the inventory consumes that registry.
 5. Regenerate the inventory and include the before/after family delta in the PR
    description.
 6. Review, fix, and merge before opening the next compatibility chunk.
