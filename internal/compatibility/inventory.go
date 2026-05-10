@@ -415,6 +415,8 @@ func isHTTPMethod(method string) bool {
 
 func inferFamily(path string) string {
 	switch {
+	case isConnectPath(path):
+		return "connect"
 	case strings.Contains(path, "/checkout/"):
 		return "checkout"
 	case strings.Contains(path, "/billing_portal/"):
@@ -427,8 +429,6 @@ func inferFamily(path string) string {
 		return "payments"
 	case strings.Contains(path, "/refunds") || strings.Contains(path, "/disputes") || strings.Contains(path, "/balance_transactions") || strings.Contains(path, "/credit_notes"):
 		return "payment_history"
-	case path == "/v1/account" || strings.Contains(path, "/accounts") || strings.Contains(path, "/account_links") || strings.Contains(path, "/account_sessions") || strings.Contains(path, "/transfers") || strings.Contains(path, "/payouts") || strings.Contains(path, "/application_fees"):
-		return "connect"
 	case strings.Contains(path, "/products") || strings.Contains(path, "/prices") || strings.Contains(path, "/coupons") || strings.Contains(path, "/promotion_codes") || strings.Contains(path, "/tax"):
 		return "catalog"
 	case strings.Contains(path, "/customers"):
@@ -436,6 +436,24 @@ func inferFamily(path string) string {
 	default:
 		return "auxiliary"
 	}
+}
+
+func isConnectPath(path string) bool {
+	for _, prefix := range []string{
+		"/v1/account",
+		"/v1/accounts",
+		"/v1/account_links",
+		"/v1/account_sessions",
+		"/v1/application_fees",
+		"/v1/transfers",
+		"/v1/payouts",
+		"/v2/core/accounts",
+	} {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func inferResource(path string, operation openAPIOperation, schemas map[string]openAPISchema) string {

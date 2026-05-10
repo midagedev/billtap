@@ -84,4 +84,3 @@ A compatibility PR is not complete until it can answer:
 - Which tests prove the new level?
 - What remains inventory-only?
 - What behavior is explicitly out of scope?
-

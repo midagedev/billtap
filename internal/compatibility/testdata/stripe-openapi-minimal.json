@@ -19,6 +19,13 @@
         "x-resourceId": "account_session"
       }
     },
+    "/v1/application_fees/{fee}/refunds": {
+      "get": {
+        "operationId": "GetApplicationFeesFeeRefunds",
+        "tags": ["Application Fee Refunds"],
+        "x-resourceId": "application_fee_refund"
+      }
+    },
     "/v1/checkout/sessions": {
       "post": {
         "operationId": "PostCheckoutSessions",
@@ -48,6 +55,13 @@
         "operationId": "PostCustomersCustomer",
         "tags": ["Customers"],
         "x-resourceId": "customer"
+      }
+    },
+    "/v1/financial_connections/accounts": {
+      "get": {
+        "operationId": "GetFinancialConnectionsAccounts",
+        "tags": ["Financial Connections"],
+        "x-resourceId": "financial_connections.account"
       }
     },
     "/v1/payment_intents/{intent}/confirm": {

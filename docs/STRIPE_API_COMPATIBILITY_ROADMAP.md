@@ -246,7 +246,10 @@ questions quickly.
 
 ```json
 {
-  "api_version": "2025-12-15.clover",
+  "name": "Billtap Stripe API compatibility inventory",
+  "inventory_version": "stripe-api-inventory-v2",
+  "openapi_version": "3.0.0",
+  "stripe_api_version": "2025-12-15.clover",
   "source": "stripe/openapi latest",
   "generated_at": "2026-05-10T00:00:00Z",
   "summary": {
@@ -259,9 +262,13 @@ questions quickly.
         "family": "connect",
         "priority": "P1",
         "target_level": "L2-L5",
-        "total_operations": 69,
+        "total_operations": 65,
         "implemented_operations": 0,
+        "inventory_only_operations": 65,
         "implemented_percent": 0.0,
+        "by_level": {
+          "L0": 65
+        },
         "next_milestone": "Add account retrieve/list fixtures, Stripe-Account tracing, and connected-account webhook smoke."
       }
     ]
@@ -271,9 +278,12 @@ questions quickly.
       "family": "billing",
       "resource": "subscription",
       "path": "/v1/subscriptions/{subscription}",
-      "method": "post",
-      "stripe_resource_id": "subscription",
+      "normalized_path": "/v1/subscriptions/{id}",
+      "method": "POST",
+      "operation_id": "PostSubscriptionsSubscription",
+      "implemented": true,
       "billtap_level": "L3",
+      "target_level": "L4-L6",
       "stateful": true,
       "webhook_events": ["customer.subscription.updated"],
       "scorecard_cases": ["subscription.update.items.price"],

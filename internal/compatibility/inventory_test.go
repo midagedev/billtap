@@ -25,23 +25,23 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if inventory.InventoryVersion != InventoryVersion {
 		t.Fatalf("inventory version = %q, want %q", inventory.InventoryVersion, InventoryVersion)
 	}
-	if inventory.Summary.TotalOperations != 12 {
-		t.Fatalf("total operations = %d, want 12", inventory.Summary.TotalOperations)
+	if inventory.Summary.TotalOperations != 14 {
+		t.Fatalf("total operations = %d, want 14", inventory.Summary.TotalOperations)
 	}
 	if inventory.Summary.ImplementedOperations != 7 {
 		t.Fatalf("implemented operations = %d, want 7", inventory.Summary.ImplementedOperations)
 	}
-	if inventory.Summary.InventoryOnlyOperations != 5 {
-		t.Fatalf("inventory-only operations = %d, want 5", inventory.Summary.InventoryOnlyOperations)
+	if inventory.Summary.InventoryOnlyOperations != 7 {
+		t.Fatalf("inventory-only operations = %d, want 7", inventory.Summary.InventoryOnlyOperations)
 	}
-	if inventory.Summary.ImplementedPercent != 58.3 {
-		t.Fatalf("implemented percent = %.1f, want 58.3", inventory.Summary.ImplementedPercent)
+	if inventory.Summary.ImplementedPercent != 50 {
+		t.Fatalf("implemented percent = %.1f, want 50.0", inventory.Summary.ImplementedPercent)
 	}
 	if inventory.Summary.BilltapOnlyRoutes != 1 {
 		t.Fatalf("billtap-only routes = %d, want 1", inventory.Summary.BilltapOnlyRoutes)
 	}
-	if inventory.Summary.ByLevel["L0"] != 5 || inventory.Summary.ByLevel["L3"] != 5 || inventory.Summary.ByLevel["L4"] != 1 || inventory.Summary.ByLevel["L5"] != 1 {
-		t.Fatalf("by level = %#v, want L0=5 L3=5 L4=1 L5=1", inventory.Summary.ByLevel)
+	if inventory.Summary.ByLevel["L0"] != 7 || inventory.Summary.ByLevel["L3"] != 5 || inventory.Summary.ByLevel["L4"] != 1 || inventory.Summary.ByLevel["L5"] != 1 {
+		t.Fatalf("by level = %#v, want L0=7 L3=5 L4=1 L5=1", inventory.Summary.ByLevel)
 	}
 
 	customerCreate := findOperation(t, inventory, http.MethodPost, "/v1/customers")
@@ -86,9 +86,17 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if account.Family != "connect" || account.Resource != "account" {
 		t.Fatalf("account coverage = %#v, want connect account", account)
 	}
+	applicationFeeRefund := findOperation(t, inventory, http.MethodGet, "/v1/application_fees/{fee}/refunds")
+	if applicationFeeRefund.Family != "connect" || applicationFeeRefund.Resource != "application_fee_refund" {
+		t.Fatalf("application fee refund coverage = %#v, want connect application fee refund", applicationFeeRefund)
+	}
+	financialConnectionAccount := findOperation(t, inventory, http.MethodGet, "/v1/financial_connections/accounts")
+	if financialConnectionAccount.Family != "auxiliary" || financialConnectionAccount.Resource != "financial_connections.account" {
+		t.Fatalf("financial connection account coverage = %#v, want auxiliary financial connection account", financialConnectionAccount)
+	}
 	connect := findFamily(t, inventory, "connect")
-	if connect.Priority != "P1" || connect.TotalOperations != 3 || connect.ImplementedOperations != 0 || connect.ImplementedPercent != 0 {
-		t.Fatalf("connect family = %#v, want P1 0/3 0%%", connect)
+	if connect.Priority != "P1" || connect.TotalOperations != 4 || connect.ImplementedOperations != 0 || connect.ImplementedPercent != 0 {
+		t.Fatalf("connect family = %#v, want P1 0/4 0%%", connect)
 	}
 	if !strings.Contains(connect.NextMilestone, "Stripe-Account") {
 		t.Fatalf("connect milestone = %q, want Stripe-Account tracing", connect.NextMilestone)
@@ -99,7 +107,7 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if !fileContains(t, jsonPath, `"inventory_version": "stripe-api-inventory-v2"`) {
 		t.Fatalf("JSON inventory missing version")
 	}
-	if !fileContains(t, jsonPath, `"families"`) || !fileContains(t, jsonPath, `"implemented_percent": 58.3`) {
+	if !fileContains(t, jsonPath, `"families"`) || !fileContains(t, jsonPath, `"implemented_percent": 50`) {
 		t.Fatalf("JSON inventory missing measurable coverage fields")
 	}
 	if !fileContains(t, jsonPath, `"billtap_only_routes"`) || !fileContains(t, jsonPath, `/v1/checkout/sessions/{id}/complete`) {
