@@ -89,6 +89,31 @@ func TestRunCompatibilityWritesScorecard(t *testing.T) {
 	}
 }
 
+func TestRunCompatibilityWritesInventory(t *testing.T) {
+	dir := t.TempDir()
+	openAPIPath := filepath.Join("..", "..", "internal", "compatibility", "testdata", "stripe-openapi-minimal.json")
+	code := runCompatibility([]string{"inventory", "--openapi", openAPIPath, "--output-dir", dir, "--source", "stripe/openapi test fixture"})
+	if code != scenarios.ExitPass {
+		t.Fatalf("exit code = %d, want %d", code, scenarios.ExitPass)
+	}
+	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"inventory_version": "stripe-api-inventory-v1"`) {
+		t.Fatalf("JSON inventory missing version")
+	}
+	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"implemented_operations": 7`) {
+		t.Fatalf("JSON inventory missing implemented operation count")
+	}
+	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.md"), "# Stripe API Compatibility Inventory") {
+		t.Fatalf("Markdown inventory missing heading")
+	}
+}
+
+func TestRunCompatibilityInventoryRequiresOpenAPIPath(t *testing.T) {
+	code := runCompatibility([]string{"inventory", "--output-dir", t.TempDir()})
+	if code != scenarios.ExitInvalidConfig {
+		t.Fatalf("exit code = %d, want %d", code, scenarios.ExitInvalidConfig)
+	}
+}
+
 func TestRunScenarioReturnsInvalidConfigExitCode(t *testing.T) {
 	dir := t.TempDir()
 	scenarioPath := filepath.Join(dir, "bad.yml")

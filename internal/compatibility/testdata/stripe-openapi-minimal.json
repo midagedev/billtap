@@ -1,0 +1,84 @@
+{
+  "openapi": "3.0.0",
+  "info": {
+    "title": "Stripe API test fixture",
+    "version": "2025-12-15.clover"
+  },
+  "paths": {
+    "/v1/checkout/sessions": {
+      "post": {
+        "operationId": "PostCheckoutSessions",
+        "tags": ["Checkout"],
+        "x-resourceId": "checkout.session"
+      }
+    },
+    "/v1/customers": {
+      "get": {
+        "operationId": "GetCustomers",
+        "tags": ["Customers"],
+        "x-resourceId": "customer"
+      },
+      "post": {
+        "operationId": "PostCustomers",
+        "tags": ["Customers"],
+        "x-resourceId": "customer"
+      }
+    },
+    "/v1/customers/{customer}": {
+      "get": {
+        "operationId": "GetCustomersCustomer",
+        "tags": ["Customers"],
+        "x-resourceId": "customer"
+      },
+      "post": {
+        "operationId": "PostCustomersCustomer",
+        "tags": ["Customers"],
+        "x-resourceId": "customer"
+      }
+    },
+    "/v1/payment_intents/{intent}/confirm": {
+      "post": {
+        "operationId": "PostPaymentIntentsIntentConfirm",
+        "tags": ["Payment Intents"],
+        "x-resourceId": "payment_intent"
+      }
+    },
+    "/v1/refunds": {
+      "post": {
+        "operationId": "PostRefunds",
+        "tags": ["Refunds"],
+        "x-resourceId": "refund"
+      }
+    },
+    "/v1/subscriptions/{subscription}": {
+      "post": {
+        "operationId": "PostSubscriptionsSubscription",
+        "tags": ["Subscriptions"],
+        "x-resourceId": "subscription"
+      }
+    },
+    "/v1/webhook_endpoints": {
+      "post": {
+        "operationId": "PostWebhookEndpoints",
+        "tags": ["Webhook Endpoints"],
+        "x-resourceId": "webhook_endpoint"
+      }
+    },
+    "/v2/core/accounts": {
+      "post": {
+        "operationId": "PostV2CoreAccounts",
+        "tags": ["Accounts v2"],
+        "x-resourceId": "v2.core.account"
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "customer": {
+        "type": "object",
+        "x-resourceId": "customer",
+        "x-expandableFields": ["default_source", "subscriptions"]
+      }
+    }
+  }
+}

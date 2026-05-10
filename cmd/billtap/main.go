@@ -82,12 +82,24 @@ func main() {
 }
 
 func runCompatibility(args []string) int {
-	if len(args) == 0 || args[0] != "scorecard" {
-		fmt.Fprintln(os.Stderr, "usage: billtap compatibility scorecard [--output-dir path]")
+	if len(args) == 0 {
+		fmt.Fprintln(os.Stderr, "usage: billtap compatibility <scorecard|inventory> [flags]")
 		return scenarios.ExitInvalidConfig
 	}
 
-	outputDir, err := parseCompatibilityScorecardArgs(args[1:])
+	switch args[0] {
+	case "scorecard":
+		return runCompatibilityScorecard(args[1:])
+	case "inventory":
+		return runCompatibilityInventory(args[1:])
+	default:
+		fmt.Fprintln(os.Stderr, "usage: billtap compatibility <scorecard|inventory> [flags]")
+		return scenarios.ExitInvalidConfig
+	}
+}
+
+func runCompatibilityScorecard(args []string) int {
+	outputDir, err := parseCompatibilityScorecardArgs(args)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		fmt.Fprintln(os.Stderr, "usage: billtap compatibility scorecard [--output-dir path]")
@@ -110,6 +122,33 @@ func runCompatibility(args []string) int {
 	if !scorecard.Summary.Passed {
 		return scenarios.ExitAssertionFailed
 	}
+	return scenarios.ExitPass
+}
+
+func runCompatibilityInventory(args []string) int {
+	openAPIPath, outputDir, source, err := parseCompatibilityInventoryArgs(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "usage: billtap compatibility inventory --openapi path [--output-dir path] [--source label]")
+		return scenarios.ExitInvalidConfig
+	}
+
+	inventory, err := compatibility.WriteInventoryArtifacts(context.Background(), compatibility.InventoryOptions{
+		OpenAPIPath: openAPIPath,
+		OutputDir:   outputDir,
+		Source:      source,
+	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return scenarios.ExitRuntimeFailure
+	}
+	fmt.Fprintf(os.Stdout, "compatibility inventory wrote %s operations=%d implemented=%d inventory_only=%d billtap_only=%d\n",
+		outputDir,
+		inventory.Summary.TotalOperations,
+		inventory.Summary.ImplementedOperations,
+		inventory.Summary.InventoryOnlyOperations,
+		inventory.Summary.BilltapOnlyRoutes,
+	)
 	return scenarios.ExitPass
 }
 
@@ -136,6 +175,45 @@ func parseCompatibilityScorecardArgs(args []string) (string, error) {
 		return "", fmt.Errorf("output directory is required")
 	}
 	return outputDir, nil
+}
+
+func parseCompatibilityInventoryArgs(args []string) (openAPIPath string, outputDir string, source string, err error) {
+	outputDir = compatibility.DefaultOutputDir
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--openapi" || arg == "--output-dir" || arg == "--source":
+			if i+1 >= len(args) {
+				return "", "", "", fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			switch arg {
+			case "--openapi":
+				openAPIPath = args[i]
+			case "--output-dir":
+				outputDir = args[i]
+			case "--source":
+				source = args[i]
+			}
+		case strings.HasPrefix(arg, "--openapi="):
+			openAPIPath = strings.TrimPrefix(arg, "--openapi=")
+		case strings.HasPrefix(arg, "--output-dir="):
+			outputDir = strings.TrimPrefix(arg, "--output-dir=")
+		case strings.HasPrefix(arg, "--source="):
+			source = strings.TrimPrefix(arg, "--source=")
+		case strings.HasPrefix(arg, "-"):
+			return "", "", "", fmt.Errorf("unknown flag %s", arg)
+		default:
+			return "", "", "", fmt.Errorf("unexpected argument %s", arg)
+		}
+	}
+	if strings.TrimSpace(openAPIPath) == "" {
+		return "", "", "", fmt.Errorf("OpenAPI path is required")
+	}
+	if strings.TrimSpace(outputDir) == "" {
+		return "", "", "", fmt.Errorf("output directory is required")
+	}
+	return openAPIPath, outputDir, source, nil
 }
 
 func runScenario(args []string) int {

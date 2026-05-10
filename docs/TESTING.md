@@ -46,6 +46,20 @@ The scorecard writes JSON and Markdown summaries, maps
 `imported`/`skipped`/`unsupported`/`mismatch`/`error` statuses, and emits replay
 bundle JSON files for mismatch or runner error cases.
 
+Generate the broader Stripe API inventory from a pinned or downloaded Stripe
+OpenAPI snapshot with:
+
+```bash
+go run ./cmd/billtap compatibility inventory --openapi path/to/openapi.spec3.json --output-dir dist/compatibility
+```
+
+The inventory writes `stripe-api-inventory.json` and
+`stripe-api-inventory.md`. It classifies OpenAPI operations by endpoint family,
+current Billtap compatibility level, target level, statefulness, scorecard/SDK
+evidence, and Billtap-specific `/v1` route exceptions. This is the first gate
+for expanding beyond the current public subset without silently implying full
+Stripe parity.
+
 Fixture ergonomics for integration tests:
 
 - apply a data-driven fixture pack through `POST /api/fixtures/apply`

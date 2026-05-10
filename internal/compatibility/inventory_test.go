@@ -1,0 +1,142 @@
+package compatibility
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
+	dir := t.TempDir()
+	inventory, err := WriteInventoryArtifacts(context.Background(), InventoryOptions{
+		OpenAPIPath: filepath.Join("testdata", "stripe-openapi-minimal.json"),
+		OutputDir:   dir,
+		Source:      "stripe/openapi test fixture",
+		Now:         fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("WriteInventoryArtifacts returned error: %v", err)
+	}
+
+	if inventory.InventoryVersion != InventoryVersion {
+		t.Fatalf("inventory version = %q, want %q", inventory.InventoryVersion, InventoryVersion)
+	}
+	if inventory.Summary.TotalOperations != 10 {
+		t.Fatalf("total operations = %d, want 10", inventory.Summary.TotalOperations)
+	}
+	if inventory.Summary.ImplementedOperations != 7 {
+		t.Fatalf("implemented operations = %d, want 7", inventory.Summary.ImplementedOperations)
+	}
+	if inventory.Summary.InventoryOnlyOperations != 3 {
+		t.Fatalf("inventory-only operations = %d, want 3", inventory.Summary.InventoryOnlyOperations)
+	}
+	if inventory.Summary.BilltapOnlyRoutes != 1 {
+		t.Fatalf("billtap-only routes = %d, want 1", inventory.Summary.BilltapOnlyRoutes)
+	}
+	if inventory.Summary.ByLevel["L0"] != 3 || inventory.Summary.ByLevel["L3"] != 5 || inventory.Summary.ByLevel["L4"] != 1 || inventory.Summary.ByLevel["L5"] != 1 {
+		t.Fatalf("by level = %#v, want L0=3 L3=5 L4=1 L5=1", inventory.Summary.ByLevel)
+	}
+
+	customerCreate := findOperation(t, inventory, http.MethodPost, "/v1/customers")
+	if !customerCreate.Implemented || customerCreate.BilltapLevel != "L3" || !customerCreate.Stateful {
+		t.Fatalf("customer create coverage = %#v, want implemented L3 stateful", customerCreate)
+	}
+
+	checkoutCreate := findOperation(t, inventory, http.MethodPost, "/v1/checkout/sessions")
+	if !checkoutCreate.Implemented || checkoutCreate.BilltapLevel != "L4" || checkoutCreate.TargetLevel != "L4-L6" {
+		t.Fatalf("checkout create coverage = %#v, want implemented L4 target L4-L6", checkoutCreate)
+	}
+	if !containsString(checkoutCreate.ScorecardCases, "checkout.sessions.create.java_sdk_optional_params") {
+		t.Fatalf("checkout create scorecard cases = %#v, want checkout SDK params case", checkoutCreate.ScorecardCases)
+	}
+
+	webhookCreate := findOperation(t, inventory, http.MethodPost, "/v1/webhook_endpoints")
+	if !webhookCreate.Implemented || webhookCreate.BilltapLevel != "L5" {
+		t.Fatalf("webhook create coverage = %#v, want implemented L5", webhookCreate)
+	}
+
+	paymentIntentConfirm := findOperation(t, inventory, http.MethodPost, "/v1/payment_intents/{intent}/confirm")
+	if paymentIntentConfirm.Implemented || paymentIntentConfirm.BilltapLevel != "L0" || paymentIntentConfirm.TargetLevel != "L3-L6" {
+		t.Fatalf("payment intent confirm coverage = %#v, want inventory-only payment target", paymentIntentConfirm)
+	}
+	if !containsString(paymentIntentConfirm.Risks, "inventory-only; no Billtap runtime claim") {
+		t.Fatalf("payment intent risks = %#v, want inventory-only risk", paymentIntentConfirm.Risks)
+	}
+
+	accountsV2 := findOperation(t, inventory, http.MethodPost, "/v2/core/accounts")
+	if accountsV2.Family != "connect" || accountsV2.BilltapLevel != "L0" || accountsV2.TargetLevel != "L2-L5" {
+		t.Fatalf("accounts v2 coverage = %#v, want connect inventory target", accountsV2)
+	}
+
+	jsonPath := filepath.Join(dir, "stripe-api-inventory.json")
+	mdPath := filepath.Join(dir, "stripe-api-inventory.md")
+	if !fileContains(t, jsonPath, `"inventory_version": "stripe-api-inventory-v1"`) {
+		t.Fatalf("JSON inventory missing version")
+	}
+	if !fileContains(t, jsonPath, `"billtap_only_routes"`) || !fileContains(t, jsonPath, `/v1/checkout/sessions/{id}/complete`) {
+		t.Fatalf("JSON inventory missing Billtap-specific route exception")
+	}
+	if !fileContains(t, mdPath, "# Stripe API Compatibility Inventory") || !fileContains(t, mdPath, "Billtap-Specific `/v1` Exceptions") {
+		t.Fatalf("Markdown inventory missing expected sections")
+	}
+}
+
+func TestGenerateInventoryRejectsInvalidOpenAPIInput(t *testing.T) {
+	dir := t.TempDir()
+	emptySpec := filepath.Join(dir, "empty.json")
+	if err := os.WriteFile(emptySpec, []byte(`{"openapi":"3.0.0","paths":{}}`), 0o644); err != nil {
+		t.Fatalf("write empty spec: %v", err)
+	}
+	if _, err := GenerateInventory(context.Background(), InventoryOptions{OpenAPIPath: emptySpec}); err == nil {
+		t.Fatalf("GenerateInventory returned nil error for empty paths")
+	}
+
+	if _, err := GenerateInventory(context.Background(), InventoryOptions{}); err == nil {
+		t.Fatalf("GenerateInventory returned nil error for missing path")
+	}
+}
+
+func TestInventoryJSONRoundTrip(t *testing.T) {
+	inventory, err := GenerateInventory(context.Background(), InventoryOptions{
+		OpenAPIPath: filepath.Join("testdata", "stripe-openapi-minimal.json"),
+		Source:      "stripe/openapi test fixture",
+		Now:         fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("GenerateInventory returned error: %v", err)
+	}
+	body, err := inventory.JSON()
+	if err != nil {
+		t.Fatalf("inventory JSON returned error: %v", err)
+	}
+	var decoded StripeAPIInventory
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode inventory JSON: %v", err)
+	}
+	if decoded.Summary.TotalOperations != inventory.Summary.TotalOperations || len(decoded.Operations) != len(inventory.Operations) {
+		t.Fatalf("decoded inventory summary = %#v operations=%d", decoded.Summary, len(decoded.Operations))
+	}
+}
+
+func findOperation(t *testing.T, inventory StripeAPIInventory, method string, path string) StripeOperationCoverage {
+	t.Helper()
+	for _, operation := range inventory.Operations {
+		if operation.Method == method && operation.Path == path {
+			return operation
+		}
+	}
+	t.Fatalf("operation %s %s not found in inventory", method, path)
+	return StripeOperationCoverage{}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
