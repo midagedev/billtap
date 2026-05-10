@@ -457,6 +457,20 @@ func validatePaymentIntentCreate(p params) error {
 	return nil
 }
 
+func validateInvoicePay(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"forgive",
+			"mandate",
+			"off_session",
+			"paid_out_of_band",
+			"payment_method",
+			"source",
+		},
+		BoolParams: []string{"forgive", "off_session", "paid_out_of_band"},
+	})
+}
+
 func validatePaymentIntentConfirm(p params) error {
 	return p.validate(paramSpec{
 		Allowed: []string{

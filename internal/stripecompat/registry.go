@@ -175,6 +175,7 @@ func DefaultClaims() []Claim {
 
 	add(http.MethodGet, "/v1/invoices", statefulL3)
 	add(http.MethodGet, "/v1/invoices/{id}", statefulL3)
+	add(http.MethodPost, "/v1/invoices/{id}/pay", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"invoices.pay.failed_invoice_succeeds", "invoices.pay.failed_invoice_declines_again"}, WebhookEvents: []string{"payment_intent.succeeded", "payment_intent.payment_failed", "invoice.payment_succeeded", "invoice.payment_failed", "invoice.paid", "customer.subscription.updated"}, Risks: []string{"local retry/payment mutation only; finalize, send, void, collection, and dunning automation are not modeled"}})
 	add(http.MethodPost, "/v1/invoices/create_preview", Claim{Level: "L2", Risks: []string{"zero-value local smoke-test invoice; no full proration model"}})
 
 	add(http.MethodGet, "/v1/payment_intents", statefulL3)

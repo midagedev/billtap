@@ -56,6 +56,7 @@ steps:
     action: invoice.retry
     params:
       subscriptionRef: checkout.subscription.id
+      invoiceRef: complete-checkout.invoice.id
       outcome: payment_succeeded
 
   - id: assert-active
@@ -127,6 +128,25 @@ Numeric path segments address list entries, for example
 `webhook.replay` schedules delivery attempts for an existing event id. It can
 use `duplicate`, `delay` or `delay_seconds`, `outOfOrder`, `responseStatus`,
 `responseBody`, `timeout`, `error`, and `signatureMismatch` parameters.
+
+`subscription.update` accepts `subscriptionRef`/`subscription` and currently
+supports `cancel_at_period_end` for local lifecycle scenarios.
+
+`invoice.retry` mutates the local billing graph when the runner has a billing
+service and the step supplies `invoiceRef`/`invoice`. It also accepts
+`payment_method` or `outcome`. Successful retries mark the invoice paid, clear
+`next_payment_attempt`, succeed the payment intent, and make the subscription
+active. Declined retries keep the invoice open, increment `attempt_count`,
+schedule the next attempt, and move the subscription to `past_due`. Profile-only
+runs without a billing service, or profile evidence steps without a billing
+invoice, keep the older deterministic evidence-only behavior.
+
+`clock.advance` advances scenario time and then asks the billing service to
+process due local subscription periods. Active or trialing subscriptions renew
+with a paid invoice/payment intent when their period end is reached.
+Subscriptions scheduled with `cancel_at_period_end` are canceled at the period
+boundary without creating a renewal invoice. This is Billtap's local clock
+subset, not full Stripe Test Clock API parity.
 
 ## SaaS Profile Actions
 

@@ -63,10 +63,15 @@ Response includes:
 
 - `GET /v1/invoices/{id}`
 - `GET /v1/invoices`
+- `POST /v1/invoices/{id}/pay`
 - `POST /v1/invoices/create_preview`
 
-Direct invoice create, finalize, pay, and void operations are not part of the
-current release-compatible subset.
+Direct invoice `pay` is a local retry mutation for open invoices created by
+Billtap checkout and scenarios. It accepts deterministic sandbox
+`payment_method` or legacy `source` aliases plus bounded protocol flags such as
+`paid_out_of_band`, `forgive`, `off_session`, and `mandate`. Direct invoice
+create, finalize, send, void, line mutation, collection, and full dunning
+automation are not part of the current release-compatible subset.
 
 ### Payment Intents
 

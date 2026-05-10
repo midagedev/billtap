@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 )
 
 func builtinCorpus() []caseSpec {
@@ -823,6 +824,56 @@ func builtinCorpus() []caseSpec {
 			Run: runCheckoutOutcome("missing_payment_method"),
 		},
 		{
+			ID:              "invoices.pay.failed_invoice_succeeds",
+			Name:            "Invoice pay retries a failed checkout invoice successfully",
+			Category:        "billing-lifecycle",
+			Level:           "L3",
+			ReleaseBlocking: true,
+			Reference:       "docs/COMPATIBILITY.md#supported-stripe-like-api-subset",
+			Expect:          Observation{HTTPStatus: http.StatusOK, Object: "invoice", ObjectStatus: "paid"},
+			Run:             runInvoicePayRetry("pm_card_visa", "paid"),
+		},
+		{
+			ID:              "invoices.pay.failed_invoice_declines_again",
+			Name:            "Invoice pay retry preserves open invoice on decline",
+			Category:        "billing-lifecycle",
+			Level:           "L3",
+			ReleaseBlocking: true,
+			Reference:       "docs/COMPATIBILITY.md#supported-stripe-like-api-subset",
+			Expect:          Observation{HTTPStatus: http.StatusOK, Object: "invoice", ObjectStatus: "open"},
+			Run:             runInvoicePayRetry("pm_card_visa_chargeDeclined", "open"),
+		},
+		{
+			ID:              "scenarios.invoice_retry.mutates_state",
+			Name:            "Scenario invoice.retry mutates invoice, subscription, and payment intent state",
+			Category:        "billing-lifecycle",
+			Level:           "L4",
+			ReleaseBlocking: true,
+			Reference:       "docs/COMPATIBILITY.md#scenario-claim",
+			Expect:          Observation{HTTPStatus: http.StatusOK, Object: "scenario_report", ObjectStatus: "passed"},
+			Run:             runInvoiceRetryScenario(),
+		},
+		{
+			ID:              "scenarios.clock_advance.subscription_renewal_paid",
+			Name:            "Scenario clock.advance creates a paid renewal invoice",
+			Category:        "billing-lifecycle",
+			Level:           "L4",
+			ReleaseBlocking: true,
+			Reference:       "docs/COMPATIBILITY.md#scenario-claim",
+			Expect:          Observation{HTTPStatus: http.StatusOK, Object: "scenario_report", ObjectStatus: "passed"},
+			Run:             runClockAdvanceRenewalScenario(),
+		},
+		{
+			ID:              "scenarios.clock_advance.cancel_at_period_end",
+			Name:            "Clock advance cancels subscriptions scheduled at period end",
+			Category:        "billing-lifecycle",
+			Level:           "L4",
+			ReleaseBlocking: true,
+			Reference:       "docs/COMPATIBILITY.md#scenario-claim",
+			Expect:          Observation{HTTPStatus: http.StatusOK, Object: "scenario_report", ObjectStatus: "passed"},
+			Run:             runClockAdvanceCancelAtPeriodEnd(),
+		},
+		{
 			ID:              "payment_intents.create.confirm.succeeds",
 			Name:            "Direct PaymentIntent create with confirm succeeds",
 			Category:        "stateful-payment-intents",
@@ -1163,6 +1214,230 @@ func runCheckoutCompletion(_ context.Context, h *harness, completionParams map[s
 	return execution, nil
 }
 
+func runInvoicePayRetry(paymentMethod string, expectedStatus string) func(context.Context, *harness) (caseExecution, error) {
+	return func(_ context.Context, h *harness) (caseExecution, error) {
+		execution, invoiceID, _, _, err := runFailedCheckoutSetup(h)
+		if err != nil {
+			return execution, err
+		}
+		pay, err := h.do(requestSpec{
+			Name:             "pay failed invoice",
+			Method:           http.MethodPost,
+			Path:             "/v1/invoices/" + invoiceID + "/pay",
+			Params:           map[string]string{"payment_method": paymentMethod},
+			ExpectHTTPStatus: http.StatusOK,
+		})
+		execution.Steps = append(execution.Steps, pay)
+		if err != nil {
+			return execution, err
+		}
+		if pay.Actual.ObjectStatus != expectedStatus {
+			return execution, fmt.Errorf("invoice status = %q, want %q", pay.Actual.ObjectStatus, expectedStatus)
+		}
+		if expectedStatus == "open" && responseNumber(pay.Response.JSON, "next_payment_attempt") == 0 {
+			return execution, fmt.Errorf("open invoice missing next_payment_attempt")
+		}
+		if expectedStatus == "paid" && responseNumber(pay.Response.JSON, "amount_due") != 0 {
+			return execution, fmt.Errorf("paid invoice has non-zero amount_due")
+		}
+		execution.Actual = *pay.Actual
+		return execution, nil
+	}
+}
+
+func runInvoiceRetryScenario() func(context.Context, *harness) (caseExecution, error) {
+	return func(_ context.Context, h *harness) (caseExecution, error) {
+		scenario := map[string]any{
+			"name":  "scorecard-invoice-retry",
+			"clock": map[string]any{"start": "2026-05-08T00:00:00Z"},
+			"catalog": map[string]any{
+				"products": []map[string]any{{"id": "prod_pro", "name": "Pro"}},
+				"prices": []map[string]any{{
+					"id":         "price_pro_monthly",
+					"product":    "prod_pro",
+					"currency":   "usd",
+					"unitAmount": 4900,
+					"interval":   "month",
+				}},
+			},
+			"steps": []map[string]any{
+				{"id": "create-customer", "action": "customer.create", "params": map[string]any{"email": "scorecard-retry@example.test"}},
+				{"id": "checkout", "action": "checkout.create", "params": map[string]any{"customerRef": "create-customer.customer.id", "price": "price_pro_monthly"}},
+				{"id": "complete-checkout", "action": "checkout.complete", "params": map[string]any{"sessionRef": "checkout.session.id", "outcome": "payment_failed"}},
+				{"id": "retry-payment", "action": "invoice.retry", "params": map[string]any{"invoiceRef": "complete-checkout.invoice.id", "payment_method": "pm_card_visa"}},
+			},
+		}
+		return runScenarioReport(h, scenario, func(decoded any) error {
+			status := nestedSliceString(decoded, "steps", 3, "output", "invoice", "status")
+			if status != "paid" {
+				return fmt.Errorf("retry invoice status = %q, want paid", status)
+			}
+			return nil
+		})
+	}
+}
+
+func runClockAdvanceRenewalScenario() func(context.Context, *harness) (caseExecution, error) {
+	return func(_ context.Context, h *harness) (caseExecution, error) {
+		scenario := map[string]any{
+			"name":  "scorecard-clock-renewal",
+			"clock": map[string]any{"start": "2026-05-08T00:00:00Z"},
+			"catalog": map[string]any{
+				"products": []map[string]any{{"id": "prod_pro", "name": "Pro"}},
+				"prices": []map[string]any{{
+					"id":         "price_pro_monthly",
+					"product":    "prod_pro",
+					"currency":   "usd",
+					"unitAmount": 4900,
+					"interval":   "month",
+				}},
+			},
+			"steps": []map[string]any{
+				{"id": "create-customer", "action": "customer.create", "params": map[string]any{"email": "scorecard-renew@example.test"}},
+				{"id": "checkout", "action": "checkout.create", "params": map[string]any{"customerRef": "create-customer.customer.id", "price": "price_pro_monthly"}},
+				{"id": "complete-checkout", "action": "checkout.complete", "params": map[string]any{"sessionRef": "checkout.session.id", "outcome": "payment_succeeded"}},
+				{"id": "advance-renewal", "action": "clock.advance", "params": map[string]any{"duration": "31d"}},
+			},
+		}
+		return runScenarioReport(h, scenario, func(decoded any) error {
+			renewed := nestedSliceNumber(decoded, "steps", 3, "output", "billing", "renewed")
+			if renewed != 1 {
+				return fmt.Errorf("renewed = %.0f, want 1", renewed)
+			}
+			status := nestedSliceString(decoded, "steps", 3, "output", "billing", "renewals", "0", "invoice", "status")
+			if status != "paid" {
+				return fmt.Errorf("renewal invoice status = %q, want paid", status)
+			}
+			return nil
+		})
+	}
+}
+
+func runClockAdvanceCancelAtPeriodEnd() func(context.Context, *harness) (caseExecution, error) {
+	return func(ctx context.Context, h *harness) (caseExecution, error) {
+		_ = ctx
+		scenario := map[string]any{
+			"name": "scorecard-clock-cancel",
+			"clock": map[string]any{
+				"start": "2026-05-08T00:00:00Z",
+			},
+			"catalog": map[string]any{
+				"products": []map[string]any{{"id": "prod_pro", "name": "Pro"}},
+				"prices": []map[string]any{{
+					"id":         "price_pro_monthly",
+					"product":    "prod_pro",
+					"currency":   "usd",
+					"unitAmount": 4900,
+					"interval":   "month",
+				}},
+			},
+			"steps": []map[string]any{
+				{"id": "create-customer", "action": "customer.create", "params": map[string]any{"email": "scorecard-cancel@example.test"}},
+				{"id": "checkout", "action": "checkout.create", "params": map[string]any{"customerRef": "create-customer.customer.id", "price": "price_pro_monthly"}},
+				{"id": "complete-checkout", "action": "checkout.complete", "params": map[string]any{"sessionRef": "checkout.session.id", "outcome": "payment_succeeded"}},
+				{"id": "schedule-cancel", "action": "subscription.update", "params": map[string]any{"subscriptionRef": "checkout.subscription.id", "cancel_at_period_end": true}},
+				{"id": "advance-cancel", "action": "clock.advance", "params": map[string]any{"duration": "60d"}},
+			},
+		}
+		return runScenarioReport(h, scenario, func(decoded any) error {
+			canceled := nestedSliceNumber(decoded, "steps", 4, "output", "billing", "canceled_count")
+			if canceled != 1 {
+				return fmt.Errorf("canceled_count = %.0f, want 1", canceled)
+			}
+			status := nestedSliceString(decoded, "steps", 4, "output", "billing", "canceled", "0", "status")
+			if status != "canceled" {
+				return fmt.Errorf("canceled subscription status = %q, want canceled", status)
+			}
+			canceledAt := nestedSliceString(decoded, "steps", 4, "output", "billing", "canceled", "0", "canceled_at")
+			if !strings.HasPrefix(canceledAt, "2026-06-08T00:00:00") {
+				return fmt.Errorf("canceled_at = %q, want period boundary", canceledAt)
+			}
+			return nil
+		})
+	}
+}
+
+func runScenarioReport(h *harness, scenario map[string]any, validate func(any) error) (caseExecution, error) {
+	execution := caseExecution{}
+	step, err := h.do(requestSpec{
+		Name:             "run scenario",
+		Method:           http.MethodPost,
+		Path:             "/api/scenarios/run",
+		JSON:             scenario,
+		ExpectHTTPStatus: http.StatusOK,
+	})
+	step.Actual.Object = "scenario_report"
+	step.Actual.ObjectStatus = responseString(step.Response.JSON, "status")
+	execution.Steps = append(execution.Steps, step)
+	execution.Actual = *step.Actual
+	if err != nil {
+		return execution, err
+	}
+	if step.Actual.ObjectStatus != "passed" {
+		return execution, fmt.Errorf("scenario status = %q, want passed", step.Actual.ObjectStatus)
+	}
+	if validate != nil {
+		if err := validate(step.Response.JSON); err != nil {
+			return execution, err
+		}
+	}
+	return execution, nil
+}
+
+func runFailedCheckoutSetup(h *harness) (caseExecution, string, string, string, error) {
+	return runCheckoutSetup(h, "payment_failed")
+}
+
+func runPaidCheckoutSetup(h *harness) (caseExecution, string, string, string, error) {
+	return runCheckoutSetup(h, "payment_succeeded")
+}
+
+func runCheckoutSetup(h *harness, outcome string) (caseExecution, string, string, string, error) {
+	execution := caseExecution{}
+	appendStep := func(spec requestSpec) (ReplayStep, error) {
+		step, err := h.do(spec)
+		execution.Steps = append(execution.Steps, step)
+		if err != nil {
+			return step, err
+		}
+		if spec.ExpectHTTPStatus != 0 && step.Actual.HTTPStatus != spec.ExpectHTTPStatus {
+			return step, fmt.Errorf("%s returned HTTP %d, want %d", spec.Name, step.Actual.HTTPStatus, spec.ExpectHTTPStatus)
+		}
+		return step, nil
+	}
+	customer, err := appendStep(requestSpec{Name: "create customer", Method: http.MethodPost, Path: "/v1/customers", Params: map[string]string{"email": "scorecard-billing@example.test"}, ExpectHTTPStatus: http.StatusOK})
+	if err != nil {
+		return execution, "", "", "", err
+	}
+	customerID := responseString(customer.Response.JSON, "id")
+	product, err := appendStep(requestSpec{Name: "create product", Method: http.MethodPost, Path: "/v1/products", Params: map[string]string{"name": "Scorecard Billing"}, ExpectHTTPStatus: http.StatusOK})
+	if err != nil {
+		return execution, "", "", "", err
+	}
+	productID := responseString(product.Response.JSON, "id")
+	price, err := appendStep(requestSpec{Name: "create price", Method: http.MethodPost, Path: "/v1/prices", Params: map[string]string{"product": productID, "currency": "usd", "unit_amount": "4900"}, ExpectHTTPStatus: http.StatusOK})
+	if err != nil {
+		return execution, "", "", "", err
+	}
+	priceID := responseString(price.Response.JSON, "id")
+	session, err := appendStep(requestSpec{Name: "create checkout session", Method: http.MethodPost, Path: "/v1/checkout/sessions", Params: map[string]string{"customer": customerID, "line_items[0][price]": priceID}, ExpectHTTPStatus: http.StatusOK})
+	if err != nil {
+		return execution, "", "", "", err
+	}
+	sessionID := responseString(session.Response.JSON, "id")
+	completion, err := appendStep(requestSpec{Name: "complete checkout", Method: http.MethodPost, Path: "/api/checkout/sessions/" + sessionID + "/complete", Params: map[string]string{"outcome": outcome}, ExpectHTTPStatus: http.StatusOK})
+	if err != nil {
+		return execution, "", "", "", err
+	}
+	invoiceID := nestedResponseString(completion.Response.JSON, "invoice", "id")
+	subscriptionID := nestedResponseString(completion.Response.JSON, "subscription", "id")
+	paymentIntentID := nestedResponseString(completion.Response.JSON, "payment_intent", "id")
+	if invoiceID == "" || subscriptionID == "" || paymentIntentID == "" {
+		return execution, "", "", "", fmt.Errorf("checkout completion missing billing ids")
+	}
+	return execution, invoiceID, subscriptionID, paymentIntentID, nil
+}
+
 func responseString(decoded any, key string) string {
 	m, _ := decoded.(map[string]any)
 	value, _ := m[key].(string)
@@ -1174,4 +1449,56 @@ func nestedResponseString(decoded any, key string, nested string) string {
 	child, _ := m[key].(map[string]any)
 	value, _ := child[nested].(string)
 	return value
+}
+
+func responseNumber(decoded any, key string) float64 {
+	m, _ := decoded.(map[string]any)
+	value, _ := m[key].(float64)
+	return value
+}
+
+func nestedSliceString(decoded any, path ...any) string {
+	value := nestedValue(decoded, path...)
+	s, _ := value.(string)
+	return s
+}
+
+func nestedSliceNumber(decoded any, path ...any) float64 {
+	value := nestedValue(decoded, path...)
+	n, _ := value.(float64)
+	return n
+}
+
+func nestedValue(value any, path ...any) any {
+	current := value
+	for _, segment := range path {
+		switch key := segment.(type) {
+		case string:
+			if idx := intFromString(key); idx >= 0 {
+				items, _ := current.([]any)
+				if idx >= len(items) {
+					return nil
+				}
+				current = items[idx]
+				continue
+			}
+			m, _ := current.(map[string]any)
+			current = m[key]
+		case int:
+			items, _ := current.([]any)
+			if key < 0 || key >= len(items) {
+				return nil
+			}
+			current = items[key]
+		}
+	}
+	return current
+}
+
+func intFromString(raw string) int {
+	var idx int
+	if _, err := fmt.Sscanf(raw, "%d", &idx); err != nil {
+		return -1
+	}
+	return idx
 }

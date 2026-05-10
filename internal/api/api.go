@@ -789,13 +789,50 @@ func (h *Handler) handleInvoices(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/v1/invoices/")
-	if id == "" || strings.Contains(id, "/") || r.Method != http.MethodGet {
-		if r.Method != http.MethodGet {
-			h.methodNotAllowed(w, r, "GET")
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/invoices/"), "/")
+	if rest == "" {
+		h.notFound(w, r)
+		return
+	}
+	parts := strings.Split(rest, "/")
+	id := parts[0]
+	if len(parts) == 2 && parts[1] == "pay" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
 			return
 		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoicePay(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		paymentMethodID := p.string("payment_method")
+		if paymentMethodID == "" {
+			paymentMethodID = p.string("source")
+		}
+		outcome := paymentMethodID
+		forgive := p.boolDefault("forgive", false)
+		result, err := h.billing.PayInvoice(r.Context(), id, billing.InvoicePaymentOptions{
+			Outcome:         outcome,
+			PaymentMethodID: paymentMethodID,
+			PaidOutOfBand:   p.boolDefault("paid_out_of_band", false) || forgive,
+		})
+		if err == nil {
+			h.emitInvoicePaymentWebhooks(r, result, webhooks.SourceAPI)
+		}
+		writeResult(w, stripeInvoice(result.Invoice), err)
+		return
+	}
+	if len(parts) != 1 {
 		h.notFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
 		return
 	}
 	invoice, err := h.billing.GetInvoice(r.Context(), id)
@@ -2210,23 +2247,24 @@ func subscriptionItemID(sub billing.Subscription, idx int) string {
 
 func stripeInvoice(invoice billing.Invoice) map[string]any {
 	return map[string]any{
-		"id":             invoice.ID,
-		"object":         billing.ObjectInvoice,
-		"customer":       invoice.CustomerID,
-		"subscription":   emptyToNil(invoice.SubscriptionID),
-		"parent":         map[string]any{"subscription_details": map[string]any{"subscription": emptyToNil(invoice.SubscriptionID)}},
-		"status":         invoice.Status,
-		"currency":       invoice.Currency,
-		"subtotal":       invoice.Subtotal,
-		"total":          invoice.Total,
-		"amount_due":     invoice.AmountDue,
-		"amount_paid":    invoice.AmountPaid,
-		"attempt_count":  invoice.AttemptCount,
-		"payment_intent": emptyToNil(invoice.PaymentIntentID),
-		"payments":       stripeList("/v1/invoices/"+invoice.ID+"/payments", []map[string]any{}),
-		"lines":          stripeList("/v1/invoices/"+invoice.ID+"/lines", []map[string]any{}),
-		"created":        unix(invoice.CreatedAt),
-		"created_at":     invoice.CreatedAt,
+		"id":                   invoice.ID,
+		"object":               billing.ObjectInvoice,
+		"customer":             invoice.CustomerID,
+		"subscription":         emptyToNil(invoice.SubscriptionID),
+		"parent":               map[string]any{"subscription_details": map[string]any{"subscription": emptyToNil(invoice.SubscriptionID)}},
+		"status":               invoice.Status,
+		"currency":             invoice.Currency,
+		"subtotal":             invoice.Subtotal,
+		"total":                invoice.Total,
+		"amount_due":           invoice.AmountDue,
+		"amount_paid":          invoice.AmountPaid,
+		"attempt_count":        invoice.AttemptCount,
+		"next_payment_attempt": optionalUnix(invoice.NextPaymentAttempt),
+		"payment_intent":       emptyToNil(invoice.PaymentIntentID),
+		"payments":             stripeList("/v1/invoices/"+invoice.ID+"/payments", []map[string]any{}),
+		"lines":                stripeList("/v1/invoices/"+invoice.ID+"/lines", []map[string]any{}),
+		"created":              unix(invoice.CreatedAt),
+		"created_at":           invoice.CreatedAt,
 		"status_transitions": map[string]any{
 			"paid_at": optionalPaidAt(invoice),
 		},
@@ -2700,6 +2738,28 @@ func (h *Handler) emitPaymentIntentWebhook(r *http.Request, eventType string, in
 	return []webhooks.Event{event}
 }
 
+func (h *Handler) emitInvoicePaymentWebhooks(r *http.Request, result billing.InvoicePaymentResult, source string) []webhooks.Event {
+	if h.webhooks == nil || result.Invoice.ID == "" {
+		return nil
+	}
+	sequence := time.Now().UTC().UnixNano()
+	var emitted []webhooks.Event
+	for idx, item := range h.invoicePaymentWebhookPayloads(r, result) {
+		event, _, err := h.webhooks.CreateEvent(r.Context(), webhooks.EventInput{
+			Type:           item.eventType,
+			ObjectPayload:  item.payload,
+			RequestID:      "req_" + item.objectID,
+			IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", item.eventType, item.objectID, sequence),
+			Source:         source,
+			Sequence:       sequence + int64(idx),
+		})
+		if err == nil {
+			emitted = append(emitted, event)
+		}
+	}
+	return emitted
+}
+
 func (h *Handler) emitSetupIntentWebhook(r *http.Request, eventType string, intent billing.SetupIntent) []webhooks.Event {
 	if h.webhooks == nil || intent.ID == "" || eventType == "" {
 		return nil
@@ -2871,6 +2931,31 @@ func (h *Handler) checkoutWebhookPayloads(r *http.Request, result map[string]any
 	}
 	if subscription.ID != "" {
 		appendPayload("customer.subscription.updated", subscription.ID, h.stripeSubscription(r, subscription))
+	}
+	return out
+}
+
+func (h *Handler) invoicePaymentWebhookPayloads(r *http.Request, result billing.InvoicePaymentResult) []webhookPayload {
+	var out []webhookPayload
+	appendPayload := func(eventType string, objectID string, value any) {
+		if eventType == "" || objectID == "" {
+			return
+		}
+		raw, err := json.Marshal(value)
+		if err == nil {
+			out = append(out, webhookPayload{eventType: eventType, objectID: objectID, payload: raw})
+		}
+	}
+	if result.PaymentIntent.ID != "" {
+		appendPayload(paymentIntentTerminalEvent(result.PaymentIntent.Status), result.PaymentIntent.ID, stripePaymentIntent(result.PaymentIntent))
+	}
+	if result.Invoice.ID != "" {
+		for _, eventType := range invoiceTerminalEvents(result.Invoice.Status, result.PaymentIntent.Status) {
+			appendPayload(eventType, result.Invoice.ID, stripeInvoice(result.Invoice))
+		}
+	}
+	if result.Subscription.ID != "" {
+		appendPayload("customer.subscription.updated", result.Subscription.ID, h.stripeSubscription(r, result.Subscription))
 	}
 	return out
 }

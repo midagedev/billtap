@@ -84,7 +84,7 @@ The long-running expansion goal is at least 90% OpenAPI operation coverage at
 The concrete target and chunk plan live in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`. In short:
 
-- current baseline: `46 / 619`, `7.4%`
+- current baseline: `47 / 619`, `7.6%`
 - target: at least `558 / 619`, `90.0%`
 - maximum remaining `L0`: `61 / 619`
 - P0/P1 billing-lab flows still need deeper `L3-L6` evidence, not just broad
@@ -95,7 +95,7 @@ The concrete target and chunk plan live in
 | Priority | Family | First measurable chunk |
 | --- | --- | --- |
 | P0 | webhooks | Thin/snapshot event shape audit, connected-account routing evidence, replay diagnostics. |
-| P0 | billing | Renewal, trial, cancellation, retry, proration preview, and subscription schedule scenarios. |
+| P0 | billing | Trial-end depth, proration preview, subscription schedules, invoice finalization/voiding, and discount/credit scenarios. |
 | P0 | checkout | Close subscription checkout optional-param gaps and SDK smoke. |
 | P0 | billing_portal | Portal configuration fixtures, payment-method update, cancellation reason coverage. |
 | P1 | connect | `GET /v1/accounts/{id}`, account list fixture, `Stripe-Account` tracing, connected webhook smoke. |

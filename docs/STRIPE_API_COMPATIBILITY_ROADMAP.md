@@ -64,7 +64,7 @@ The concrete expansion target is defined in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
 
 - reach at least `90.0%` OpenAPI operation coverage at `L1+`
-- move from the current `46 / 619` baseline to at least `558 / 619`
+- move from the current `47 / 619` baseline to at least `558 / 619`
 - keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
   matters
 - use broad `L1-L2` validation/fixture coverage for safe low-state and
@@ -350,7 +350,7 @@ Each chunk should use the PR -> review -> fix -> merge workflow.
 | S1-B  | Error/idempotency         | Error catalog hardening, request-id, idempotency trace expansion                 | API tests and scorecard cases                     |
 | S2-A  | Generated validation P0   | OpenAPI-derived validators for catalog, customers, checkout, subscriptions       | Scorecard plus stripe-mock optional oracle        |
 | S2-B  | Fixture response harness  | Low-state fixture response engine for inventory-only endpoints                   | Fixture-shape scorecard                           |
-| S3-A  | Renewal/test clock        | Renewal invoices, trial end, retry mutation, local clock event sequences         | Scenario reports and webhook tests                |
+| S3-A  | Renewal/test clock        | Invoice retry mutation, local clock renewal, and period-end cancellation landed; trial-end and full Test Clock API parity remain future work | Scenario reports, scorecard cases, and webhook tests |
 | S3-B  | Discounts/credits/meters  | Coupons, promotion codes, discounts, credit notes, usage/meter events            | Scenario and billing engine tests                 |
 | S4-A  | Direct payment intents    | Create/confirm/capture/cancel state machine and failure aliases                  | API tests landed; SDK smoke remains               |
 | S4-B  | Setup/payment methods     | SetupIntent state machine landed; PaymentMethod attach/detach/update lifecycle   | SDK smoke and no-card-data boundary tests         |
@@ -379,8 +379,8 @@ Start with S0 and S1 before adding many endpoints. Without an inventory and
 protocol baseline, broad compatibility will become a pile of ad hoc routes.
 After S0/S1, the highest-value implementation order is:
 
-1. Renewal/test clock/retry mutation for subscriptions and invoices.
-2. Coupons, discounts, credit notes, refunds, and payment history.
-3. Connect smoke fixtures and connected-account webhook routing.
-4. OpenAPI-derived L1 validation for broad low-state endpoint coverage.
+1. Coupons, discounts, credit notes, refunds, and payment history.
+2. Connect smoke fixtures and connected-account webhook routing.
+3. PaymentMethod lifecycle breadth and remaining direct-payment adjunct routes.
+4. OpenAPI-derived L1/L2 validation and fixture breadth for low-state endpoints.
 5. Official SDK matrix and optional stripe-mock oracle lane.

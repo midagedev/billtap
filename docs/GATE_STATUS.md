@@ -16,9 +16,9 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G9 Release Candidate          | Passed locally | Dockerfile, sample app, public examples, release checklist                                                                                                  |
 | G10 Fixture Integration Smoke | Passed locally | Fixture apply/snapshot/assert APIs support deterministic integration setup                                                                                  |
 | G11 Assertion Ergonomics      | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots                                                                                        |
-| G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 44 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
+| G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 49 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
 | G13 Stripe API Expansion      | In progress    | Roadmap defines compatibility levels and endpoint-family priorities; OpenAPI inventory generator and optional workflow write JSON/Markdown coverage artifacts  |
-| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 46/619 baseline, family thresholds, and chunk plan                              |
+| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 47/619 baseline, family thresholds, and chunk plan                              |
 
 ## Current Public Claim
 
@@ -29,23 +29,23 @@ under Apache-2.0.
 
 ## Current Compatibility Evidence
 
-- Scorecard version: `l3-public-readiness-v6`
-- Release-blocking scorecard cases: 44
+- Scorecard version: `l3-public-readiness-v7`
+- Release-blocking scorecard cases: 49
 - Required scorecard release result: `mismatch=0`, `error=0`, `passed=true`
 - Coverage focus: request validation, protocol parameter acceptance,
-  idempotency mismatch, deterministic checkout payment-error aliases
-- OpenAPI operation baseline: `46 / 619`, `7.4%`
+  idempotency mismatch, deterministic checkout payment-error aliases,
+  direct intent state machines, and billing lifecycle retry/renewal mutations
+- OpenAPI operation baseline: `47 / 619`, `7.6%`
 - Long-running OpenAPI operation target: at least `558 / 619`, `90.0%`, at
   `L1+` with deeper P0/P1 behavior gates
 
 ## Last Local Code Verification
 
-Verified on 2026-05-10 from branch `codex/direct-payment-setup-intents`:
+Verified on 2026-05-10 from branch `codex/subscription-renewal-retry`:
 
 - `go test ./...`
-- `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
-  - result: `imported=44 skipped=1 unsupported=1 mismatch=0 error=0`
-- `npm run typecheck`
+- `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compat-scorecard-t137`
+  - result: `imported=49 skipped=1 unsupported=1 mismatch=0 error=0`
 - `npm run build`
 
 Release verification should still be rerun on the final release branch or tag.

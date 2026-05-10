@@ -103,6 +103,30 @@ type Invoice struct {
 	CreatedAt          time.Time  `json:"created_at"`
 }
 
+type InvoicePaymentOptions struct {
+	PaymentMethodID string
+	Outcome         string
+	PaidOutOfBand   bool
+	At              time.Time
+}
+
+type InvoicePaymentResult struct {
+	Invoice       Invoice       `json:"invoice"`
+	Subscription  Subscription  `json:"subscription,omitempty"`
+	PaymentIntent PaymentIntent `json:"payment_intent,omitempty"`
+}
+
+type ClockAdvanceResult struct {
+	Object        string                 `json:"object"`
+	AdvancedTo    time.Time              `json:"advanced_to"`
+	Renewals      []InvoicePaymentResult `json:"renewals,omitempty"`
+	Canceled      []Subscription         `json:"canceled,omitempty"`
+	Skipped       []string               `json:"skipped,omitempty"`
+	Processed     int                    `json:"processed"`
+	Renewed       int                    `json:"renewed"`
+	CanceledCount int                    `json:"canceled_count"`
+}
+
 type PaymentIntent struct {
 	ID              string    `json:"id"`
 	Object          string    `json:"object"`
