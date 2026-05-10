@@ -58,6 +58,21 @@ Each compatibility PR should follow this loop:
    description.
 6. Review, fix, and merge before opening the next compatibility chunk.
 
+## 90% Target
+
+The long-running expansion goal is at least 90% OpenAPI operation coverage at
+`L1+`, measured by `summary.implemented_percent` in generated
+`stripe-api-inventory.json`.
+
+The concrete target and chunk plan live in
+`docs/STRIPE_COMPATIBILITY_90_TARGET.md`. In short:
+
+- current baseline: `37 / 619`, `6.0%`
+- target: at least `558 / 619`, `90.0%`
+- maximum remaining `L0`: `61 / 619`
+- P0/P1 billing-lab flows still need deeper `L3-L6` evidence, not just broad
+  schema or fixture smoke
+
 ## Current Priority Queue
 
 | Priority | Family | First measurable chunk |
