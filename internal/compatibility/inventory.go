@@ -38,14 +38,16 @@ type StripeAPIInventory struct {
 }
 
 type InventorySummary struct {
-	TotalOperations         int              `json:"total_operations"`
-	ImplementedOperations   int              `json:"implemented_operations"`
-	InventoryOnlyOperations int              `json:"inventory_only_operations"`
-	BilltapOnlyRoutes       int              `json:"billtap_only_routes"`
-	ImplementedPercent      float64          `json:"implemented_percent"`
-	ByLevel                 map[string]int   `json:"by_level"`
-	ByFamily                map[string]int   `json:"by_family"`
-	Families                []FamilyCoverage `json:"families"`
+	TotalOperations           int              `json:"total_operations"`
+	ImplementedOperations     int              `json:"implemented_operations"`
+	InventoryOnlyOperations   int              `json:"inventory_only_operations"`
+	SchemaValidatedOperations int              `json:"schema_validated_operations"`
+	BilltapOnlyRoutes         int              `json:"billtap_only_routes"`
+	ImplementedPercent        float64          `json:"implemented_percent"`
+	SchemaValidatedPercent    float64          `json:"schema_validated_percent"`
+	ByLevel                   map[string]int   `json:"by_level"`
+	ByFamily                  map[string]int   `json:"by_family"`
+	Families                  []FamilyCoverage `json:"families"`
 }
 
 type FamilyCoverage struct {
@@ -61,21 +63,22 @@ type FamilyCoverage struct {
 }
 
 type StripeOperationCoverage struct {
-	Family         string   `json:"family"`
-	Resource       string   `json:"resource"`
-	Path           string   `json:"path"`
-	NormalizedPath string   `json:"normalized_path"`
-	Method         string   `json:"method"`
-	OperationID    string   `json:"operation_id,omitempty"`
-	Implemented    bool     `json:"implemented"`
-	BilltapLevel   string   `json:"billtap_level"`
-	TargetLevel    string   `json:"target_level"`
-	Stateful       bool     `json:"stateful"`
-	WebhookEvents  []string `json:"webhook_events,omitempty"`
-	ScorecardCases []string `json:"scorecard_cases,omitempty"`
-	SDKSmoke       []string `json:"sdk_smoke,omitempty"`
-	Docs           string   `json:"docs,omitempty"`
-	Risks          []string `json:"risks,omitempty"`
+	Family          string   `json:"family"`
+	Resource        string   `json:"resource"`
+	Path            string   `json:"path"`
+	NormalizedPath  string   `json:"normalized_path"`
+	Method          string   `json:"method"`
+	OperationID     string   `json:"operation_id,omitempty"`
+	Implemented     bool     `json:"implemented"`
+	SchemaValidated bool     `json:"schema_validated"`
+	BilltapLevel    string   `json:"billtap_level"`
+	TargetLevel     string   `json:"target_level"`
+	Stateful        bool     `json:"stateful"`
+	WebhookEvents   []string `json:"webhook_events,omitempty"`
+	ScorecardCases  []string `json:"scorecard_cases,omitempty"`
+	SDKSmoke        []string `json:"sdk_smoke,omitempty"`
+	Docs            string   `json:"docs,omitempty"`
+	Risks           []string `json:"risks,omitempty"`
 }
 
 type BilltapRouteCoverage struct {
@@ -100,10 +103,26 @@ type openAPISpec struct {
 }
 
 type openAPIOperation struct {
-	OperationID string   `json:"operationId"`
-	Tags        []string `json:"tags"`
-	Deprecated  bool     `json:"deprecated"`
-	ResourceID  string   `json:"x-resourceId"`
+	OperationID string              `json:"operationId"`
+	Tags        []string            `json:"tags"`
+	Deprecated  bool                `json:"deprecated"`
+	ResourceID  string              `json:"x-resourceId"`
+	Parameters  []openAPIParameter  `json:"parameters"`
+	RequestBody *openAPIRequestBody `json:"requestBody"`
+}
+
+type openAPIParameter struct {
+	Name   string          `json:"name"`
+	In     string          `json:"in"`
+	Schema json.RawMessage `json:"schema"`
+}
+
+type openAPIRequestBody struct {
+	Content map[string]openAPIRequestMedia `json:"content"`
+}
+
+type openAPIRequestMedia struct {
+	Schema json.RawMessage `json:"schema"`
 }
 
 type openAPISchema struct {
@@ -161,6 +180,7 @@ func GenerateInventory(ctx context.Context, opts InventoryOptions) (StripeAPIInv
 	}
 
 	coverage := currentStripeRouteCoverage()
+	validationCatalog := stripecompat.DefaultValidationCatalog()
 	familyStats := map[string]*FamilyCoverage{}
 	paths := sortedKeys(spec.Paths)
 	for _, path := range paths {
@@ -173,6 +193,8 @@ func GenerateInventory(ctx context.Context, opts InventoryOptions) (StripeAPIInv
 			normalizedPath := normalizeOpenAPIPath(path)
 			key := routeKey(method, normalizedPath)
 			current, implemented := coverage[key]
+			_, hasBundledValidation := validationCatalog.Lookup(method, normalizedPath)
+			schemaValidated := hasBundledValidation && operationHasValidationSurface(operation)
 			family := inferFamily(path)
 			resource := inferResource(path, operation, spec.Components.Schemas)
 			level := "L0"
@@ -180,27 +202,31 @@ func GenerateInventory(ctx context.Context, opts InventoryOptions) (StripeAPIInv
 				level = current.Level
 			}
 			item := StripeOperationCoverage{
-				Family:         family,
-				Resource:       resource,
-				Path:           path,
-				NormalizedPath: normalizedPath,
-				Method:         strings.ToUpper(method),
-				OperationID:    operation.OperationID,
-				Implemented:    implemented,
-				BilltapLevel:   level,
-				TargetLevel:    targetLevelForFamily(family),
-				Stateful:       current.Stateful,
-				WebhookEvents:  append([]string(nil), current.WebhookEvents...),
-				ScorecardCases: append([]string(nil), current.ScorecardCases...),
-				SDKSmoke:       append([]string(nil), current.SDKSmoke...),
-				Docs:           current.Docs,
-				Risks:          append([]string(nil), current.Risks...),
+				Family:          family,
+				Resource:        resource,
+				Path:            path,
+				NormalizedPath:  normalizedPath,
+				Method:          strings.ToUpper(method),
+				OperationID:     operation.OperationID,
+				Implemented:     implemented,
+				SchemaValidated: schemaValidated,
+				BilltapLevel:    level,
+				TargetLevel:     targetLevelForFamily(family),
+				Stateful:        current.Stateful,
+				WebhookEvents:   append([]string(nil), current.WebhookEvents...),
+				ScorecardCases:  append([]string(nil), current.ScorecardCases...),
+				SDKSmoke:        append([]string(nil), current.SDKSmoke...),
+				Docs:            current.Docs,
+				Risks:           append([]string(nil), current.Risks...),
 			}
 			if !implemented {
 				item.Risks = append(item.Risks, "inventory-only; no Billtap runtime claim")
 			}
 			inventory.Operations = append(inventory.Operations, item)
 			inventory.Summary.TotalOperations++
+			if schemaValidated {
+				inventory.Summary.SchemaValidatedOperations++
+			}
 			inventory.Summary.ByLevel[level]++
 			inventory.Summary.ByFamily[family]++
 			stats := familyStats[family]
@@ -227,6 +253,7 @@ func GenerateInventory(ctx context.Context, opts InventoryOptions) (StripeAPIInv
 	}
 	inventory.Summary.BilltapOnlyRoutes = len(inventory.BilltapOnlyRoutes)
 	inventory.Summary.ImplementedPercent = percentage(inventory.Summary.ImplementedOperations, inventory.Summary.TotalOperations)
+	inventory.Summary.SchemaValidatedPercent = percentage(inventory.Summary.SchemaValidatedOperations, inventory.Summary.TotalOperations)
 	inventory.Summary.Families = sortedFamilyCoverage(familyStats)
 	sort.Slice(inventory.Operations, func(i, j int) bool {
 		left := inventory.Operations[i]
@@ -279,6 +306,8 @@ func (i StripeAPIInventory) Markdown() string {
 	}
 	fmt.Fprintf(&b, "- Operations: `%d` total, `%d` implemented, `%d` inventory-only, `%.1f%%` implemented\n",
 		i.Summary.TotalOperations, i.Summary.ImplementedOperations, i.Summary.InventoryOnlyOperations, i.Summary.ImplementedPercent)
+	fmt.Fprintf(&b, "- OpenAPI validation catalog: `%d` route schemas, `%.1f%%` schema-visible\n",
+		i.Summary.SchemaValidatedOperations, i.Summary.SchemaValidatedPercent)
 
 	b.WriteString("\n## Levels\n\n")
 	for _, level := range sortedKeys(i.Summary.ByLevel) {
@@ -302,10 +331,10 @@ func (i StripeAPIInventory) Markdown() string {
 	}
 
 	b.WriteString("\n## Operations\n\n")
-	b.WriteString("| Method | Path | Family | Resource | Level | Target | Implemented | Risks |\n")
-	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("| Method | Path | Family | Resource | Level | Target | Implemented | Schema validated | Risks |\n")
+	b.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, op := range i.Operations {
-		fmt.Fprintf(&b, "| %s | %s | %s | %s | `%s` | `%s` | `%t` | %s |\n",
+		fmt.Fprintf(&b, "| %s | %s | %s | %s | `%s` | `%s` | `%t` | `%t` | %s |\n",
 			escapeTable(op.Method),
 			escapeTable(op.Path),
 			escapeTable(op.Family),
@@ -313,6 +342,7 @@ func (i StripeAPIInventory) Markdown() string {
 			op.BilltapLevel,
 			op.TargetLevel,
 			op.Implemented,
+			op.SchemaValidated,
 			escapeTable(strings.Join(op.Risks, "; ")),
 		)
 	}
@@ -377,6 +407,23 @@ func isHTTPMethod(method string) bool {
 	default:
 		return false
 	}
+}
+
+func operationHasValidationSurface(operation openAPIOperation) bool {
+	for _, param := range operation.Parameters {
+		if strings.TrimSpace(param.Name) != "" || len(param.Schema) > 0 {
+			return true
+		}
+	}
+	if operation.RequestBody == nil {
+		return false
+	}
+	for _, media := range operation.RequestBody.Content {
+		if len(media.Schema) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func inferFamily(path string) string {

@@ -151,8 +151,11 @@ Gate:
 
 Output:
 
-- Generated validators for broad L1 coverage, with hand-written overrides for
-  stateful local behavior.
+- Generated validators for broad route/parameter/type visibility, with
+  hand-written overrides for stateful local behavior.
+- Known but otherwise unsupported routes return OpenAPI-backed
+  `parameter_unknown`, `parameter_missing`, and `parameter_invalid` errors
+  before returning `unsupported_endpoint` for valid-but-unimplemented requests.
 - Fixture responses for low-state retrieve/list/create smoke paths.
 - Optional differential lane against `stripe-mock` for route/parameter/type
   sanity checks.
@@ -161,6 +164,9 @@ Gate:
 
 - L1 claims have success, required-param, wrong-type, unknown-param, enum, and
   missing-resource cases.
+- `summary.schema_validated_operations` can be high without increasing
+  `summary.implemented_operations`; only explicitly tested runtime claims count
+  toward the 90% target.
 - Differential mismatches are classified as Billtap bug, Stripe-mock limitation,
   or accepted Billtap boundary.
 

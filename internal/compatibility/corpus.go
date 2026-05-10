@@ -554,6 +554,124 @@ func builtinCorpus() []caseSpec {
 			},
 		},
 		{
+			ID:              "openapi.country_specs.invalid_limit",
+			Name:            "OpenAPI-backed fallback validation rejects invalid list limit",
+			Category:        "openapi-schema-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/STRIPE_API_COMPATIBILITY_ROADMAP.md#s2-openapi-backed-validation-and-fixture-responses",
+			Steps: []requestSpec{{
+				Name:   "list country specs with invalid limit",
+				Method: http.MethodGet,
+				Path:   "/v1/country_specs?limit=not-an-int",
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "limit",
+				},
+			},
+		},
+		{
+			ID:              "openapi.country_specs.unknown_param",
+			Name:            "OpenAPI-backed fallback validation rejects unknown list parameter",
+			Category:        "openapi-schema-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/STRIPE_API_COMPATIBILITY_ROADMAP.md#s2-openapi-backed-validation-and-fixture-responses",
+			Steps: []requestSpec{{
+				Name:   "list country specs with unknown parameter",
+				Method: http.MethodGet,
+				Path:   "/v1/country_specs?nickname=legacy",
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_unknown",
+					Param: "nickname",
+				},
+			},
+		},
+		{
+			ID:              "openapi.apps.secrets.missing_required",
+			Name:            "OpenAPI-backed fallback validation rejects missing required body parameter",
+			Category:        "openapi-schema-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/STRIPE_API_COMPATIBILITY_ROADMAP.md#s2-openapi-backed-validation-and-fixture-responses",
+			Steps: []requestSpec{{
+				Name:   "create app secret without name",
+				Method: http.MethodPost,
+				Path:   "/v1/apps/secrets",
+				Params: map[string]string{
+					"payload":     "secret",
+					"scope[type]": "account",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_missing",
+					Param: "name",
+				},
+			},
+		},
+		{
+			ID:              "openapi.apps.secrets.invalid_nested_enum",
+			Name:            "OpenAPI-backed fallback validation rejects invalid nested enum",
+			Category:        "openapi-schema-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/STRIPE_API_COMPATIBILITY_ROADMAP.md#s2-openapi-backed-validation-and-fixture-responses",
+			Steps: []requestSpec{{
+				Name:   "create app secret with invalid scope type",
+				Method: http.MethodPost,
+				Path:   "/v1/apps/secrets",
+				Params: map[string]string{
+					"name":        "token",
+					"payload":     "secret",
+					"scope[type]": "workspace",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "scope[type]",
+				},
+			},
+		},
+		{
+			ID:              "openapi.account_sessions.invalid_deep_nested_boolean",
+			Name:            "OpenAPI-backed fallback validation rejects invalid deep nested boolean",
+			Category:        "openapi-schema-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/STRIPE_API_COMPATIBILITY_ROADMAP.md#s2-openapi-backed-validation-and-fixture-responses",
+			Steps: []requestSpec{{
+				Name:   "create account session with invalid nested enabled flag",
+				Method: http.MethodPost,
+				Path:   "/v1/account_sessions",
+				Params: map[string]string{
+					"account": "acct_123",
+					"components[account_onboarding][enabled]": "maybe",
+				},
+			}},
+			Expect: Observation{
+				HTTPStatus: http.StatusBadRequest,
+				Error: &ErrorObservation{
+					Type:  "invalid_request_error",
+					Code:  "parameter_invalid",
+					Param: "components[account_onboarding][enabled]",
+				},
+			},
+		},
+		{
 			ID:              "checkout.complete.insufficient_funds_alias",
 			Name:            "Checkout completion maps Stripe test PaymentMethod alias to card error",
 			Category:        "error-simulation",

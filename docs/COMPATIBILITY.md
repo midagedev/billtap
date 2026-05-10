@@ -15,12 +15,13 @@ The compatibility promise is intentionally narrow:
 Anything outside this document should be treated as unsupported until it has a
 fixture, a test, and an explicit compatibility note.
 
-Known Stripe OpenAPI routes that are not implemented by Billtap return a
-Stripe-shaped `invalid_request_error` with code `unsupported_endpoint` instead
-of silently approximating provider behavior. When diagnostics are enabled, the
-request trace captures that error code and the original path so agents can
-distinguish unsupported coverage gaps from missing local data or webhook
-failures.
+Known Stripe OpenAPI routes that are not implemented by Billtap first run
+OpenAPI-derived parameter validation. Malformed requests return Stripe-shaped
+`parameter_unknown`, `parameter_missing`, or `parameter_invalid` errors; valid
+but unimplemented requests return `unsupported_endpoint` instead of silently
+approximating provider behavior. When diagnostics are enabled, the request trace
+captures that error code and the original path so agents can distinguish bad
+test setup, unsupported coverage gaps, missing local data, and webhook failures.
 
 ## Compatibility Levels
 
@@ -55,10 +56,11 @@ Scorecard statuses are:
 
 Current public-readiness corpus:
 
-- Scorecard version: `l3-public-readiness-v4`
-- Release-blocking cases: 30
+- Scorecard version: `l3-public-readiness-v5`
+- Release-blocking cases: 35
 - Covered categories: request validation, protocol parameter acceptance,
-  idempotency mismatch, deterministic checkout payment-error aliases
+  OpenAPI-backed fallback validation, idempotency mismatch, deterministic
+  checkout payment-error aliases
 - Required release result: `mismatch=0`, `error=0`, and `passed=true`
 
 The scorecard is intentionally a release contract for Billtap's documented
@@ -69,6 +71,14 @@ Broader Stripe API compatibility work is tracked separately in
 inventory, schema validation, fixture response, stateful local behavior,
 scenario coverage, webhook modeling, and SDK smoke levels before they become
 public claims.
+
+The generated Stripe API inventory also reports
+`summary.schema_validated_operations`, which counts operations from the input
+OpenAPI file that expose parameter or request-body schemas and also match
+Billtap's bundled OpenAPI-derived validation catalog. This is a diagnostic and
+planning metric only. It does not increase `summary.implemented_operations`; an
+endpoint still needs an explicit runtime claim, tests, fixtures, and
+documentation before it counts as implemented.
 
 ## Supported Stripe-Like API Subset
 
