@@ -44,11 +44,11 @@ Do not describe Billtap as:
 
 ## Release Blockers
 
-| Blocker | Status | Resolution |
-| --- | --- | --- |
-| License | Resolved | Apache-2.0 `LICENSE` and top-level `NOTICE` are present. |
+| Blocker               | Status                 | Resolution                                                                      |
+| --------------------- | ---------------------- | ------------------------------------------------------------------------------- |
+| License               | Resolved               | Apache-2.0 `LICENSE` and top-level `NOTICE` are present.                        |
 | Public repository URL | Confirm before release | `docs/RELEASE.md` currently assumes `https://github.com/midagedev/billtap.git`. |
-| Release verification | Must pass per release | Run `docs/RELEASE_CHECKLIST.md` on the release branch or tag. |
+| Release verification  | Must pass per release  | Run `docs/RELEASE_CHECKLIST.md` on the release branch or tag.                   |
 
 ## Required Evidence
 
@@ -78,8 +78,8 @@ The scorecard evidence should state:
 
 Current local evidence on 2026-05-09:
 
-- Scorecard version: `l3-public-readiness-v2`
-- Scorecard result: `imported=28 skipped=1 unsupported=1 mismatch=0 error=0`
+- Scorecard version: `l3-public-readiness-v3`
+- Scorecard result: `imported=29 skipped=1 unsupported=1 mismatch=0 error=0`
 - Local release checks listed in `docs/GATE_STATUS.md` passed on branch
   `codex/apache-license-release-readiness`.
 - Apache-2.0 `LICENSE`, `NOTICE`, `package.json`, and `package-lock.json`

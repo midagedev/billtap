@@ -17,12 +17,12 @@ fixture, a test, and an explicit compatibility note.
 
 ## Compatibility Levels
 
-| Level | Meaning |
-| --- | --- |
-| Supported | Implemented in the local runtime and covered by automated tests or release-blocking compatibility scorecard cases. Examples and fixtures are supporting evidence, not the sole basis for a supported claim. |
-| Billtap-specific | Public Billtap API, not intended to match Stripe. |
-| Partial | Useful for smoke tests, but not a full provider behavior model. |
-| Unsupported | Not implemented, not claimed, or intentionally out of scope. |
+| Level            | Meaning                                                                                                                                                                                                     |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Supported        | Implemented in the local runtime and covered by automated tests or release-blocking compatibility scorecard cases. Examples and fixtures are supporting evidence, not the sole basis for a supported claim. |
+| Billtap-specific | Public Billtap API, not intended to match Stripe.                                                                                                                                                           |
+| Partial          | Useful for smoke tests, but not a full provider behavior model.                                                                                                                                             |
+| Unsupported      | Not implemented, not claimed, or intentionally out of scope.                                                                                                                                                |
 
 ## Compatibility Scorecard
 
@@ -48,8 +48,8 @@ Scorecard statuses are:
 
 Current public-readiness corpus:
 
-- Scorecard version: `l3-public-readiness-v2`
-- Release-blocking cases: 28
+- Scorecard version: `l3-public-readiness-v3`
+- Release-blocking cases: 29
 - Covered categories: request validation, idempotency mismatch, deterministic
   checkout payment-error aliases
 - Required release result: `mismatch=0`, `error=0`, and `passed=true`
@@ -61,36 +61,36 @@ local subset. It is not a claim of broad Stripe API parity.
 
 Base path: `/v1`
 
-| Resource | Endpoints | Level | Scope |
-| --- | --- | --- | --- |
-| Customers | `POST /v1/customers`, `GET /v1/customers`, `GET /v1/customers/{id}`, `POST /v1/customers/{id}` | Supported | Create, list, retrieve, and update `email`, `name`, and metadata. List supports `email` and `limit` filters. |
-| Products | `POST /v1/products`, `GET /v1/products`, `GET /v1/products/{id}`, `POST /v1/products/{id}` | Supported | Create, list, retrieve, and update local service products with metadata. |
-| Product search | `GET /v1/products/search` | Partial | Supports metadata equality filters such as `metadata['tenantId']:'saas'` and `active:'true'`. This is not Stripe Search Query Language parity. |
-| Prices | `POST /v1/prices`, `GET /v1/prices`, `GET /v1/prices/{id}`, `POST /v1/prices/{id}` | Supported | Create, list, retrieve, and update prices. Supports `product`, `currency`, `unit_amount`, `lookup_key`, recurring interval fields, `active`, and metadata. List supports `product`, `active`, and `type=recurring`. |
-| Checkout sessions | `POST /v1/checkout/sessions`, `GET /v1/checkout/sessions`, `GET /v1/checkout/sessions/{id}` | Supported | Creates subscription-mode sandbox checkout sessions with line items and hosted Billtap URLs. Hosted URLs use the request host by default, or `BILLTAP_PUBLIC_BASE_URL` when configured for container-to-host browser flows. |
-| Checkout completion | `POST /v1/checkout/sessions/{id}/complete`, `POST /api/checkout/sessions/{id}/complete` | Billtap-specific | Completes a sandbox checkout and creates subscription, invoice, payment intent, timeline, and checkout webhook evidence. Supports success plus deterministic failure aliases such as `card_declined`, `insufficient_funds`, `expired_card`, `incorrect_cvc`, `processing_error`, `authentication_required`, and documented Stripe test PaymentMethod IDs such as `pm_card_visa_chargeDeclined`. |
-| Billing portal sessions | `POST /v1/billing_portal/sessions` | Partial | Returns a Billtap portal URL for a known customer. Portal configuration and full Stripe-hosted portal behavior are not modeled, but the hosted portal includes Stripe-like selectors for common local Page Object flows. |
-| Subscriptions | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}` | Partial | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation. |
-| Subscription items | `POST /v1/subscription_items`, `DELETE /v1/subscription_items/{id}` | Partial | Add or remove local subscription items for integration smoke paths. Billing proration and invoice recalculation are not modeled. |
-| Invoices | `GET /v1/invoices`, `GET /v1/invoices/{id}`, `POST /v1/invoices/create_preview` | Partial | List/retrieve invoices created by checkout. Preview returns a zero-value local smoke-test invoice. |
-| Payment intents | `GET /v1/payment_intents`, `GET /v1/payment_intents/{id}` | Partial | List/retrieve payment intents created by checkout and fixtures. Direct create and confirm are not supported. |
-| Payment methods | `GET /v1/payment_methods?customer={id}&type=card` | Partial | Returns a deterministic sandbox card projection for a known customer. Create, attach, detach, and update are not supported. |
-| Webhook endpoints | `POST /v1/webhook_endpoints`, `GET /v1/webhook_endpoints`, `GET /v1/webhook_endpoints/{id}`, `POST /v1/webhook_endpoints/{id}`, `DELETE /v1/webhook_endpoints/{id}` | Supported | Manage local webhook endpoints. Secrets are generated when omitted and masked in API responses. `enabled_events` supports exact event names, `*`, and prefix wildcards such as `invoice.*`. |
-| Events | `GET /v1/events`, `GET /v1/events/{id}` | Supported | List and retrieve Billtap-created events. Filters include `type` and `scenarioRunId`. |
+| Resource                | Endpoints                                                                                                                                                           | Level            | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Customers               | `POST /v1/customers`, `GET /v1/customers`, `GET /v1/customers/{id}`, `POST /v1/customers/{id}`                                                                      | Supported        | Create, list, retrieve, and update `email`, `name`, and metadata. List supports `email` and `limit` filters.                                                                                                                                                                                                                                                                                                                                                            |
+| Products                | `POST /v1/products`, `GET /v1/products`, `GET /v1/products/{id}`, `POST /v1/products/{id}`                                                                          | Supported        | Create, list, retrieve, and update local service products with metadata.                                                                                                                                                                                                                                                                                                                                                                                                |
+| Product search          | `GET /v1/products/search`                                                                                                                                           | Partial          | Supports metadata equality filters such as `metadata['tenantId']:'saas'` and `active:'true'`. This is not Stripe Search Query Language parity.                                                                                                                                                                                                                                                                                                                          |
+| Prices                  | `POST /v1/prices`, `GET /v1/prices`, `GET /v1/prices/{id}`, `POST /v1/prices/{id}`                                                                                  | Supported        | Create, list, retrieve, and update prices. Supports `product`, `currency`, `unit_amount`, `lookup_key`, recurring interval fields, `active`, and metadata. List supports `product`, `active`, and `type=recurring`.                                                                                                                                                                                                                                                     |
+| Checkout sessions       | `POST /v1/checkout/sessions`, `GET /v1/checkout/sessions`, `GET /v1/checkout/sessions/{id}`                                                                         | Supported        | Creates subscription-mode sandbox checkout sessions from request line items and hosted Billtap URLs. The Stripe-style session response leaves `line_items` unexpanded. Accepts Stripe SDK form params `allow_promotion_codes` and `subscription_data[trial_period_days]`; trial checkout creates local `trialing` subscription evidence. Hosted URLs use the request host by default, or `BILLTAP_PUBLIC_BASE_URL` when configured for container-to-host browser flows. |
+| Checkout completion     | `POST /v1/checkout/sessions/{id}/complete`, `POST /api/checkout/sessions/{id}/complete`                                                                             | Billtap-specific | Completes a sandbox checkout and creates subscription, invoice, payment intent, timeline, and checkout webhook evidence. Supports success plus deterministic failure aliases such as `card_declined`, `insufficient_funds`, `expired_card`, `incorrect_cvc`, `processing_error`, `authentication_required`, `payment_pending`, `canceled`, and documented Stripe test PaymentMethod IDs such as `pm_card_visa_chargeDeclined`.                                      |
+| Billing portal sessions | `POST /v1/billing_portal/sessions`                                                                                                                                  | Partial          | Returns a Billtap portal URL for a known customer. Portal configuration and full Stripe-hosted portal behavior are not modeled, but the hosted portal includes Stripe-like selectors for common local Page Object flows.                                                                                                                                                                                                                                                |
+| Subscriptions           | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}`                     | Partial          | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation.                                                                                                                                                                                                                                                      |
+| Subscription items      | `POST /v1/subscription_items`, `DELETE /v1/subscription_items/{id}`                                                                                                 | Partial          | Add or remove local subscription items for integration smoke paths. Billing proration and invoice recalculation are not modeled.                                                                                                                                                                                                                                                                                                                                        |
+| Invoices                | `GET /v1/invoices`, `GET /v1/invoices/{id}`, `POST /v1/invoices/create_preview`                                                                                     | Partial          | List/retrieve invoices created by checkout. Preview returns a zero-value local smoke-test invoice.                                                                                                                                                                                                                                                                                                                                                                      |
+| Payment intents         | `GET /v1/payment_intents`, `GET /v1/payment_intents/{id}`                                                                                                           | Partial          | List/retrieve payment intents created by checkout and fixtures. Direct create and confirm are not supported.                                                                                                                                                                                                                                                                                                                                                            |
+| Payment methods         | `GET /v1/payment_methods?customer={id}&type=card`                                                                                                                   | Partial          | Returns a deterministic sandbox card projection for a known customer. Create, attach, detach, and update are not supported.                                                                                                                                                                                                                                                                                                                                             |
+| Webhook endpoints       | `POST /v1/webhook_endpoints`, `GET /v1/webhook_endpoints`, `GET /v1/webhook_endpoints/{id}`, `POST /v1/webhook_endpoints/{id}`, `DELETE /v1/webhook_endpoints/{id}` | Supported        | Manage local webhook endpoints. Secrets are generated when omitted and masked in API responses. `enabled_events` supports exact event names, `*`, and prefix wildcards such as `invoice.*`.                                                                                                                                                                                                                                                                             |
+| Events                  | `GET /v1/events`, `GET /v1/events/{id}`                                                                                                                             | Supported        | List and retrieve Billtap-created events. Filters include `type` and `scenarioRunId`.                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ## Billtap APIs
 
 Base path: `/api`
 
-| Area | Endpoints | Scope |
-| --- | --- | --- |
-| Checkout | `POST /api/checkout/sessions/{id}/complete` | Billtap-only checkout completion endpoint used by the hosted checkout UI and local tests. |
-| Portal | `GET /api/portal`, `GET /api/portal/customers/{id}`, `POST /api/portal/subscriptions/{id}/plan-change`, `POST /api/portal/subscriptions/{id}/seat-change`, `POST /api/portal/subscriptions/{id}/cancel`, `POST /api/portal/subscriptions/{id}/resume`, `POST /api/portal/customers/{id}/payment-method` | Sandbox portal state and actions. These update local billing state and timeline evidence; they do not claim Stripe Billing Portal parity. |
-| Dashboard evidence | `GET /api/objects`, `GET /api/timeline`, `GET /api/delivery-attempts`, `POST /api/debug-bundles` | Object lists, timelines, delivery evidence, and debug bundle data for local investigation. |
-| Webhook operations | `POST /api/events/{id}/replay` | Replays an existing event and can schedule duplicate, delayed, and out-of-order attempts. |
-| Fixtures | `POST /api/fixtures/apply`, `GET /api/fixtures/snapshot`, `POST /api/fixtures/assert` | Data-driven setup and assertion APIs for customers, products, prices, subscription graphs, invoices, payment intents, and timeline evidence. |
-| Scenarios | `POST /api/scenarios/run` | Runs a scenario JSON object or YAML payload and returns the scenario report. |
-| Boundary controls | `GET /api/audit-log`, `POST /api/retention/apply` | Audit and retention controls for replay, delivery overrides, and raw evidence redaction. |
+| Area               | Endpoints                                                                                                                                                                                                                                                                                               | Scope                                                                                                                                        |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| Checkout           | `POST /api/checkout/sessions/{id}/complete`                                                                                                                                                                                                                                                             | Billtap-only checkout completion endpoint used by the hosted checkout UI and local tests.                                                    |
+| Portal             | `GET /api/portal`, `GET /api/portal/customers/{id}`, `POST /api/portal/subscriptions/{id}/plan-change`, `POST /api/portal/subscriptions/{id}/seat-change`, `POST /api/portal/subscriptions/{id}/cancel`, `POST /api/portal/subscriptions/{id}/resume`, `POST /api/portal/customers/{id}/payment-method` | Sandbox portal state and actions. These update local billing state and timeline evidence; they do not claim Stripe Billing Portal parity.    |
+| Dashboard evidence | `GET /api/objects`, `GET /api/timeline`, `GET /api/delivery-attempts`, `POST /api/debug-bundles`                                                                                                                                                                                                        | Object lists, timelines, delivery evidence, and debug bundle data for local investigation.                                                   |
+| Webhook operations | `POST /api/events/{id}/replay`                                                                                                                                                                                                                                                                          | Replays an existing event and can schedule duplicate, delayed, and out-of-order attempts.                                                    |
+| Fixtures           | `POST /api/fixtures/apply`, `GET /api/fixtures/snapshot`, `POST /api/fixtures/assert`                                                                                                                                                                                                                   | Data-driven setup and assertion APIs for customers, products, prices, subscription graphs, invoices, payment intents, and timeline evidence. |
+| Scenarios          | `POST /api/scenarios/run`                                                                                                                                                                                                                                                                               | Runs a scenario JSON object or YAML payload and returns the scenario report.                                                                 |
+| Boundary controls  | `GET /api/audit-log`, `POST /api/retention/apply`                                                                                                                                                                                                                                                       | Audit and retention controls for replay, delivery overrides, and raw evidence redaction.                                                     |
 
 ## Webhook Compatibility Claim
 
@@ -102,23 +102,34 @@ metadata, and Billtap metadata.
 Supported generic event types:
 
 - `checkout.session.completed`
+- `checkout.session.expired`
 - `customer.subscription.created`
 - `customer.subscription.updated`
+- `customer.subscription.deleted`
 - `invoice.created`
 - `invoice.finalized`
 - `invoice.payment_succeeded`
 - `invoice.paid`
 - `invoice.payment_failed`
+- `invoice.voided`
 - `payment_intent.created`
 - `payment_intent.succeeded`
+- `payment_intent.processing`
+- `payment_intent.canceled`
 - `payment_intent.payment_failed`
 
 Current event boundaries:
 
 - Checkout completion emits the generic checkout, subscription, invoice, and
-  payment-intent sequence.
-- Portal actions update local billing state and timeline evidence, but they do
-  not currently enqueue separate Stripe-like webhook events.
+  payment-intent sequence. Async-pending checkout emits
+  `payment_intent.processing` without an invoice failure event; canceled
+  checkout emits `checkout.session.expired`, `payment_intent.canceled`, and
+  `invoice.voided`.
+- Portal subscription actions update local billing state and timeline evidence,
+  and enqueue `customer.subscription.updated` or
+  `customer.subscription.deleted` when the subscription changes. Portal payment
+  method simulation remains Billtap evidence and does not claim Stripe Billing
+  Portal parity.
 - Replay keeps the original event ID and payload, then creates new delivery
   attempts with replay metadata.
 - Duplicate delivery reuses the event ID and payload.
@@ -136,6 +147,11 @@ The default header name is Billtap-specific. Set
 `BILLTAP_WEBHOOK_SIGNATURE_HEADER=Stripe-Signature` when an application already
 verifies Stripe's standard webhook header and should consume Billtap through the
 same receiver path.
+
+Webhook envelopes emit a Stripe API version in `api_version` so Stripe SDK
+webhook deserializers can hydrate `data.object` into typed models. The default
+is `2025-12-15.clover`; set `BILLTAP_WEBHOOK_API_VERSION` when the application
+under test pins a different Stripe SDK/API version.
 
 ## Scenario Claim
 
@@ -223,8 +239,8 @@ Billtap does not support or claim:
   rejects same-key parameter mismatches.
 - Direct charges, refunds, disputes, payouts, transfers, balance transactions,
   accounts, Connect onboarding, setup intents, mandates, tax, coupons,
-  promotion codes, discounts, subscriptions schedules, quotes, or usage-based
-  metering.
+  promotion-code redemption, discounts, subscriptions schedules, quotes, or
+  usage-based metering.
 - Stripe-hosted Checkout or Billing Portal parity.
 - Provider-specific settlement, risk, tax, invoice rendering, fraud, account,
   payout, or dispute behavior.

@@ -26,6 +26,7 @@ type Service struct {
 	storeRawPayloads    bool
 	retentionDays       int
 	signatureHeaderName string
+	apiVersion          string
 }
 
 func NewService(repo Repository) *Service {
@@ -36,12 +37,16 @@ func NewServiceWithOptions(repo Repository, opts ServiceOptions) *Service {
 	if opts.RetentionDays == 0 {
 		opts.RetentionDays = 30
 	}
+	if strings.TrimSpace(opts.APIVersion) == "" {
+		opts.APIVersion = DefaultAPIVersion
+	}
 	return &Service{
 		repo:                repo,
 		now:                 func() time.Time { return time.Now().UTC() },
 		storeRawPayloads:    opts.StoreRawPayloads,
 		retentionDays:       opts.RetentionDays,
 		signatureHeaderName: NormalizeSignatureHeaderName(opts.SignatureHeaderName),
+		apiVersion:          opts.APIVersion,
 		client: &http.Client{
 			Timeout: 5 * time.Second,
 		},
@@ -120,7 +125,7 @@ func (s *Service) CreateEvent(ctx context.Context, in EventInput) (Event, []Deli
 		Type:            in.Type,
 		Created:         now.Unix(),
 		Livemode:        false,
-		APIVersion:      APIVersion,
+		APIVersion:      s.apiVersion,
 		PendingWebhooks: len(endpoints),
 		Request: EventRequest{
 			ID:             in.RequestID,

@@ -88,6 +88,8 @@ export type CheckoutOutcomeId =
   | "declined"
   | "funds"
   | "expired"
+  | "incorrect_cvc"
+  | "processing_error"
   | "action"
   | "cancel"
   | "pending";
@@ -386,6 +388,8 @@ export const outcomeOptions: CheckoutOutcome[] = [
   { id: "declined", label: "Card declined", status: "Failure", tone: "danger" },
   { id: "funds", label: "Insufficient funds", status: "Failure", tone: "danger" },
   { id: "expired", label: "Expired card", status: "Failure", tone: "warning" },
+  { id: "incorrect_cvc", label: "Incorrect CVC", status: "Failure", tone: "danger" },
+  { id: "processing_error", label: "Processing error", status: "Failure", tone: "danger" },
   { id: "action", label: "Requires action", status: "Challenge", tone: "info" },
   { id: "cancel", label: "User cancels", status: "Return", tone: "neutral" },
   { id: "pending", label: "Async payment pending", status: "Pending", tone: "warning" },

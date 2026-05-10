@@ -141,6 +141,108 @@ func TestCheckoutFailureOutcome(t *testing.T) {
 	}
 }
 
+func TestCheckoutTerminalOutcomeVariants(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"variants@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+
+	tests := []struct {
+		name                string
+		outcome             string
+		sessionStatus       string
+		paymentStatus       string
+		subscriptionStatus  string
+		invoiceStatus       string
+		paymentIntentStatus string
+		events              []string
+		notEvents           []string
+	}{
+		{
+			name:                "pending async payment",
+			outcome:             "payment_pending",
+			sessionStatus:       "complete",
+			paymentStatus:       "unpaid",
+			subscriptionStatus:  "incomplete",
+			invoiceStatus:       "open",
+			paymentIntentStatus: "processing",
+			events:              []string{"checkout.session.completed", "payment_intent.processing", "customer.subscription.updated"},
+			notEvents:           []string{"invoice.payment_failed"},
+		},
+		{
+			name:                "canceled checkout",
+			outcome:             "canceled",
+			sessionStatus:       "expired",
+			paymentStatus:       "unpaid",
+			subscriptionStatus:  "incomplete_expired",
+			invoiceStatus:       "void",
+			paymentIntentStatus: "canceled",
+			events:              []string{"checkout.session.expired", "payment_intent.canceled", "invoice.voided"},
+			notEvents:           []string{"checkout.session.completed", "invoice.payment_failed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+				"customer":             {customer.ID},
+				"line_items[0][price]": {price.ID},
+			})
+			completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+				"outcome": tt.outcome,
+			})
+
+			var completed billing.CheckoutSession
+			if err := json.Unmarshal(completion["session"], &completed); err != nil {
+				t.Fatalf("decode checkout session: %v", err)
+			}
+			var subscription billing.Subscription
+			if err := json.Unmarshal(completion["subscription"], &subscription); err != nil {
+				t.Fatalf("decode subscription: %v", err)
+			}
+			var invoice billing.Invoice
+			if err := json.Unmarshal(completion["invoice"], &invoice); err != nil {
+				t.Fatalf("decode invoice: %v", err)
+			}
+			var paymentIntent billing.PaymentIntent
+			if err := json.Unmarshal(completion["payment_intent"], &paymentIntent); err != nil {
+				t.Fatalf("decode payment intent: %v", err)
+			}
+
+			if completed.Status != tt.sessionStatus || completed.PaymentStatus != tt.paymentStatus {
+				t.Fatalf("session status=%s payment_status=%s, want %s/%s", completed.Status, completed.PaymentStatus, tt.sessionStatus, tt.paymentStatus)
+			}
+			if subscription.Status != tt.subscriptionStatus || invoice.Status != tt.invoiceStatus || paymentIntent.Status != tt.paymentIntentStatus {
+				t.Fatalf("subscription=%s invoice=%s payment_intent=%s, want %s/%s/%s", subscription.Status, invoice.Status, paymentIntent.Status, tt.subscriptionStatus, tt.invoiceStatus, tt.paymentIntentStatus)
+			}
+
+			var events []webhooks.Event
+			if err := json.Unmarshal(completion["webhook_events"], &events); err != nil {
+				t.Fatalf("decode webhook events: %v", err)
+			}
+			types := map[string]bool{}
+			for _, event := range events {
+				types[event.Type] = true
+			}
+			for _, eventType := range tt.events {
+				if !types[eventType] {
+					t.Fatalf("webhook events missing %s in %#v", eventType, types)
+				}
+			}
+			for _, eventType := range tt.notEvents {
+				if types[eventType] {
+					t.Fatalf("webhook events unexpectedly include %s in %#v", eventType, types)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckoutPaymentErrorSimulation(t *testing.T) {
 	handler := newTestHandler(t)
 	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"errors@example.test"}})
@@ -701,6 +803,66 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("checkout accepts Stripe SDK promotion and trial params", func(t *testing.T) {
+		session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                             {customer.ID},
+			"line_items[0][price]":                 {price.ID},
+			"allow_promotion_codes":                {"true"},
+			"subscription_data[trial_period_days]": {"14"},
+		})
+		if !session.AllowPromotionCodes || session.TrialPeriodDays != 14 {
+			t.Fatalf("session = %#v, want promotion codes and 14-day trial", session)
+		}
+
+		completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+			"outcome": "payment_succeeded",
+		})
+		var completed billing.CheckoutSession
+		if err := json.Unmarshal(completion["session"], &completed); err != nil {
+			t.Fatalf("decode completed session: %v", err)
+		}
+		if completed.PaymentStatus != "no_payment_required" {
+			t.Fatalf("completed payment_status = %q, want no_payment_required", completed.PaymentStatus)
+		}
+		var sub billing.Subscription
+		if err := json.Unmarshal(completion["subscription"], &sub); err != nil {
+			t.Fatalf("decode subscription: %v", err)
+		}
+		if sub.Status != "trialing" || sub.Metadata["trial_period_days"] != "14" {
+			t.Fatalf("subscription = %#v, want trialing with trial metadata", sub)
+		}
+	})
+
+	t.Run("checkout promotion flag must be boolean", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":              {customer.ID},
+			"line_items[0][price]":  {price.ID},
+			"allow_promotion_codes": {"sometimes"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "allow_promotion_codes" {
+			t.Fatalf("error=%#v, want invalid allow_promotion_codes", errBody.Error)
+		}
+	})
+
+	t.Run("checkout trial period must be positive integer", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                             {customer.ID},
+			"line_items[0][price]":                 {price.ID},
+			"subscription_data[trial_period_days]": {"0"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "subscription_data[trial_period_days]" {
+			t.Fatalf("error=%#v, want invalid trial_period_days", errBody.Error)
+		}
+	})
+
 	t.Run("checkout quantity must be positive", func(t *testing.T) {
 		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
 			"customer":                {customer.ID},
@@ -741,6 +903,19 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "cancel_at_period_end" {
 			t.Fatalf("error=%#v, want invalid cancel_at_period_end", errBody.Error)
+		}
+	})
+
+	t.Run("subscription update billing cycle anchor must be now or timestamp", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/subscriptions/sub_missing", url.Values{
+			"billing_cycle_anchor": {"soon"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "billing_cycle_anchor" {
+			t.Fatalf("error=%#v, want invalid billing_cycle_anchor", errBody.Error)
 		}
 	})
 
@@ -1222,6 +1397,151 @@ func TestStripeCompatCatalogAndPortalEndpoints(t *testing.T) {
 	}](t, handler, "/v1/payment_methods?customer="+customer.ID+"&type=card")
 	if len(methods.Data) != 1 || methods.Data[0].Card.Last4 != "4242" {
 		t.Fatalf("payment methods = %#v", methods)
+	}
+
+	subscription := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {customer.ID},
+		"items[0][price]": {price.ID},
+	})
+
+	canceled := postForm[struct {
+		ID                  string `json:"id"`
+		CancelAtPeriodEnd   bool   `json:"cancel_at_period_end"`
+		CancelAt            *int64 `json:"cancel_at"`
+		CanceledAt          *int64 `json:"canceled_at"`
+		CancellationDetails struct {
+			Comment  *string `json:"comment"`
+			Feedback *string `json:"feedback"`
+		} `json:"cancellation_details"`
+	}](t, handler, "/v1/subscriptions/"+subscription.ID, url.Values{
+		"cancel_at_period_end":           {"true"},
+		"cancellation_details[comment]":  {"too expensive"},
+		"cancellation_details[feedback]": {"too_expensive"},
+	})
+	if !canceled.CancelAtPeriodEnd || canceled.CancelAt == nil || canceled.CanceledAt == nil {
+		t.Fatalf("canceled subscription = %#v, want pending cancellation timestamps", canceled)
+	}
+	if canceled.CancellationDetails.Comment == nil || *canceled.CancellationDetails.Comment != "too expensive" {
+		t.Fatalf("cancellation comment = %#v, want preserved", canceled.CancellationDetails.Comment)
+	}
+	if canceled.CancellationDetails.Feedback == nil || *canceled.CancellationDetails.Feedback != "too_expensive" {
+		t.Fatalf("cancellation feedback = %#v, want preserved", canceled.CancellationDetails.Feedback)
+	}
+
+	resumed := postForm[struct {
+		CancelAtPeriodEnd   bool   `json:"cancel_at_period_end"`
+		CancelAt            *int64 `json:"cancel_at"`
+		CanceledAt          *int64 `json:"canceled_at"`
+		CancellationDetails struct {
+			Comment  *string `json:"comment"`
+			Feedback *string `json:"feedback"`
+		} `json:"cancellation_details"`
+	}](t, handler, "/v1/subscriptions/"+subscription.ID, url.Values{
+		"cancel_at_period_end": {"false"},
+	})
+	if resumed.CancelAtPeriodEnd || resumed.CancelAt != nil || resumed.CanceledAt != nil {
+		t.Fatalf("resumed subscription = %#v, want cancellation cleared", resumed)
+	}
+	if resumed.CancellationDetails.Comment != nil || resumed.CancellationDetails.Feedback != nil {
+		t.Fatalf("resumed cancellation details = %#v, want cleared", resumed.CancellationDetails)
+	}
+}
+
+func TestSubscriptionUpdatePreservesItemsAndSupportsAdditiveSeatItems(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"paid-update@example.test"},
+	})
+	plan := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"id":                            {"prod_paid_update_plan"},
+		"name":                          {"Paid Update Plan"},
+		"metadata[productType]":         {"WORKSPACE_PLAN"},
+		"metadata[tenantId]":            {"dentbird"},
+		"metadata[tier]":                {"STANDARD"},
+		"metadata[tierLevel]":           {"2"},
+		"metadata[basicSeat]":           {"1"},
+		"metadata[freeTrialPeriodDays]": {"14"},
+	})
+	seat := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"id":                    {"prod_paid_update_seat"},
+		"name":                  {"Paid Update Seat"},
+		"metadata[productType]": {"ADDITIONAL_SEAT"},
+		"metadata[tenantId]":    {"dentbird"},
+	})
+	standardMonthly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {plan.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"15000"},
+		"lookup_key":          {"dentbird_plan_standard_monthly"},
+		"recurring[interval]": {"month"},
+	})
+	proYearly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {plan.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"288000"},
+		"lookup_key":          {"dentbird_plan_premium_yearly"},
+		"recurring[interval]": {"year"},
+	})
+	seatYearly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {seat.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"96000"},
+		"lookup_key":          {"dentbird_seat_yearly"},
+		"recurring[interval]": {"year"},
+	})
+
+	type subscriptionItem struct {
+		ID       string `json:"id"`
+		Quantity int64  `json:"quantity"`
+		Price    struct {
+			ID string `json:"id"`
+		} `json:"price"`
+	}
+	type subscriptionResponse struct {
+		ID    string `json:"id"`
+		Items struct {
+			Data []subscriptionItem `json:"data"`
+		} `json:"items"`
+	}
+
+	created := postForm[subscriptionResponse](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {customer.ID},
+		"items[0][price]": {standardMonthly.ID},
+	})
+	if len(created.Items.Data) != 1 {
+		t.Fatalf("created items = %#v, want one plan item", created.Items.Data)
+	}
+
+	upgraded := postForm[subscriptionResponse](t, handler, "/v1/subscriptions/"+created.ID, url.Values{
+		"items[0][id]":         {created.Items.Data[0].ID},
+		"items[0][price]":      {proYearly.ID},
+		"items[0][quantity]":   {"1"},
+		"proration_behavior":   {"always_invoice"},
+		"payment_behavior":     {"error_if_incomplete"},
+		"billing_cycle_anchor": {"now"},
+	})
+	if len(upgraded.Items.Data) != 1 || upgraded.Items.Data[0].Price.ID != proYearly.ID {
+		t.Fatalf("upgraded items = %#v, want existing item price replaced", upgraded.Items.Data)
+	}
+
+	withSeats := postForm[subscriptionResponse](t, handler, "/v1/subscriptions/"+created.ID, url.Values{
+		"items[0][price]":      {seatYearly.ID},
+		"items[0][quantity]":   {"2"},
+		"proration_behavior":   {"always_invoice"},
+		"payment_behavior":     {"error_if_incomplete"},
+		"billing_cycle_anchor": {"now"},
+	})
+	if len(withSeats.Items.Data) != 2 {
+		t.Fatalf("seat update items = %#v, want plan item plus additive seat item", withSeats.Items.Data)
+	}
+	if withSeats.Items.Data[0].Price.ID != proYearly.ID {
+		t.Fatalf("plan item = %#v, want existing plan item preserved", withSeats.Items.Data[0])
+	}
+	if withSeats.Items.Data[1].Price.ID != seatYearly.ID || withSeats.Items.Data[1].Quantity != 2 {
+		t.Fatalf("seat item = %#v, want additive seat item quantity 2", withSeats.Items.Data[1])
 	}
 }
 

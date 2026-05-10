@@ -44,6 +44,7 @@ Supported boundary config:
 - `BILLTAP_RAW_PAYLOAD_STORAGE=store|metadata_only`
 - `BILLTAP_RETENTION_DAYS=30`
 - `BILLTAP_WEBHOOK_SIGNATURE_HEADER=Billtap-Signature|Stripe-Signature`
+- `BILLTAP_WEBHOOK_API_VERSION=2025-12-15.clover`
 
 ## Data Rules
 
@@ -79,6 +80,9 @@ Production:
 - Relay mode still sends signed webhook payloads to configured endpoints but stores only metadata in `webhook_events.raw_payload` and `delivery_attempts.request_body`.
 - `BILLTAP_WEBHOOK_SIGNATURE_HEADER` changes the delivery header name only; the
   HMAC payload format remains `t=<unix_seconds>,v1=<hex_hmac_sha256>`.
+- `BILLTAP_WEBHOOK_API_VERSION` changes only the webhook envelope
+  `api_version` field so SDK consumers can deserialize typed `data.object`
+  payloads with their pinned Stripe API version.
 - Retention can redact old webhook raw payloads, delivery request bodies, and response bodies while preserving IDs, timestamps, statuses, event types, and metadata.
 - Audit log records webhook replay and delivery override actions.
 

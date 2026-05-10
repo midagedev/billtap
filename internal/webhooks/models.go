@@ -12,7 +12,7 @@ const (
 	ObjectDeliveryAttempt = "delivery_attempt"
 	ObjectAuditEntry      = "audit_log_entry"
 
-	APIVersion = "billtap-2026-05-08"
+	DefaultAPIVersion = "2025-12-15.clover"
 
 	SourceAPI      = "api"
 	SourceCheckout = "checkout"
@@ -171,6 +171,7 @@ type ServiceOptions struct {
 	StoreRawPayloads    bool
 	RetentionDays       int
 	SignatureHeaderName string
+	APIVersion          string
 }
 
 type Repository interface {

@@ -311,6 +311,60 @@ func builtinCorpus() []caseSpec {
 			},
 		},
 		{
+			ID:              "checkout.sessions.create.java_sdk_optional_params",
+			Name:            "Checkout session create accepts Stripe SDK promotion and trial params",
+			Category:        "request-validation",
+			Level:           "L1",
+			ReleaseBlocking: true,
+			Reference:       "docs/COMPATIBILITY.md#supported-stripe-like-api-subset",
+			Steps: []requestSpec{
+				{
+					Name:   "create checkout customer",
+					Method: http.MethodPost,
+					Path:   "/v1/customers",
+					Params: map[string]string{
+						"id":    "cus_scorecard_checkout_java",
+						"email": "scorecard-checkout-java@example.test",
+					},
+				},
+				{
+					Name:   "create checkout product",
+					Method: http.MethodPost,
+					Path:   "/v1/products",
+					Params: map[string]string{
+						"id":   "prod_scorecard_checkout_java",
+						"name": "Scorecard Checkout Java SDK",
+					},
+				},
+				{
+					Name:   "create checkout price",
+					Method: http.MethodPost,
+					Path:   "/v1/prices",
+					Params: map[string]string{
+						"id":                  "price_scorecard_checkout_java",
+						"product":             "prod_scorecard_checkout_java",
+						"currency":            "usd",
+						"unit_amount":         "9900",
+						"recurring[interval]": "month",
+					},
+				},
+				{
+					Name:   "create checkout session with Java SDK optional params",
+					Method: http.MethodPost,
+					Path:   "/v1/checkout/sessions",
+					Params: map[string]string{
+						"customer":                             "cus_scorecard_checkout_java",
+						"mode":                                 "subscription",
+						"line_items[0][price]":                 "price_scorecard_checkout_java",
+						"line_items[0][quantity]":              "1",
+						"allow_promotion_codes":                "true",
+						"subscription_data[trial_period_days]": "14",
+					},
+				},
+			},
+			Expect: Observation{HTTPStatus: http.StatusOK, Object: "checkout.session", PaymentStatus: "unpaid"},
+		},
+		{
 			ID:              "billing_portal.sessions.create.missing_customer",
 			Name:            "Billing portal session requires a customer",
 			Category:        "request-validation",

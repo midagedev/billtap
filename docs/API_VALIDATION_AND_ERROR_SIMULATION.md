@@ -27,17 +27,17 @@ Current release status:
 Use these references when deciding whether behavior is Stripe-compatible,
 Billtap-specific, or unsupported:
 
-| Reference | Use |
-| --- | --- |
-| [Stripe API errors](https://docs.stripe.com/api/errors) | Error envelope fields, error types, and HTTP status class guidance. |
-| [Stripe error codes](https://docs.stripe.com/error-codes) | Programmatic `code`, `decline_code`, and documentation URL conventions. |
-| [Stripe testing](https://docs.stripe.com/testing) | Sandbox payment outcomes, test PaymentMethod IDs, card declines, 3DS, and "do not use real card details" boundary. |
-| [Stripe idempotent requests](https://docs.stripe.com/api/idempotent_requests) | Idempotency replay, parameter mismatch, and conflict semantics. |
-| [Stripe webhooks](https://docs.stripe.com/webhooks) and [signature troubleshooting](https://docs.stripe.com/webhooks/signature) | Webhook duplicate delivery, signature verification, raw-body requirements, retry, and failure handling. |
-| [stripe/openapi](https://github.com/stripe/openapi) | Machine-readable endpoint, parameter, schema, fixture, and expandable-field reference. |
-| [stripe/stripe-mock](https://github.com/stripe/stripe-mock) | OpenAPI-backed request validation sanity oracle for supported routes and parameter shapes. |
-| [Stripe CLI triggers](https://docs.stripe.com/stripe-cli/triggers) and [stripe-cli fixtures](https://github.com/stripe/stripe-cli/tree/master/pkg/fixtures) | Event trigger fixture patterns for webhook scenario seeds. |
-| [stripe-samples](https://github.com/stripe-samples) | Client-adoption smoke targets for checkout and subscription examples. |
+| Reference                                                                                                                                                   | Use                                                                                                                |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| [Stripe API errors](https://docs.stripe.com/api/errors)                                                                                                     | Error envelope fields, error types, and HTTP status class guidance.                                                |
+| [Stripe error codes](https://docs.stripe.com/error-codes)                                                                                                   | Programmatic `code`, `decline_code`, and documentation URL conventions.                                            |
+| [Stripe testing](https://docs.stripe.com/testing)                                                                                                           | Sandbox payment outcomes, test PaymentMethod IDs, card declines, 3DS, and "do not use real card details" boundary. |
+| [Stripe idempotent requests](https://docs.stripe.com/api/idempotent_requests)                                                                               | Idempotency replay, parameter mismatch, and conflict semantics.                                                    |
+| [Stripe webhooks](https://docs.stripe.com/webhooks) and [signature troubleshooting](https://docs.stripe.com/webhooks/signature)                             | Webhook duplicate delivery, signature verification, raw-body requirements, retry, and failure handling.            |
+| [stripe/openapi](https://github.com/stripe/openapi)                                                                                                         | Machine-readable endpoint, parameter, schema, fixture, and expandable-field reference.                             |
+| [stripe/stripe-mock](https://github.com/stripe/stripe-mock)                                                                                                 | OpenAPI-backed request validation sanity oracle for supported routes and parameter shapes.                         |
+| [Stripe CLI triggers](https://docs.stripe.com/stripe-cli/triggers) and [stripe-cli fixtures](https://github.com/stripe/stripe-cli/tree/master/pkg/fixtures) | Event trigger fixture patterns for webhook scenario seeds.                                                         |
+| [stripe-samples](https://github.com/stripe-samples)                                                                                                         | Client-adoption smoke targets for checkout and subscription examples.                                              |
 
 Important `stripe-mock` boundary:
 
@@ -51,14 +51,14 @@ Important `stripe-mock` boundary:
 
 The local JongoDB compatibility suite has several patterns that fit Billtap:
 
-| Pattern | Billtap adaptation |
-| --- | --- |
-| Code-level compatibility matrix | Keep `docs/COMPATIBILITY.md` as the public contract and require every new claim to name supported, partial, or unsupported behavior. |
-| Scorecard with `imported`, `skipped`, `unsupported`, `mismatch`, and `error` buckets | Add a Stripe compatibility scorecard for request-validation and error-simulation cases instead of a vague pass/fail test count. |
-| Differential harness against a reference implementation | Compare Billtap's supported request-validation cases against `stripe-mock` or OpenAPI-derived expectations where that reference is meaningful. |
-| Central error catalog | Move API error construction into one catalog so `invalid_request_error`, `card_error`, `idempotency_error`, and `api_error` stay consistent. |
-| Failure replay bundles | Persist mismatching validation cases with method, path, normalized params, expected error fields, and actual response. |
-| Adapter smoke tests | Run real Stripe SDK/client-style requests against Billtap for the supported subset. Start with `stripe-node` or `stripe-go`; keep this separate from unit tests. |
+| Pattern                                                                              | Billtap adaptation                                                                                                                                               |
+| ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Code-level compatibility matrix                                                      | Keep `docs/COMPATIBILITY.md` as the public contract and require every new claim to name supported, partial, or unsupported behavior.                             |
+| Scorecard with `imported`, `skipped`, `unsupported`, `mismatch`, and `error` buckets | Add a Stripe compatibility scorecard for request-validation and error-simulation cases instead of a vague pass/fail test count.                                  |
+| Differential harness against a reference implementation                              | Compare Billtap's supported request-validation cases against `stripe-mock` or OpenAPI-derived expectations where that reference is meaningful.                   |
+| Central error catalog                                                                | Move API error construction into one catalog so `invalid_request_error`, `card_error`, `idempotency_error`, and `api_error` stay consistent.                     |
+| Failure replay bundles                                                               | Persist mismatching validation cases with method, path, normalized params, expected error fields, and actual response.                                           |
+| Adapter smoke tests                                                                  | Run real Stripe SDK/client-style requests against Billtap for the supported subset. Start with `stripe-node` or `stripe-go`; keep this separate from unit tests. |
 
 Patterns not to copy directly:
 
@@ -174,7 +174,7 @@ Current lane:
 - `go run ./cmd/billtap compatibility scorecard --output-dir dist/compatibility`
   runs the offline Billtap-owned corpus and writes JSON, Markdown, and replay
   bundle artifacts without requiring external Stripe services.
-- `l3-public-readiness-v2` currently has 28 release-blocking cases covering the
+- `l3-public-readiness-v3` currently has 29 release-blocking cases covering the
   public subset's request validation, idempotency mismatch, and deterministic
   checkout payment-error aliases.
 
@@ -214,16 +214,16 @@ Gate:
 Each chunk should use the PR -> review -> fix -> merge loop. A chunk must
 declare ownership, verification, open risks, and gate status in the PR.
 
-| Chunk | Ownership | Output | Verification |
-| --- | --- | --- | --- |
-| V0. Plan and gate lock | Docs and contracts | This plan, reference links, updated testing docs | Markdown review plus existing CI |
-| V1. Stripe-like error envelope | API error catalog and response writer | Consistent `error.type`, `message`, `param`, `code`, and JSON 405 responses | Go API tests |
-| V2. Supported endpoint validators | `/v1` request parsing and per-endpoint schemas | Required/unknown/type/enum validation for documented supported endpoints | Go table tests per endpoint |
-| V3. Payment error simulation | Checkout completion, payment-intent state, scenario outcomes | Deterministic card/payment failure catalog | Go scenario and API tests |
-| V4. Idempotency simulation | POST request idempotency storage and conflict handling | Replay/mismatch/conflict behavior for supported POST endpoints | Go API tests and scorecard cases |
-| V5. Webhook failure scenarios | Webhook delivery and scenario runner | Endpoint 4xx/5xx, timeout, duplicate, delay, out-of-order, signature mismatch evidence through `POST /api/events/{id}/replay` and `webhook.replay` | Go webhook tests and scenario reports |
-| V6. Compatibility scorecard | Testkit, CLI/report artifacts | JSON/Markdown scorecard and replay bundles | CI artifact tests |
-| V7. Stripe SDK smoke | Node or Go client smoke runner | Real-client adoption report | Optional CI/manual workflow |
+| Chunk                             | Ownership                                                    | Output                                                                                                                                             | Verification                          |
+| --------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
+| V0. Plan and gate lock            | Docs and contracts                                           | This plan, reference links, updated testing docs                                                                                                   | Markdown review plus existing CI      |
+| V1. Stripe-like error envelope    | API error catalog and response writer                        | Consistent `error.type`, `message`, `param`, `code`, and JSON 405 responses                                                                        | Go API tests                          |
+| V2. Supported endpoint validators | `/v1` request parsing and per-endpoint schemas               | Required/unknown/type/enum validation for documented supported endpoints                                                                           | Go table tests per endpoint           |
+| V3. Payment error simulation      | Checkout completion, payment-intent state, scenario outcomes | Deterministic card/payment failure catalog                                                                                                         | Go scenario and API tests             |
+| V4. Idempotency simulation        | POST request idempotency storage and conflict handling       | Replay/mismatch/conflict behavior for supported POST endpoints                                                                                     | Go API tests and scorecard cases      |
+| V5. Webhook failure scenarios     | Webhook delivery and scenario runner                         | Endpoint 4xx/5xx, timeout, duplicate, delay, out-of-order, signature mismatch evidence through `POST /api/events/{id}/replay` and `webhook.replay` | Go webhook tests and scenario reports |
+| V6. Compatibility scorecard       | Testkit, CLI/report artifacts                                | JSON/Markdown scorecard and replay bundles                                                                                                         | CI artifact tests                     |
+| V7. Stripe SDK smoke              | Node or Go client smoke runner                               | Real-client adoption report                                                                                                                        | Optional CI/manual workflow           |
 
 ## Release Gates
 

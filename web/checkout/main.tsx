@@ -23,13 +23,19 @@ import {
 } from "../shared/data";
 import "../shared/styles.css";
 
-const paymentMethods = ["4242 sandbox card", "3DS challenge card", "Bank debit pending"];
+const paymentMethods = [
+  "4242 sandbox card",
+  "3DS challenge card",
+  "Bank debit pending",
+];
 const checkoutSuccessMessage = "Your payment has been processed successfully.";
 
 function CheckoutApp() {
   const [outcome, setOutcome] = useState(outcomeOptions[0]);
   const [paymentMethod, setPaymentMethod] = useState(paymentMethods[0]);
-  const [session, setSession] = useState<CheckoutSessionSummary>(fixtureCheckoutSession);
+  const [session, setSession] = useState<CheckoutSessionSummary>(
+    fixtureCheckoutSession,
+  );
   const [source, setSource] = useState<DataSource>("fixture");
   const [loadError, setLoadError] = useState<string>();
   const [completion, setCompletion] = useState<CheckoutCompletion>();
@@ -60,16 +66,24 @@ function CheckoutApp() {
   }, [sessionId]);
 
   const confirmation = useMemo(() => {
-    if (outcome.id === "success") return "subscription active · invoice paid · payment intent succeeded";
-    if (outcome.id === "pending") return "checkout pending · invoice open · async payment awaiting settlement";
-    if (outcome.id === "action") return "payment intent requires_action · challenge event queued";
-    if (outcome.id === "cancel") return "checkout canceled · return URL selected";
+    if (outcome.id === "success")
+      return "subscription active · invoice paid · payment intent succeeded";
+    if (outcome.id === "pending")
+      return "checkout pending · invoice open · async payment awaiting settlement";
+    if (outcome.id === "action")
+      return "payment intent requires_action · challenge event queued";
+    if (outcome.id === "cancel")
+      return "checkout canceled · return URL selected";
     return "checkout failed · invoice open · retry path available";
   }, [outcome.id]);
 
-  const statusTone = completion ? toneForState(completion.session.paymentIntentStatus) : outcome.tone;
+  const statusTone = completion
+    ? toneForState(completion.session.paymentIntentStatus)
+    : outcome.tone;
   const apiTone: StatusTone = source === "api" ? "good" : "warning";
-  const paymentSucceeded = completion ? isSuccessfulCompletion(completion) : false;
+  const paymentSucceeded = completion
+    ? isSuccessfulCompletion(completion)
+    : false;
 
   useEffect(() => {
     if (!paymentSucceeded || !window.opener) return;
@@ -87,12 +101,18 @@ function CheckoutApp() {
     setIsCompleting(false);
   }
 
-  async function handleStripeCompatibleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleStripeCompatibleSubmit(
+    event: FormEvent<HTMLFormElement>,
+  ) {
     event.preventDefault();
     setIsCompleting(true);
     setFormMessage(undefined);
     const cardOutcome = checkoutOutcomeForCard(cardNumber);
-    const result = await completeCheckout(session, cardOutcome, paymentMethodForCard(cardNumber));
+    const result = await completeCheckout(
+      session,
+      cardOutcome,
+      paymentMethodForCard(cardNumber),
+    );
     setCompletion(result);
     setSession(result.session);
     setSource(result.source);
@@ -106,7 +126,9 @@ function CheckoutApp() {
     return (
       <AppShell active="checkout">
         <section className="stripe-success-shell" aria-live="polite">
-          <span className="stripe-success-icon" aria-hidden="true">OK</span>
+          <span className="stripe-success-icon" aria-hidden="true">
+            OK
+          </span>
           <h1>Payment successful</h1>
           <h2>{checkoutSuccessMessage}</h2>
           <a className="button secondary" href={session.returnUrl}>
@@ -131,7 +153,10 @@ function CheckoutApp() {
       />
 
       <div className="checkout-layout">
-        <section className="checkout-summary" aria-label="Checkout session summary">
+        <section
+          className="checkout-summary"
+          aria-label="Checkout session summary"
+        >
           <div className="summary-head">
             <div>
               <span className="section-kicker">Plan</span>
@@ -155,7 +180,9 @@ function CheckoutApp() {
           <div className="confirmation-strip">
             <StatusPill tone={outcome.tone}>{outcome.status}</StatusPill>
             <StatusPill tone="neutral">{paymentMethod}</StatusPill>
-            <StatusPill tone={apiTone}>{source === "api" ? "API loaded" : "fixture fallback"}</StatusPill>
+            <StatusPill tone={apiTone}>
+              {source === "api" ? "API loaded" : "fixture fallback"}
+            </StatusPill>
           </div>
         </section>
 
@@ -164,18 +191,33 @@ function CheckoutApp() {
             <div className="surface-grid">
               <CopyValue label="Customer" value={session.customer} />
               <CopyValue label="Email" value={session.customerEmail} />
-              <CopyValue label="Session source" value={loadError ? `${source}: ${loadError}` : source} />
+              <CopyValue
+                label="Session source"
+                value={loadError ? `${source}: ${loadError}` : source}
+              />
             </div>
           </Panel>
 
           <Panel title="Payment method">
-            <form className="stripe-compatible-form" onSubmit={handleStripeCompatibleSubmit}>
-              <button className="payment-method-tab" type="button" onClick={() => setPaymentMethod(paymentMethods[0])}>
+            <form
+              className="stripe-compatible-form"
+              onSubmit={handleStripeCompatibleSubmit}
+            >
+              <button
+                className="payment-method-tab"
+                type="button"
+                onClick={() => setPaymentMethod(paymentMethods[0])}
+              >
                 Card
               </button>
               <label>
                 <span>Email</span>
-                <input id="email" value={session.customerEmail} onChange={() => undefined} autoComplete="email" />
+                <input
+                  id="email"
+                  value={session.customerEmail}
+                  onChange={() => undefined}
+                  autoComplete="email"
+                />
               </label>
               <label>
                 <span>Card number</span>
@@ -229,8 +271,16 @@ function CheckoutApp() {
                   <option value="GB">United Kingdom</option>
                 </select>
               </label>
-              {formMessage ? <div className="stripe-form-error" role="alert">{formMessage}</div> : null}
-              <button className="button" disabled={isLoading || isCompleting} type="submit">
+              {formMessage ? (
+                <div className="stripe-form-error" role="alert">
+                  {formMessage}
+                </div>
+              ) : null}
+              <button
+                className="button"
+                disabled={isLoading || isCompleting}
+                type="submit"
+              >
                 {isCompleting ? "Processing..." : "Pay"}
               </button>
             </form>
@@ -256,18 +306,33 @@ function CheckoutApp() {
 
       <Panel
         title="Confirmation"
-        action={<StatusPill tone={statusTone}>{completion ? completion.session.paymentIntentStatus : outcome.label}</StatusPill>}
+        action={
+          <StatusPill tone={statusTone}>
+            {completion
+              ? completion.session.paymentIntentStatus
+              : outcome.label}
+          </StatusPill>
+        }
       >
         <div className="surface-grid">
           <CopyValue label="Resulting state" value={confirmation} />
           {completion ? (
             <CopyValue
               label="Completion response"
-              value={completion.error ? `${completion.message}: ${completion.error}` : completion.message}
+              value={
+                completion.error
+                  ? `${completion.message}: ${completion.error}`
+                  : completion.message
+              }
             />
           ) : null}
           <div className="confirmation-strip">
-            <button className="button" disabled={isLoading || isCompleting} onClick={handleCompleteCheckout} type="button">
+            <button
+              className="button"
+              disabled={isLoading || isCompleting}
+              onClick={handleCompleteCheckout}
+              type="button"
+            >
               {isCompleting ? "Completing..." : "Complete checkout"}
             </button>
             <a className="button secondary" href={session.returnUrl}>
@@ -285,15 +350,21 @@ function CheckoutApp() {
           </li>
           <li>
             <span>{session.subscriptionId}</span>
-            <StatusPill tone={toneForState(session.subscriptionStatus)}>{session.subscriptionStatus}</StatusPill>
+            <StatusPill tone={toneForState(session.subscriptionStatus)}>
+              {session.subscriptionStatus}
+            </StatusPill>
           </li>
           <li>
             <span>{session.invoiceId}</span>
-            <StatusPill tone={toneForState(session.invoiceStatus)}>{session.invoiceStatus}</StatusPill>
+            <StatusPill tone={toneForState(session.invoiceStatus)}>
+              {session.invoiceStatus}
+            </StatusPill>
           </li>
           <li>
             <span>{session.paymentIntentId}</span>
-            <StatusPill tone={toneForState(session.paymentIntentStatus)}>{session.paymentIntentStatus}</StatusPill>
+            <StatusPill tone={toneForState(session.paymentIntentStatus)}>
+              {session.paymentIntentStatus}
+            </StatusPill>
           </li>
         </ul>
       </Panel>
@@ -303,13 +374,28 @@ function CheckoutApp() {
 
 function toneForState(state: string): StatusTone {
   const value = state.toLowerCase();
-  if (value.includes("succeeded") || value.includes("paid") || value.includes("active") || value.includes("complete")) {
+  if (
+    value.includes("succeeded") ||
+    value.includes("paid") ||
+    value.includes("active") ||
+    value.includes("complete")
+  ) {
     return "good";
   }
-  if (value.includes("fail") || value.includes("declin") || value.includes("canceled") || value.includes("void")) {
+  if (
+    value.includes("fail") ||
+    value.includes("declin") ||
+    value.includes("canceled") ||
+    value.includes("void")
+  ) {
     return "danger";
   }
-  if (value.includes("pending") || value.includes("open") || value.includes("requires") || value.includes("incomplete")) {
+  if (
+    value.includes("pending") ||
+    value.includes("open") ||
+    value.includes("requires") ||
+    value.includes("incomplete")
+  ) {
     return "warning";
   }
   return "neutral";
@@ -324,6 +410,10 @@ function checkoutOutcomeForCard(cardNumber: string): CheckoutOutcomeId {
       return "funds";
     case "4000000000000069":
       return "expired";
+    case "4000000000000127":
+      return "incorrect_cvc";
+    case "4000000000000119":
+      return "processing_error";
     case "4000000000003220":
       return "action";
     default:
@@ -348,13 +438,24 @@ function paymentMethodForCard(cardNumber: string): string {
 function failureMessageForOutcome(outcome: CheckoutOutcomeId): string {
   if (outcome === "funds") return "Your card has insufficient funds.";
   if (outcome === "expired") return "Your card has expired.";
-  if (outcome === "action") return "Payment failed because authentication is required.";
+  if (outcome === "incorrect_cvc")
+    return "Your card's security code is incorrect.";
+  if (outcome === "processing_error")
+    return "An error occurred while processing your card. Try again later.";
+  if (outcome === "action")
+    return "Payment failed because authentication is required.";
   return "Your card was declined.";
 }
 
 function isSuccessfulCompletion(completion: CheckoutCompletion): boolean {
-  const status = `${completion.session.paymentStatus} ${completion.session.paymentIntentStatus}`.toLowerCase();
-  return status.includes("paid") || status.includes("succeeded");
+  const paymentStatus = completion.session.paymentStatus.toLowerCase();
+  const paymentIntentStatus =
+    completion.session.paymentIntentStatus.toLowerCase();
+  return (
+    paymentStatus === "paid" ||
+    paymentStatus === "no_payment_required" ||
+    paymentIntentStatus === "succeeded"
+  );
 }
 
 createRoot(document.getElementById("root")!).render(<CheckoutApp />);
