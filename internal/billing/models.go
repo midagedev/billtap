@@ -10,6 +10,7 @@ const (
 	ObjectSubscription    = "subscription"
 	ObjectInvoice         = "invoice"
 	ObjectPaymentIntent   = "payment_intent"
+	ObjectSetupIntent     = "setup_intent"
 	ObjectTimelineEntry   = "timeline_entry"
 )
 
@@ -110,6 +111,20 @@ type PaymentIntent struct {
 	Amount          int64     `json:"amount"`
 	Currency        string    `json:"currency"`
 	Status          string    `json:"status"`
+	CaptureMethod   string    `json:"capture_method,omitempty"`
+	FailureCode     string    `json:"failure_code,omitempty"`
+	DeclineCode     string    `json:"decline_code,omitempty"`
+	FailureMessage  string    `json:"failure_message,omitempty"`
+	PaymentMethodID string    `json:"payment_method,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+}
+
+type SetupIntent struct {
+	ID              string    `json:"id"`
+	Object          string    `json:"object"`
+	CustomerID      string    `json:"customer,omitempty"`
+	Status          string    `json:"status"`
+	Usage           string    `json:"usage,omitempty"`
 	FailureCode     string    `json:"failure_code,omitempty"`
 	DeclineCode     string    `json:"decline_code,omitempty"`
 	FailureMessage  string    `json:"failure_message,omitempty"`

@@ -72,9 +72,27 @@ current release-compatible subset.
 
 - `GET /v1/payment_intents/{id}`
 - `GET /v1/payment_intents`
+- `POST /v1/payment_intents`
+- `POST /v1/payment_intents/{id}/confirm`
+- `POST /v1/payment_intents/{id}/capture`
+- `POST /v1/payment_intents/{id}/cancel`
 
-Direct payment intent create and confirm operations are not part of the current
-release-compatible subset.
+Direct payment intents are local state-machine simulations. They support
+deterministic sandbox aliases, manual capture, cancel, timeline evidence, and
+local webhook events; they do not process real cards or claim full Stripe
+PaymentIntent parameter parity.
+
+### Setup Intents
+
+- `GET /v1/setup_intents/{id}`
+- `GET /v1/setup_intents`
+- `POST /v1/setup_intents`
+- `POST /v1/setup_intents/{id}/confirm`
+- `POST /v1/setup_intents/{id}/cancel`
+
+Setup intents are local state-machine simulations for saved-payment-method
+smoke tests. Mandates, bank verification, and full SCA behavior are not part of
+the current release-compatible subset.
 
 ### Payment Methods
 

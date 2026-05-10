@@ -11,7 +11,7 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `37 / 619` operations, `6.0%`, using Stripe OpenAPI
+- **Current baseline:** `46 / 619` operations, `7.4%`, using Stripe OpenAPI
   `2026-04-22.dahlia`.
 - **Minimum target count:** `558 / 619` operations at `L1` or higher.
 - **Remaining inventory-only budget:** at most `61 / 619` operations at `L0`.
@@ -62,7 +62,7 @@ Latest measured baseline from `stripe/openapi` latest on 2026-05-10:
 | P0 | billing_portal | 5 | 1 | 20.0% | 5 | Add portal configurations and session retrieval fixtures. |
 | P1 | catalog | 54 | 9 | 16.7% | 49 | Add low-state product/price/coupon/promotion/tax fixtures and validation. |
 | P1 | customers | 31 | 4 | 12.9% | 28 | Add search, sources, tax ids, cash balance, and validation fixtures. |
-| P1 | payments | 41 | 3 | 7.3% | 37 | Add PaymentIntent, SetupIntent, PaymentMethod lifecycle breadth. |
+| P1 | payments | 41 | 12 | 29.3% | 37 | Add PaymentMethod lifecycle breadth and remaining PaymentIntent/SetupIntent adjunct routes. |
 | P1 | connect | 65 | 0 | 0.0% | 59 | Add accounts, account links/sessions, application fees, transfers, payouts. |
 | P1 | payment_history | 30 | 0 | 0.0% | 27 | Add charges, refunds, balance transactions, disputes, credit history. |
 | P3 | auxiliary | 339 | 0 | 0.0% | 306 | Add generic L1/L2 schema and fixture smoke for safe low-state endpoints. |
@@ -80,7 +80,7 @@ Each chunk follows PR -> review -> fix -> merge.
 | T4 | Auxiliary L2 fixture responses | +155 ops | Deterministic fixture responses for safe low-state retrieve/list endpoints. |
 | T5 | Catalog/customers L1-L2 breadth | +72 ops | Products, prices, coupons, promotion codes, tax rates, customer adjunct resources. |
 | T6 | Connect smoke L2 | +50 ops | Accounts, account links/sessions, application fees, transfers, payouts, `Stripe-Account` traces. |
-| T7 | Payments and setup breadth | +38 ops | PaymentIntent, SetupIntent, PaymentMethod create/retrieve/list/update/cancel fixture/state coverage. |
+| T7 | Payments and setup breadth | +29 ops | PaymentMethod create/retrieve/list/update/cancel fixture/state coverage and remaining PaymentIntent/SetupIntent adjunct routes. |
 | T8 | Payment history L2-L3 | +30 ops | Charges, refunds, balance transactions, disputes, debug bundle evidence. |
 | T9 | Billing lifecycle depth | +38 ops | Schedules, invoice items, trials, renewals, coupons, discounts, credit notes, test clocks. |
 | T10 | SDK/adoption matrix | 0 ops | Node/Go/Java/Python/Ruby smoke and adoption-style reports that promote existing operations to `L6`. |
@@ -100,8 +100,8 @@ into tested `L1+` claims.
 
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
-coverage must come from T3-T9. The planned T3-T9 delta is `+538` operations,
-which would move the baseline from `37 / 619` to `575 / 619`, leaving a small
+coverage must come from T3-T9. The planned T3-T9 delta is `+529` operations,
+which would move the baseline from `46 / 619` to `575 / 619`, leaving a small
 buffer above the `558 / 619` target.
 
 ## Derived Gate Checks

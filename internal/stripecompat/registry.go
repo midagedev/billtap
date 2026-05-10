@@ -178,7 +178,16 @@ func DefaultClaims() []Claim {
 	add(http.MethodPost, "/v1/invoices/create_preview", Claim{Level: "L2", Risks: []string{"zero-value local smoke-test invoice; no full proration model"}})
 
 	add(http.MethodGet, "/v1/payment_intents", statefulL3)
+	add(http.MethodPost, "/v1/payment_intents", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"payment_intents.create.confirm.succeeds", "payment_intents.confirm.card_decline"}, Risks: []string{"local state machine only; no card processing or full PaymentIntent parameter parity"}})
 	add(http.MethodGet, "/v1/payment_intents/{id}", statefulL3)
+	add(http.MethodPost, "/v1/payment_intents/{id}/confirm", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"payment_intents.confirm.card_decline"}, Risks: []string{"local deterministic outcome aliases only"}})
+	add(http.MethodPost, "/v1/payment_intents/{id}/capture", Claim{Level: "L3", Stateful: true, Risks: []string{"local capture marks the intent succeeded; partial capture accounting is not modeled"}})
+	add(http.MethodPost, "/v1/payment_intents/{id}/cancel", Claim{Level: "L3", Stateful: true})
+	add(http.MethodGet, "/v1/setup_intents", statefulL3)
+	add(http.MethodPost, "/v1/setup_intents", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"setup_intents.create.confirm.succeeds"}, Risks: []string{"local state machine only; mandates and full SCA flows are not modeled"}})
+	add(http.MethodGet, "/v1/setup_intents/{id}", statefulL3)
+	add(http.MethodPost, "/v1/setup_intents/{id}/confirm", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"setup_intents.create.confirm.succeeds"}, Risks: []string{"local deterministic outcome aliases only"}})
+	add(http.MethodPost, "/v1/setup_intents/{id}/cancel", Claim{Level: "L3", Stateful: true})
 	add(http.MethodGet, "/v1/payment_methods", Claim{Level: "L2", Risks: []string{"deterministic sandbox card projection only"}})
 
 	for _, method := range []string{http.MethodGet, http.MethodPost} {

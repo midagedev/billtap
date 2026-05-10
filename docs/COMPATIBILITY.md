@@ -56,11 +56,12 @@ Scorecard statuses are:
 
 Current public-readiness corpus:
 
-- Scorecard version: `l3-public-readiness-v5`
-- Release-blocking cases: 35
+- Scorecard version: `l3-public-readiness-v6`
+- Release-blocking cases: 38
 - Covered categories: request validation, protocol parameter acceptance,
   OpenAPI-backed fallback validation, idempotency mismatch, deterministic
-  checkout payment-error aliases
+  checkout payment-error aliases, and direct PaymentIntent/SetupIntent state
+  transitions
 - Required release result: `mismatch=0`, `error=0`, and `passed=true`
 
 The scorecard is intentionally a release contract for Billtap's documented
@@ -96,7 +97,8 @@ Base path: `/v1`
 | Subscriptions           | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}`                     | Partial          | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation.                                                                                                                                                                                                                                                      |
 | Subscription items      | `POST /v1/subscription_items`, `DELETE /v1/subscription_items/{id}`                                                                                                 | Partial          | Add or remove local subscription items for integration smoke paths. Billing proration and invoice recalculation are not modeled.                                                                                                                                                                                                                                                                                                                                        |
 | Invoices                | `GET /v1/invoices`, `GET /v1/invoices/{id}`, `POST /v1/invoices/create_preview`                                                                                     | Partial          | List/retrieve invoices created by checkout. Preview returns a zero-value local smoke-test invoice.                                                                                                                                                                                                                                                                                                                                                                      |
-| Payment intents         | `GET /v1/payment_intents`, `GET /v1/payment_intents/{id}`                                                                                                           | Partial          | List/retrieve payment intents created by checkout and fixtures. Direct create and confirm are not supported.                                                                                                                                                                                                                                                                                                                                                            |
+| Payment intents         | `POST /v1/payment_intents`, `GET /v1/payment_intents`, `GET /v1/payment_intents/{id}`, `POST /v1/payment_intents/{id}/confirm`, `POST /v1/payment_intents/{id}/capture`, `POST /v1/payment_intents/{id}/cancel` | Partial          | Create/list/retrieve and mutate local payment intents. `confirm` supports deterministic sandbox PaymentMethod aliases such as `pm_card_visa`, `pm_card_visa_chargeDeclined`, and `pm_card_threeDSecure2Required`; manual capture moves through `requires_capture` before `capture` succeeds. This is a local state machine, not card processing or full PaymentIntent parameter parity.                                                                                 |
+| Setup intents           | `POST /v1/setup_intents`, `GET /v1/setup_intents`, `GET /v1/setup_intents/{id}`, `POST /v1/setup_intents/{id}/confirm`, `POST /v1/setup_intents/{id}/cancel`        | Partial          | Create/list/retrieve and mutate local setup intents with deterministic success, decline, and authentication-required aliases. Mandates, bank-account verification, and full SCA behavior are not modeled.                                                                                                                                                                                                                                                               |
 | Payment methods         | `GET /v1/payment_methods?customer={id}&type=card`                                                                                                                   | Partial          | Returns a deterministic sandbox card projection for a known customer. Create, attach, detach, and update are not supported.                                                                                                                                                                                                                                                                                                                                             |
 | Webhook endpoints       | `POST /v1/webhook_endpoints`, `GET /v1/webhook_endpoints`, `GET /v1/webhook_endpoints/{id}`, `POST /v1/webhook_endpoints/{id}`, `DELETE /v1/webhook_endpoints/{id}` | Supported        | Manage local webhook endpoints. Secrets are generated when omitted and masked in API responses. `enabled_events` supports exact event names, `*`, and prefix wildcards such as `invoice.*`.                                                                                                                                                                                                                                                                             |
 | Events                  | `GET /v1/events`, `GET /v1/events/{id}`                                                                                                                             | Supported        | List and retrieve Billtap-created events. Filters include `type` and `scenarioRunId`.                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -140,6 +142,13 @@ Supported generic event types:
 - `payment_intent.processing`
 - `payment_intent.canceled`
 - `payment_intent.payment_failed`
+- `payment_intent.requires_action`
+- `payment_intent.amount_capturable_updated`
+- `setup_intent.created`
+- `setup_intent.succeeded`
+- `setup_intent.canceled`
+- `setup_intent.setup_failed`
+- `setup_intent.requires_action`
 
 Current event boundaries:
 
@@ -148,6 +157,9 @@ Current event boundaries:
   `payment_intent.processing` without an invoice failure event; canceled
   checkout emits `checkout.session.expired`, `payment_intent.canceled`, and
   `invoice.voided`.
+- Direct PaymentIntent and SetupIntent APIs emit local intent events for create,
+  confirm, capture, cancel, failure, and requires-action states. These events
+  are for local webhook/debug evidence and do not imply real payment processing.
 - Portal subscription actions update local billing state and timeline evidence,
   and enqueue `customer.subscription.updated` or
   `customer.subscription.deleted` when the subscription changes. Portal payment
@@ -261,15 +273,16 @@ Billtap does not support or claim:
   only caches same-process `POST` responses for supported API simulation and
   rejects same-key parameter mismatches.
 - Direct charges, refunds, disputes, payouts, transfers, balance transactions,
-  accounts, Connect onboarding, setup intents, mandates, tax, coupons,
+  accounts, Connect onboarding, mandates, tax, coupons,
   promotion-code redemption, discounts, subscriptions schedules, quotes, or
   usage-based metering.
+- PaymentIntent customer-balance application, incremental authorization, bank
+  microdeposit verification, and full payment-method option parity.
 - Stripe-hosted Checkout or Billing Portal parity.
 - Provider-specific settlement, risk, tax, invoice rendering, fraud, account,
   payout, or dispute behavior.
 - Complete webhook event coverage.
 - Direct invoice finalize/pay/void endpoints.
-- Direct payment intent create/confirm endpoints.
 
 Use Stripe testmode or the real provider sandbox as the fallback lane for these
 behaviors.

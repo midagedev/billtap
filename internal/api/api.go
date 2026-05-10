@@ -86,6 +86,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/invoices/", h.handleInvoice)
 	h.mux.HandleFunc("/v1/payment_intents", h.handlePaymentIntents)
 	h.mux.HandleFunc("/v1/payment_intents/", h.handlePaymentIntent)
+	h.mux.HandleFunc("/v1/setup_intents", h.handleSetupIntents)
+	h.mux.HandleFunc("/v1/setup_intents/", h.handleSetupIntent)
 	h.mux.HandleFunc("/v1/payment_methods", h.handlePaymentMethods)
 	h.mux.HandleFunc("/v1/webhook_endpoints", h.handleWebhookEndpoints)
 	h.mux.HandleFunc("/v1/webhook_endpoints/", h.handleWebhookEndpoint)
@@ -801,30 +803,232 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handlePaymentIntents(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		h.methodNotAllowed(w, r, "GET")
-		return
+	switch r.Method {
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validatePaymentIntentCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		customerID := p.string("customer")
+		if customerID != "" {
+			if err := validateCustomerExists(h.billing.GetCustomer(r.Context(), customerID)); err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+		}
+		intent, err := h.billing.CreatePaymentIntent(r.Context(), billing.PaymentIntent{
+			ID:              p.string("id"),
+			CustomerID:      customerID,
+			Amount:          p.int64("amount"),
+			Currency:        p.string("currency"),
+			CaptureMethod:   p.stringDefault("capture_method", "automatic"),
+			PaymentMethodID: p.string("payment_method"),
+		})
+		if err == nil {
+			h.emitPaymentIntentWebhook(r, "payment_intent.created", intent)
+		}
+		if err == nil && p.boolDefault("confirm", false) {
+			intent, err = h.billing.ConfirmPaymentIntent(r.Context(), intent.ID, p.string("payment_method"), p.string("outcome"))
+			if err == nil {
+				h.emitPaymentIntentWebhook(r, paymentIntentTerminalEvent(intent.Status), intent)
+			}
+		}
+		writeResult(w, stripePaymentIntent(intent), err)
+	case http.MethodGet:
+		items, err := h.billing.ListPaymentIntents(r.Context())
+		data := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if customer := r.URL.Query().Get("customer"); customer != "" && item.CustomerID != customer {
+				continue
+			}
+			data = append(data, stripePaymentIntent(item))
+			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
+				break
+			}
+		}
+		writeResult(w, stripeList(r.URL.Path, data), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
 	}
-	items, err := h.billing.ListPaymentIntents(r.Context())
-	data := make([]map[string]any, 0, len(items))
-	for _, item := range items {
-		data = append(data, stripePaymentIntent(item))
-	}
-	writeResult(w, stripeList(r.URL.Path, data), err)
 }
 
 func (h *Handler) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/v1/payment_intents/")
-	if id == "" || strings.Contains(id, "/") || r.Method != http.MethodGet {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/payment_intents/")
+	id, action, hasAction := strings.Cut(rest, "/")
+	if id == "" {
+		h.notFound(w, r)
+		return
+	}
+	if !hasAction {
 		if r.Method != http.MethodGet {
 			h.methodNotAllowed(w, r, "GET")
+			return
+		}
+		paymentIntent, err := h.billing.GetPaymentIntent(r.Context(), id)
+		writeResult(w, stripePaymentIntent(paymentIntent), err)
+		return
+	}
+	if strings.Contains(action, "/") || r.Method != http.MethodPost {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
 			return
 		}
 		h.notFound(w, r)
 		return
 	}
-	paymentIntent, err := h.billing.GetPaymentIntent(r.Context(), id)
-	writeResult(w, stripePaymentIntent(paymentIntent), err)
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var intent billing.PaymentIntent
+	switch action {
+	case "confirm":
+		if err := validatePaymentIntentConfirm(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		intent, err = h.billing.ConfirmPaymentIntent(r.Context(), id, p.string("payment_method"), p.string("outcome"))
+		if err == nil {
+			h.emitPaymentIntentWebhook(r, paymentIntentTerminalEvent(intent.Status), intent)
+		}
+	case "capture":
+		if err := validatePaymentIntentCapture(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		intent, err = h.billing.CapturePaymentIntent(r.Context(), id)
+		if err == nil {
+			h.emitPaymentIntentWebhook(r, "payment_intent.succeeded", intent)
+		}
+	case "cancel":
+		if err := validatePaymentIntentCancel(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		intent, err = h.billing.CancelPaymentIntent(r.Context(), id)
+		if err == nil {
+			h.emitPaymentIntentWebhook(r, "payment_intent.canceled", intent)
+		}
+	default:
+		h.notFound(w, r)
+		return
+	}
+	writeResult(w, stripePaymentIntent(intent), err)
+}
+
+func (h *Handler) handleSetupIntents(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateSetupIntentCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		customerID := p.string("customer")
+		if customerID != "" {
+			if err := validateCustomerExists(h.billing.GetCustomer(r.Context(), customerID)); err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+		}
+		intent, err := h.billing.CreateSetupIntent(r.Context(), billing.SetupIntent{
+			ID:              p.string("id"),
+			CustomerID:      customerID,
+			Usage:           p.stringDefault("usage", "off_session"),
+			PaymentMethodID: p.string("payment_method"),
+		})
+		if err == nil {
+			h.emitSetupIntentWebhook(r, "setup_intent.created", intent)
+		}
+		if err == nil && p.boolDefault("confirm", false) {
+			intent, err = h.billing.ConfirmSetupIntent(r.Context(), intent.ID, p.string("payment_method"), p.string("outcome"))
+			if err == nil {
+				h.emitSetupIntentWebhook(r, setupIntentTerminalEvent(intent.Status), intent)
+			}
+		}
+		writeResult(w, stripeSetupIntent(intent), err)
+	case http.MethodGet:
+		items, err := h.billing.ListSetupIntents(r.Context())
+		data := make([]map[string]any, 0, len(items))
+		for _, item := range items {
+			if customer := r.URL.Query().Get("customer"); customer != "" && item.CustomerID != customer {
+				continue
+			}
+			data = append(data, stripeSetupIntent(item))
+			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
+				break
+			}
+		}
+		writeResult(w, stripeList(r.URL.Path, data), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleSetupIntent(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/setup_intents/")
+	id, action, hasAction := strings.Cut(rest, "/")
+	if id == "" {
+		h.notFound(w, r)
+		return
+	}
+	if !hasAction {
+		if r.Method != http.MethodGet {
+			h.methodNotAllowed(w, r, "GET")
+			return
+		}
+		intent, err := h.billing.GetSetupIntent(r.Context(), id)
+		writeResult(w, stripeSetupIntent(intent), err)
+		return
+	}
+	if strings.Contains(action, "/") || r.Method != http.MethodPost {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		h.notFound(w, r)
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	var intent billing.SetupIntent
+	switch action {
+	case "confirm":
+		if err := validateSetupIntentConfirm(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		intent, err = h.billing.ConfirmSetupIntent(r.Context(), id, p.string("payment_method"), p.string("outcome"))
+		if err == nil {
+			h.emitSetupIntentWebhook(r, setupIntentTerminalEvent(intent.Status), intent)
+		}
+	case "cancel":
+		if err := validateSetupIntentCancel(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		intent, err = h.billing.CancelSetupIntent(r.Context(), id)
+		if err == nil {
+			h.emitSetupIntentWebhook(r, "setup_intent.canceled", intent)
+		}
+	default:
+		h.notFound(w, r)
+		return
+	}
+	writeResult(w, stripeSetupIntent(intent), err)
 }
 
 func (h *Handler) handlePaymentMethods(w http.ResponseWriter, r *http.Request) {
@@ -2032,14 +2236,18 @@ func stripeInvoice(invoice billing.Invoice) map[string]any {
 }
 
 func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
+	captureMethod := stringDefault(intent.CaptureMethod, "automatic")
 	return map[string]any{
 		"id":                 intent.ID,
 		"object":             billing.ObjectPaymentIntent,
-		"customer":           intent.CustomerID,
+		"customer":           emptyToNil(intent.CustomerID),
 		"invoice":            emptyToNil(intent.InvoiceID),
 		"amount":             intent.Amount,
+		"amount_capturable":  paymentIntentCapturableAmount(intent),
+		"amount_received":    paymentIntentReceivedAmount(intent),
 		"currency":           intent.Currency,
 		"status":             intent.Status,
+		"capture_method":     captureMethod,
 		"payment_method":     emptyToNil(intent.PaymentMethodID),
 		"last_payment_error": paymentIntentError(intent),
 		"client_secret":      intent.ID + "_secret_billtap",
@@ -2047,6 +2255,36 @@ func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
 		"created_at":         intent.CreatedAt,
 		"livemode":           false,
 	}
+}
+
+func stripeSetupIntent(intent billing.SetupIntent) map[string]any {
+	return map[string]any{
+		"id":               intent.ID,
+		"object":           billing.ObjectSetupIntent,
+		"customer":         emptyToNil(intent.CustomerID),
+		"status":           intent.Status,
+		"usage":            stringDefault(intent.Usage, "off_session"),
+		"payment_method":   emptyToNil(intent.PaymentMethodID),
+		"last_setup_error": setupIntentError(intent),
+		"client_secret":    intent.ID + "_secret_billtap",
+		"created":          unix(intent.CreatedAt),
+		"created_at":       intent.CreatedAt,
+		"livemode":         false,
+	}
+}
+
+func paymentIntentCapturableAmount(intent billing.PaymentIntent) int64 {
+	if intent.Status == "requires_capture" {
+		return intent.Amount
+	}
+	return 0
+}
+
+func paymentIntentReceivedAmount(intent billing.PaymentIntent) int64 {
+	if intent.Status == "succeeded" {
+		return intent.Amount
+	}
+	return 0
 }
 
 func filterPrices(prices []billing.Price, r *http.Request) []billing.Price {
@@ -2288,6 +2526,21 @@ func paymentIntentError(intent billing.PaymentIntent) any {
 	return out
 }
 
+func setupIntentError(intent billing.SetupIntent) any {
+	if intent.FailureCode == "" && intent.FailureMessage == "" {
+		return nil
+	}
+	out := map[string]any{
+		"type":    stripeErrorCard,
+		"code":    intent.FailureCode,
+		"message": intent.FailureMessage,
+	}
+	if intent.DeclineCode != "" {
+		out["decline_code"] = intent.DeclineCode
+	}
+	return out
+}
+
 func nonNilMap(in map[string]string) map[string]string {
 	if in == nil {
 		return map[string]string{}
@@ -2424,6 +2677,52 @@ func (h *Handler) emitSubscriptionWebhook(r *http.Request, eventType string, sub
 	return []webhooks.Event{event}
 }
 
+func (h *Handler) emitPaymentIntentWebhook(r *http.Request, eventType string, intent billing.PaymentIntent) []webhooks.Event {
+	if h.webhooks == nil || intent.ID == "" || eventType == "" {
+		return nil
+	}
+	raw, err := json.Marshal(stripePaymentIntent(intent))
+	if err != nil {
+		return nil
+	}
+	sequence := time.Now().UTC().UnixNano()
+	event, _, err := h.webhooks.CreateEvent(r.Context(), webhooks.EventInput{
+		Type:           eventType,
+		ObjectPayload:  raw,
+		RequestID:      "req_" + intent.ID,
+		IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", eventType, intent.ID, sequence),
+		Source:         webhooks.SourceAPI,
+		Sequence:       sequence,
+	})
+	if err != nil {
+		return nil
+	}
+	return []webhooks.Event{event}
+}
+
+func (h *Handler) emitSetupIntentWebhook(r *http.Request, eventType string, intent billing.SetupIntent) []webhooks.Event {
+	if h.webhooks == nil || intent.ID == "" || eventType == "" {
+		return nil
+	}
+	raw, err := json.Marshal(stripeSetupIntent(intent))
+	if err != nil {
+		return nil
+	}
+	sequence := time.Now().UTC().UnixNano()
+	event, _, err := h.webhooks.CreateEvent(r.Context(), webhooks.EventInput{
+		Type:           eventType,
+		ObjectPayload:  raw,
+		RequestID:      "req_" + intent.ID,
+		IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", eventType, intent.ID, sequence),
+		Source:         webhooks.SourceAPI,
+		Sequence:       sequence,
+	})
+	if err != nil {
+		return nil
+	}
+	return []webhooks.Event{event}
+}
+
 func (h *Handler) deliveryAttemptResponses(r *http.Request, attempts []webhooks.DeliveryAttempt) []map[string]any {
 	out := make([]map[string]any, 0, len(attempts))
 	eventTypes := map[string]string{}
@@ -2506,6 +2805,10 @@ func (h *Handler) collectObjects(r *http.Request) (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	setupIntents, err := h.billing.ListSetupIntents(r.Context())
+	if err != nil {
+		return nil, err
+	}
 	result := map[string]any{
 		"object":            "dashboard_objects",
 		"customers":         customers,
@@ -2515,6 +2818,7 @@ func (h *Handler) collectObjects(r *http.Request) (map[string]any, error) {
 		"subscriptions":     subscriptions,
 		"invoices":          invoices,
 		"payment_intents":   paymentIntents,
+		"setup_intents":     setupIntents,
 	}
 	if h.webhooks != nil {
 		if endpoints, err := h.webhooks.ListEndpoints(r.Context(), webhooks.EndpointFilter{}); err == nil {
@@ -2579,10 +2883,27 @@ func paymentIntentTerminalEvent(status string) string {
 		return "payment_intent.processing"
 	case "canceled":
 		return "payment_intent.canceled"
+	case "requires_action":
+		return "payment_intent.requires_action"
+	case "requires_capture":
+		return "payment_intent.amount_capturable_updated"
 	case "requires_payment_method":
 		return "payment_intent.payment_failed"
 	default:
 		return "payment_intent.payment_failed"
+	}
+}
+
+func setupIntentTerminalEvent(status string) string {
+	switch status {
+	case "succeeded":
+		return "setup_intent.succeeded"
+	case "canceled":
+		return "setup_intent.canceled"
+	case "requires_action":
+		return "setup_intent.requires_action"
+	default:
+		return "setup_intent.setup_failed"
 	}
 }
 

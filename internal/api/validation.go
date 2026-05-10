@@ -25,6 +25,9 @@ var (
 	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
 	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
 	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
+	paymentMethodTypesRE       = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
+	automaticPaymentMethodsRE  = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
+	paymentMethodOptionsRE     = regexp.MustCompile(`^payment_method_options\[.+\]$`)
 )
 
 type validationError struct {
@@ -415,6 +418,111 @@ func validateSubscriptionItemCreate(p params) error {
 		RequiredAny: [][]string{{"price", "price_id"}},
 		Int64Params: []string{"quantity"},
 		Positive:    []string{"quantity"},
+	})
+}
+
+func validatePaymentIntentCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"amount",
+			"currency",
+			"customer",
+			"payment_method",
+			"confirm",
+			"capture_method",
+			"outcome",
+			"description",
+			"receipt_email",
+			"setup_future_usage",
+			"off_session",
+			"automatic_payment_methods[enabled]",
+		},
+		AllowedRegex: []*regexp.Regexp{paymentMethodTypesRE, paymentMethodOptionsRE},
+		Required:     []string{"amount", "currency"},
+		Int64Params:  []string{"amount"},
+		Positive:     []string{"amount"},
+		BoolParams:   []string{"confirm", "off_session", "automatic_payment_methods[enabled]"},
+		EnumParams: map[string][]string{
+			"capture_method":     {"automatic", "automatic_async", "manual"},
+			"setup_future_usage": {"on_session", "off_session"},
+		},
+		AllowMetadata: true,
+	})
+}
+
+func validatePaymentIntentConfirm(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"payment_method",
+			"outcome",
+			"return_url",
+			"receipt_email",
+			"setup_future_usage",
+			"off_session",
+			"use_stripe_sdk",
+		},
+		AllowedRegex: []*regexp.Regexp{paymentMethodOptionsRE},
+		BoolParams:   []string{"off_session", "use_stripe_sdk"},
+		EnumParams: map[string][]string{
+			"setup_future_usage": {"on_session", "off_session"},
+		},
+	})
+}
+
+func validatePaymentIntentCapture(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"amount_to_capture"},
+		Int64Params: []string{"amount_to_capture"},
+		Positive:    []string{"amount_to_capture"},
+	})
+}
+
+func validatePaymentIntentCancel(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{"cancellation_reason"},
+		EnumParams: map[string][]string{
+			"cancellation_reason": {"duplicate", "fraudulent", "requested_by_customer", "abandoned"},
+		},
+	})
+}
+
+func validateSetupIntentCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"customer",
+			"payment_method",
+			"confirm",
+			"usage",
+			"outcome",
+			"description",
+			"return_url",
+			"automatic_payment_methods[enabled]",
+		},
+		AllowedRegex: []*regexp.Regexp{paymentMethodTypesRE, paymentMethodOptionsRE},
+		BoolParams:   []string{"confirm", "automatic_payment_methods[enabled]"},
+		EnumParams: map[string][]string{
+			"usage": {"on_session", "off_session"},
+		},
+		AllowMetadata: true,
+	})
+}
+
+func validateSetupIntentConfirm(p params) error {
+	return p.validate(paramSpec{
+		Allowed:      []string{"payment_method", "outcome", "return_url", "use_stripe_sdk"},
+		AllowedRegex: []*regexp.Regexp{paymentMethodOptionsRE},
+		BoolParams:   []string{"use_stripe_sdk"},
+	})
+}
+
+func validateSetupIntentCancel(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{"cancellation_reason"},
+		EnumParams: map[string][]string{
+			"cancellation_reason": {"duplicate", "fraudulent", "requested_by_customer", "abandoned"},
+		},
 	})
 }
 

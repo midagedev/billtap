@@ -258,7 +258,7 @@ Gate:
 - [x] T133 Implement Stripe OpenAPI inventory generator and coverage matrix
 - [x] T134 Add protocol baseline tests for pagination, expand, request IDs, API version, and idempotency traces across supported endpoints
 - [x] T135 Add OpenAPI-backed validation for broad L1 route/parameter/type coverage
-- [ ] T136 Add direct PaymentIntent and SetupIntent state machines
+- [x] T136 Add direct PaymentIntent and SetupIntent state machines
 - [ ] T137 Add renewal/test-clock/retry mutation for subscriptions and invoices
 - [ ] T138 Add coupons, discounts, credit notes, refunds, disputes, and payment-history simulation
 - [ ] T139 Add Connect/platform smoke fixtures and connected-account webhook routing
