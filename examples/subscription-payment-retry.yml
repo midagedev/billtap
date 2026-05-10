@@ -49,6 +49,7 @@ steps:
     action: invoice.retry
     params:
       subscriptionRef: checkout.subscription.id
+      invoiceRef: complete-checkout.invoice.id
       outcome: payment_succeeded
 
   - id: assert-active

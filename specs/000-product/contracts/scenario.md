@@ -56,6 +56,7 @@ steps:
     action: invoice.retry
     params:
       subscriptionRef: checkout.subscription.id
+      invoiceRef: complete-checkout.invoice.id
       outcome: payment_succeeded
 
   - id: assert-active
@@ -129,12 +130,13 @@ use `duplicate`, `delay` or `delay_seconds`, `outOfOrder`, `responseStatus`,
 `responseBody`, `timeout`, `error`, and `signatureMismatch` parameters.
 
 `invoice.retry` mutates the local billing graph when the runner has a billing
-service. It accepts `invoiceRef`/`invoice`, `payment_method` or `outcome`.
-Successful retries mark the invoice paid, clear `next_payment_attempt`, succeed
-the payment intent, and make the subscription active. Declined retries keep the
-invoice open, increment `attempt_count`, schedule the next attempt, and move the
-subscription to `past_due`. Profile-only runs without a billing service keep
-the older deterministic evidence-only behavior.
+service and the step supplies `invoiceRef`/`invoice`. It also accepts
+`payment_method` or `outcome`. Successful retries mark the invoice paid, clear
+`next_payment_attempt`, succeed the payment intent, and make the subscription
+active. Declined retries keep the invoice open, increment `attempt_count`,
+schedule the next attempt, and move the subscription to `past_due`. Profile-only
+runs without a billing service, or profile evidence steps without a billing
+invoice, keep the older deterministic evidence-only behavior.
 
 `clock.advance` advances scenario time and then asks the billing service to
 process due local subscription periods. Active or trialing subscriptions renew

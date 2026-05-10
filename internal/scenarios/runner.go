@@ -418,6 +418,18 @@ func (r *Runner) retryInvoice(ctx context.Context, scenario Scenario, step Step,
 		return output, nil
 	}
 	invoiceID := firstString(params, "invoiceRef", "invoice", "invoice_id")
+	if invoiceID == "" {
+		output := map[string]any{
+			"subscription":  firstString(params, "subscriptionRef", "subscription", "subscription_id"),
+			"invoice":       "",
+			"outcome":       stringDefault(params, "outcome", "payment_succeeded"),
+			"clock":         state.clock.Now(),
+			"deterministic": true,
+			"note":          "invoice.retry recorded as scenario evidence because no billing invoice was supplied",
+		}
+		state.results[step.ID] = output
+		return output, nil
+	}
 	result, err := r.Billing.PayInvoice(ctx, invoiceID, billing.InvoicePaymentOptions{
 		Outcome:         firstString(params, "outcome", "paymentMethod", "payment_method", "payment_method_id"),
 		PaymentMethodID: firstString(params, "paymentMethod", "payment_method", "payment_method_id"),

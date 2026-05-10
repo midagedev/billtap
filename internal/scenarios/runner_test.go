@@ -135,6 +135,39 @@ steps:
 	}
 }
 
+func TestRunnerInvoiceRetryWithoutInvoiceKeepsEvidenceFallback(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	report, err := NewRunner(billing.NewService(store), nil).Run(ctx, mustLoad(t, `
+name: invoice-retry-evidence
+steps:
+  - id: retry-payment
+    action: invoice.retry
+    params:
+      subscriptionRef: sub_profile_123
+      outcome: payment_succeeded
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+	retry := report.Steps[0].Output
+	if retry["subscription"] != "sub_profile_123" || retry["deterministic"] != true {
+		t.Fatalf("retry output = %#v, want deterministic fallback evidence", retry)
+	}
+	if !strings.Contains(retry["note"].(string), "no billing invoice") {
+		t.Fatalf("retry note = %#v, want missing invoice note", retry["note"])
+	}
+}
+
 func TestRunnerClockAdvanceRenewsAndCancelsSubscriptions(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))

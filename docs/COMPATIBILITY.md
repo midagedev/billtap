@@ -218,12 +218,12 @@ Current scenario boundaries:
 - `checkout.complete` mutates local billing state and emits checkout-related
   webhook evidence.
 - `invoice.retry` calls the same local invoice payment mutation as
-  `POST /v1/invoices/{id}/pay` when a billing service is configured. Success
-  marks the invoice paid, clears `next_payment_attempt`, succeeds the payment
-  intent, and reactivates the subscription. Declines keep the invoice open,
-  increment `attempt_count`, set the next retry time, and update the
-  subscription to `past_due`. SaaS profile-only scenarios that run without the
-  billing service still record deterministic evidence only.
+  `POST /v1/invoices/{id}/pay` when a billing service and invoice reference are
+  available. Success marks the invoice paid, clears `next_payment_attempt`,
+  succeeds the payment intent, and reactivates the subscription. Declines keep
+  the invoice open, increment `attempt_count`, set the next retry time, and
+  update the subscription to `past_due`. SaaS profile-only scenarios that run
+  without a billing invoice still record deterministic evidence only.
 - `clock.advance` advances scenario time and asks the local billing service to
   process due active/trialing subscriptions. It creates paid renewal
   invoice/payment-intent evidence or cancels subscriptions scheduled with
