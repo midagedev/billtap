@@ -100,6 +100,13 @@ Current command:
 go run ./cmd/billtap compatibility inventory --openapi path/to/openapi.spec3.json --output-dir dist/compatibility
 ```
 
+Optional workflow:
+
+- `.github/workflows/stripe-api-inventory.yml` runs the same inventory command
+  against Stripe's public latest OpenAPI spec on demand and weekly. It uploads
+  JSON/Markdown artifacts for drift review without making live Stripe or
+  `stripe-mock` calls part of normal PR release gates.
+
 ### S1: Protocol Compatibility Baseline
 
 Output:

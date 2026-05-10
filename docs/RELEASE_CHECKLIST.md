@@ -28,6 +28,19 @@ workflow to complete first.
 - `curl -fsS -X POST http://127.0.0.1:3300/test/reset`
 - `/tmp/billtap scenario run examples/saas-adoption-contract.yml`
 
+## Optional Compatibility Drift Check
+
+- Run the `Stripe API Inventory` GitHub Actions workflow, or run locally:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/stripe/openapi/master/latest/openapi.spec3.json -o /tmp/stripe-openapi.spec3.json
+go run ./cmd/billtap compatibility inventory --openapi /tmp/stripe-openapi.spec3.json --output-dir /tmp/billtap-stripe-api-inventory --source stripe/openapi-latest-public
+```
+
+This check is not a release blocker by itself. Use it to review newly visible
+Stripe endpoint families, inventory-only gaps, and accepted Billtap-specific
+exceptions before making broader compatibility claims.
+
 ## Manual Smoke
 
 - Start Billtap from the local binary with `BILLTAP_STATIC_DIR=dist/app`.

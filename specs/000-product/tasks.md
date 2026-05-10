@@ -263,6 +263,7 @@ Gate:
 - [ ] T138 Add coupons, discounts, credit notes, refunds, disputes, and payment-history simulation
 - [ ] T139 Add Connect/platform smoke fixtures and connected-account webhook routing
 - [ ] T140 Add official Stripe SDK matrix for Node, Go, Java, Python, and Ruby
+- [x] T141 Add optional scheduled/manual Stripe OpenAPI inventory workflow artifacts
 
 Suggested agents:
 

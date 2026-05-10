@@ -1,0 +1,69 @@
+name: Stripe API Inventory
+
+on:
+  workflow_dispatch:
+    inputs:
+      openapi_url:
+        description: Stripe OpenAPI public spec URL
+        required: false
+        default: https://raw.githubusercontent.com/stripe/openapi/master/latest/openapi.spec3.json
+        type: string
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stripe-api-inventory-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DEFAULT_STRIPE_OPENAPI_URL: https://raw.githubusercontent.com/stripe/openapi/master/latest/openapi.spec3.json
+
+jobs:
+  inventory:
+    name: Generate inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Resolve OpenAPI URL
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="${{ github.event.inputs.openapi_url || '' }}"
+          if [ -z "$url" ]; then
+            url="$DEFAULT_STRIPE_OPENAPI_URL"
+          fi
+          echo "url=$url" >> "$GITHUB_OUTPUT"
+
+      - name: Download Stripe OpenAPI
+        run: curl -fsSL "${{ steps.source.outputs.url }}" -o /tmp/stripe-openapi.spec3.json
+
+      - name: Generate Stripe API inventory
+        run: |
+          go run ./cmd/billtap compatibility inventory \
+            --openapi /tmp/stripe-openapi.spec3.json \
+            --output-dir dist/stripe-api-inventory \
+            --source "${{ steps.source.outputs.url }}"
+
+      - name: Print inventory summary
+        run: sed -n '1,80p' dist/stripe-api-inventory/stripe-api-inventory.md
+
+      - name: Upload inventory artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: stripe-api-inventory
+          path: dist/stripe-api-inventory/
+          if-no-files-found: error
