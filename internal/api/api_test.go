@@ -906,6 +906,19 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("subscription update billing cycle anchor must be now or timestamp", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/subscriptions/sub_missing", url.Values{
+			"billing_cycle_anchor": {"soon"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "billing_cycle_anchor" {
+			t.Fatalf("error=%#v, want invalid billing_cycle_anchor", errBody.Error)
+		}
+	})
+
 	t.Run("subscription item create quantity must be positive", func(t *testing.T) {
 		status, body := postFormStatus(t, handler, "/v1/subscription_items", url.Values{
 			"subscription": {"sub_missing"},
@@ -1433,6 +1446,102 @@ func TestStripeCompatCatalogAndPortalEndpoints(t *testing.T) {
 	}
 	if resumed.CancellationDetails.Comment != nil || resumed.CancellationDetails.Feedback != nil {
 		t.Fatalf("resumed cancellation details = %#v, want cleared", resumed.CancellationDetails)
+	}
+}
+
+func TestSubscriptionUpdatePreservesItemsAndSupportsAdditiveSeatItems(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"paid-update@example.test"},
+	})
+	plan := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"id":                            {"prod_paid_update_plan"},
+		"name":                          {"Paid Update Plan"},
+		"metadata[productType]":         {"WORKSPACE_PLAN"},
+		"metadata[tenantId]":            {"dentbird"},
+		"metadata[tier]":                {"STANDARD"},
+		"metadata[tierLevel]":           {"2"},
+		"metadata[basicSeat]":           {"1"},
+		"metadata[freeTrialPeriodDays]": {"14"},
+	})
+	seat := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"id":                    {"prod_paid_update_seat"},
+		"name":                  {"Paid Update Seat"},
+		"metadata[productType]": {"ADDITIONAL_SEAT"},
+		"metadata[tenantId]":    {"dentbird"},
+	})
+	standardMonthly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {plan.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"15000"},
+		"lookup_key":          {"dentbird_plan_standard_monthly"},
+		"recurring[interval]": {"month"},
+	})
+	proYearly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {plan.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"288000"},
+		"lookup_key":          {"dentbird_plan_premium_yearly"},
+		"recurring[interval]": {"year"},
+	})
+	seatYearly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {seat.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"96000"},
+		"lookup_key":          {"dentbird_seat_yearly"},
+		"recurring[interval]": {"year"},
+	})
+
+	type subscriptionItem struct {
+		ID       string `json:"id"`
+		Quantity int64  `json:"quantity"`
+		Price    struct {
+			ID string `json:"id"`
+		} `json:"price"`
+	}
+	type subscriptionResponse struct {
+		ID    string `json:"id"`
+		Items struct {
+			Data []subscriptionItem `json:"data"`
+		} `json:"items"`
+	}
+
+	created := postForm[subscriptionResponse](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {customer.ID},
+		"items[0][price]": {standardMonthly.ID},
+	})
+	if len(created.Items.Data) != 1 {
+		t.Fatalf("created items = %#v, want one plan item", created.Items.Data)
+	}
+
+	upgraded := postForm[subscriptionResponse](t, handler, "/v1/subscriptions/"+created.ID, url.Values{
+		"items[0][id]":         {created.Items.Data[0].ID},
+		"items[0][price]":      {proYearly.ID},
+		"items[0][quantity]":   {"1"},
+		"proration_behavior":   {"always_invoice"},
+		"payment_behavior":     {"error_if_incomplete"},
+		"billing_cycle_anchor": {"now"},
+	})
+	if len(upgraded.Items.Data) != 1 || upgraded.Items.Data[0].Price.ID != proYearly.ID {
+		t.Fatalf("upgraded items = %#v, want existing item price replaced", upgraded.Items.Data)
+	}
+
+	withSeats := postForm[subscriptionResponse](t, handler, "/v1/subscriptions/"+created.ID, url.Values{
+		"items[0][price]":      {seatYearly.ID},
+		"items[0][quantity]":   {"2"},
+		"proration_behavior":   {"always_invoice"},
+		"payment_behavior":     {"error_if_incomplete"},
+		"billing_cycle_anchor": {"now"},
+	})
+	if len(withSeats.Items.Data) != 2 {
+		t.Fatalf("seat update items = %#v, want plan item plus additive seat item", withSeats.Items.Data)
+	}
+	if withSeats.Items.Data[0].Price.ID != proYearly.ID {
+		t.Fatalf("plan item = %#v, want existing plan item preserved", withSeats.Items.Data[0])
+	}
+	if withSeats.Items.Data[1].Price.ID != seatYearly.ID || withSeats.Items.Data[1].Quantity != 2 {
+		t.Fatalf("seat item = %#v, want additive seat item quantity 2", withSeats.Items.Data[1])
 	}
 }
 

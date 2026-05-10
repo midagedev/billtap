@@ -22,7 +22,7 @@ var (
 	checkoutLineItemRE         = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
 	legacyLineItemParamRE      = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
 	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
-	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(price|price_id|quantity)\]$`)
+	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
 	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
 )
 
@@ -199,6 +199,19 @@ func (p params) validateEnum(key string, allowed []string) error {
 	return invalidParam(key, "Expected one of: "+strings.Join(allowed, ", ")+".")
 }
 
+func (p params) validateUnixTimestampOrNow(key string) error {
+	if !p.has(key) {
+		return nil
+	}
+	if p.string(key) == "now" {
+		return nil
+	}
+	if _, err := strconv.ParseInt(p.string(key), 10, 64); err != nil {
+		return invalidParam(key, "Expected a Unix timestamp or now.")
+	}
+	return nil
+}
+
 func validateCustomerCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:       []string{"id", "email", "name"},
@@ -357,10 +370,12 @@ func validateSubscriptionCreate(p params) error {
 
 func validateSubscriptionUpdate(p params) error {
 	if err := p.validate(paramSpec{
-		Allowed:      []string{"cancel_at_period_end"},
+		Allowed:      []string{"cancel_at_period_end", "proration_behavior", "payment_behavior", "billing_cycle_anchor", "trial_end"},
 		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE},
 		BoolParams:   []string{"cancel_at_period_end"},
 		EnumParams: map[string][]string{
+			"proration_behavior": {"none", "create_prorations", "always_invoice"},
+			"payment_behavior":   {"allow_incomplete", "error_if_incomplete", "pending_if_incomplete"},
 			"cancellation_details[feedback]": {
 				"customer_service",
 				"low_quality",
@@ -378,6 +393,11 @@ func validateSubscriptionUpdate(p params) error {
 	}
 	for idx := range p.subscriptionItemIndexes() {
 		if err := p.validateMin(fmt.Sprintf("items[%d][quantity]", idx), 1); err != nil {
+			return err
+		}
+	}
+	for _, key := range []string{"billing_cycle_anchor", "trial_end"} {
+		if err := p.validateUnixTimestampOrNow(key); err != nil {
 			return err
 		}
 	}

@@ -2081,17 +2081,24 @@ func hasSubscriptionItemPatch(p params) bool {
 }
 
 func subscriptionItemsFromParams(p params, current billing.Subscription) []billing.LineItem {
-	var out []billing.LineItem
+	out := append([]billing.LineItem{}, current.Items...)
 	for i := 0; i < 100; i++ {
+		itemID := p.string(fmt.Sprintf("items[%d][id]", i))
 		priceID := p.first(fmt.Sprintf("items[%d][price]", i), fmt.Sprintf("items[%d][price_id]", i))
 		quantity := p.int64(fmt.Sprintf("items[%d][quantity]", i))
-		if i < len(current.Items) {
+		if itemID != "" {
+			idx := subscriptionItemIndexByID(current, itemID)
+			if idx < 0 {
+				continue
+			}
 			if priceID == "" {
-				priceID = current.Items[i].PriceID
+				priceID = out[idx].PriceID
 			}
-			if quantity == 0 {
-				quantity = current.Items[i].Quantity
+			if quantity <= 0 {
+				quantity = out[idx].Quantity
 			}
+			out[idx] = billing.LineItem{PriceID: priceID, Quantity: quantity}
+			continue
 		}
 		if priceID == "" {
 			continue
@@ -2102,6 +2109,15 @@ func subscriptionItemsFromParams(p params, current billing.Subscription) []billi
 		out = append(out, billing.LineItem{PriceID: priceID, Quantity: quantity})
 	}
 	return out
+}
+
+func subscriptionItemIndexByID(sub billing.Subscription, itemID string) int {
+	for idx := range sub.Items {
+		if subscriptionItemID(sub, idx) == itemID {
+			return idx
+		}
+	}
+	return -1
 }
 
 func subscriptionCreateItemsFromParams(p params) []billing.LineItem {
