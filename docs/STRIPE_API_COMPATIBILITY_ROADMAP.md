@@ -94,6 +94,12 @@ Gate:
   Billtap-specific exception.
 - Unsupported endpoints are visible instead of implicit.
 
+Current command:
+
+```bash
+go run ./cmd/billtap compatibility inventory --openapi path/to/openapi.spec3.json --output-dir dist/compatibility
+```
+
 ### S1: Protocol Compatibility Baseline
 
 Output:

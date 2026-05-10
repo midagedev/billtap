@@ -255,7 +255,7 @@ Gate:
 - [x] T130 Define compatibility levels for inventory, schema validation, fixture responses, stateful behavior, scenarios, webhooks, and SDK smoke
 - [x] T131 Document endpoint family priorities beyond the DS/SaaS adoption path
 - [x] T132 Define OpenAPI inventory, scorecard expansion, and optional oracle lanes
-- [ ] T133 Implement Stripe OpenAPI inventory generator and coverage matrix
+- [x] T133 Implement Stripe OpenAPI inventory generator and coverage matrix
 - [ ] T134 Add protocol baseline tests for pagination, expand, request IDs, API version, and idempotency traces across supported endpoints
 - [ ] T135 Add OpenAPI-backed validation for broad L1 route/parameter/type coverage
 - [ ] T136 Add direct PaymentIntent and SetupIntent state machines
