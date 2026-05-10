@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hckim/billtap/internal/billing"
 	"github.com/hckim/billtap/internal/storage"
@@ -45,13 +46,13 @@ steps:
     action: checkout.complete
     params:
       sessionRef: checkout.session.id
-      outcome: payment_succeeded
+      outcome: payment_failed
   - id: retry-payment
     action: invoice.retry
     params:
       subscriptionRef: checkout.subscription.id
       invoiceRef: complete-checkout.invoice.id
-      outcome: payment_succeeded
+      payment_method: pm_card_visa
 `)
 	report, err := runner.Run(context.Background(), scenario)
 	if err != nil {
@@ -66,6 +67,144 @@ steps:
 	retry := report.Steps[3].Output
 	if retry["subscription"] == "" || retry["invoice"] == "" {
 		t.Fatalf("retry output = %#v, want resolved subscription and invoice refs", retry)
+	}
+}
+
+func TestRunnerInvoiceRetryMutatesBillingState(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	report, err := NewRunner(billing.NewService(store), nil).Run(ctx, mustLoad(t, `
+name: invoice-retry-mutates
+clock:
+  start: "2026-05-08T00:00:00Z"
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: retry@example.test
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_failed
+  - id: retry-payment
+    action: invoice.retry
+    params:
+      invoiceRef: complete-checkout.invoice.id
+      payment_method: pm_card_visa
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+	retry := report.Steps[3].Output
+	invoice, ok := retry["invoice"].(billing.Invoice)
+	if !ok || invoice.Status != "paid" || invoice.AmountPaid != 4900 || invoice.NextPaymentAttempt != nil {
+		t.Fatalf("retry invoice = %#v, want paid invoice", retry["invoice"])
+	}
+	subscription, ok := retry["subscription"].(billing.Subscription)
+	if !ok || subscription.Status != "active" {
+		t.Fatalf("retry subscription = %#v, want active", retry["subscription"])
+	}
+	intent, ok := retry["payment_intent"].(billing.PaymentIntent)
+	if !ok || intent.Status != "succeeded" {
+		t.Fatalf("retry payment intent = %#v, want succeeded", retry["payment_intent"])
+	}
+}
+
+func TestRunnerClockAdvanceRenewsAndCancelsSubscriptions(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	report, err := NewRunner(billing.NewService(store), nil).Run(ctx, mustLoad(t, `
+name: clock-renewal-cancel
+clock:
+  start: "2026-05-08T00:00:00Z"
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: renew@example.test
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_succeeded
+  - id: advance-renewal
+    action: clock.advance
+    params:
+      duration: 31d
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+	advance := report.Steps[3].Output["billing"].(billing.ClockAdvanceResult)
+	if advance.Renewed != 1 || len(advance.Renewals) != 1 {
+		t.Fatalf("advance = %#v, want one renewal", advance)
+	}
+	if advance.Renewals[0].Invoice.Status != "paid" || advance.Renewals[0].Subscription.LatestInvoiceID != advance.Renewals[0].Invoice.ID {
+		t.Fatalf("renewal = %#v, want paid invoice and latest invoice update", advance.Renewals[0])
+	}
+
+	sub := advance.Renewals[0].Subscription
+	sub.CancelAtPeriodEnd = true
+	canceledAt := time.Date(2026, 6, 8, 0, 0, 0, 0, time.UTC)
+	sub.CanceledAt = &canceledAt
+	if _, err := store.UpdateSubscription(ctx, sub, nil); err != nil {
+		t.Fatalf("UpdateSubscription: %v", err)
+	}
+	result, err := billing.NewService(store).AdvanceClock(ctx, sub.CurrentPeriodEnd)
+	if err != nil {
+		t.Fatalf("AdvanceClock cancel: %v", err)
+	}
+	if result.CanceledCount != 1 || len(result.Canceled) != 1 || result.Canceled[0].Status != "canceled" {
+		t.Fatalf("cancel advance = %#v, want canceled subscription", result)
 	}
 }
 

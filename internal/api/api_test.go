@@ -141,6 +141,80 @@ func TestCheckoutFailureOutcome(t *testing.T) {
 	}
 }
 
+func TestInvoicePayRetriesFailedCheckout(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"retry@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+		"outcome": "payment_failed",
+	})
+	var failedInvoice billing.Invoice
+	if err := json.Unmarshal(completion["invoice"], &failedInvoice); err != nil {
+		t.Fatalf("decode invoice: %v", err)
+	}
+
+	declined := postForm[struct {
+		ID                 string `json:"id"`
+		Status             string `json:"status"`
+		AttemptCount       int    `json:"attempt_count"`
+		AmountDue          int64  `json:"amount_due"`
+		AmountPaid         int64  `json:"amount_paid"`
+		NextPaymentAttempt *int64 `json:"next_payment_attempt"`
+	}](t, handler, "/v1/invoices/"+failedInvoice.ID+"/pay", url.Values{
+		"payment_method": {"pm_card_visa_chargeDeclined"},
+	})
+	if declined.Status != "open" || declined.AttemptCount != failedInvoice.AttemptCount+1 || declined.AmountDue != 9900 || declined.AmountPaid != 0 || declined.NextPaymentAttempt == nil {
+		t.Fatalf("declined retry invoice = %#v, want open invoice with retry evidence", declined)
+	}
+
+	paid := postForm[struct {
+		ID                 string `json:"id"`
+		Status             string `json:"status"`
+		AttemptCount       int    `json:"attempt_count"`
+		AmountDue          int64  `json:"amount_due"`
+		AmountPaid         int64  `json:"amount_paid"`
+		NextPaymentAttempt *int64 `json:"next_payment_attempt"`
+	}](t, handler, "/v1/invoices/"+failedInvoice.ID+"/pay", url.Values{
+		"payment_method": {"pm_card_visa"},
+	})
+	if paid.Status != "paid" || paid.AttemptCount != declined.AttemptCount+1 || paid.AmountDue != 0 || paid.AmountPaid != 9900 || paid.NextPaymentAttempt != nil {
+		t.Fatalf("paid retry invoice = %#v, want paid invoice after retry", paid)
+	}
+
+	subscription := getJSON[struct {
+		Status        string `json:"status"`
+		LatestInvoice string `json:"latest_invoice"`
+	}](t, handler, "/v1/subscriptions/"+failedInvoice.SubscriptionID)
+	if subscription.Status != "active" || subscription.LatestInvoice != failedInvoice.ID {
+		t.Fatalf("subscription = %#v, want active with retried invoice", subscription)
+	}
+
+	events := getJSON[struct {
+		Data []struct {
+			Type string `json:"type"`
+		} `json:"data"`
+	}](t, handler, "/v1/events")
+	seen := map[string]bool{}
+	for _, event := range events.Data {
+		seen[event.Type] = true
+	}
+	for _, eventType := range []string{"payment_intent.payment_failed", "invoice.payment_failed", "payment_intent.succeeded", "invoice.payment_succeeded", "invoice.paid", "customer.subscription.updated"} {
+		if !seen[eventType] {
+			t.Fatalf("events missing %s: %#v", eventType, events.Data)
+		}
+	}
+}
+
 func TestCheckoutTerminalOutcomeVariants(t *testing.T) {
 	handler := newTestHandler(t)
 

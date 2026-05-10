@@ -56,12 +56,13 @@ Scorecard statuses are:
 
 Current public-readiness corpus:
 
-- Scorecard version: `l3-public-readiness-v6`
-- Release-blocking cases: 44
+- Scorecard version: `l3-public-readiness-v7`
+- Release-blocking cases: 49
 - Covered categories: request validation, protocol parameter acceptance,
   OpenAPI-backed fallback validation, idempotency mismatch, deterministic
   checkout payment-error aliases, and direct PaymentIntent/SetupIntent state
-  transitions, including invalid terminal-state transitions
+  transitions, invoice retry/payment mutation, and local clock-driven renewal
+  and period-end cancellation scenarios
 - Required release result: `mismatch=0`, `error=0`, and `passed=true`
 
 The scorecard is intentionally a release contract for Billtap's documented
@@ -94,9 +95,9 @@ Base path: `/v1`
 | Checkout sessions       | `POST /v1/checkout/sessions`, `GET /v1/checkout/sessions`, `GET /v1/checkout/sessions/{id}`                                                                         | Supported        | Creates subscription-mode sandbox checkout sessions from request line items and hosted Billtap URLs. The Stripe-style session response leaves `line_items` unexpanded. Accepts Stripe SDK form params `allow_promotion_codes` and `subscription_data[trial_period_days]`; trial checkout creates local `trialing` subscription evidence. Hosted URLs use the request host by default, or `BILLTAP_PUBLIC_BASE_URL` when configured for container-to-host browser flows. |
 | Checkout completion     | `POST /v1/checkout/sessions/{id}/complete`, `POST /api/checkout/sessions/{id}/complete`                                                                             | Billtap-specific | Completes a sandbox checkout and creates subscription, invoice, payment intent, timeline, and checkout webhook evidence. Supports success plus deterministic failure aliases such as `card_declined`, `insufficient_funds`, `expired_card`, `incorrect_cvc`, `processing_error`, `authentication_required`, `payment_pending`, `canceled`, and documented Stripe test PaymentMethod IDs such as `pm_card_visa_chargeDeclined`.                                      |
 | Billing portal sessions | `POST /v1/billing_portal/sessions`                                                                                                                                  | Partial          | Returns a Billtap portal URL for a known customer. Portal configuration and full Stripe-hosted portal behavior are not modeled, but the hosted portal includes Stripe-like selectors for common local Page Object flows.                                                                                                                                                                                                                                                |
-| Subscriptions           | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}`                     | Partial          | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation.                                                                                                                                                                                                                                                      |
+| Subscriptions           | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}`                     | Partial          | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation. Scenario `clock.advance` can renew active/trialing subscriptions and cancel period-end subscriptions in the local billing graph. This is not full Stripe Test Clock parity.                                                                                  |
 | Subscription items      | `POST /v1/subscription_items`, `DELETE /v1/subscription_items/{id}`                                                                                                 | Partial          | Add or remove local subscription items for integration smoke paths. Billing proration and invoice recalculation are not modeled.                                                                                                                                                                                                                                                                                                                                        |
-| Invoices                | `GET /v1/invoices`, `GET /v1/invoices/{id}`, `POST /v1/invoices/create_preview`                                                                                     | Partial          | List/retrieve invoices created by checkout. Preview returns a zero-value local smoke-test invoice.                                                                                                                                                                                                                                                                                                                                                                      |
+| Invoices                | `GET /v1/invoices`, `GET /v1/invoices/{id}`, `POST /v1/invoices/{id}/pay`, `POST /v1/invoices/create_preview`                                                       | Partial          | List/retrieve invoices created by checkout. `pay` retries open local invoices with deterministic sandbox PaymentMethod aliases, mutating invoice, subscription, payment-intent, timeline, and webhook evidence. Preview returns a zero-value local smoke-test invoice. Invoice create, finalize, send, void, collection, and dunning automation are not modeled.                                                                                                                                                      |
 | Payment intents         | `POST /v1/payment_intents`, `GET /v1/payment_intents`, `GET /v1/payment_intents/{id}`, `POST /v1/payment_intents/{id}/confirm`, `POST /v1/payment_intents/{id}/capture`, `POST /v1/payment_intents/{id}/cancel` | Partial          | Create/list/retrieve and mutate local payment intents. `confirm` supports deterministic sandbox PaymentMethod aliases such as `pm_card_visa`, `pm_card_visa_chargeDeclined`, and `pm_card_threeDSecure2Required`; manual capture moves through `requires_capture` before `capture` succeeds. This is a local state machine, not card processing or full PaymentIntent parameter parity.                                                                                 |
 | Setup intents           | `POST /v1/setup_intents`, `GET /v1/setup_intents`, `GET /v1/setup_intents/{id}`, `POST /v1/setup_intents/{id}/confirm`, `POST /v1/setup_intents/{id}/cancel`        | Partial          | Create/list/retrieve and mutate local setup intents with deterministic success, decline, and authentication-required aliases. Mandates, bank-account verification, and full SCA behavior are not modeled.                                                                                                                                                                                                                                                               |
 | Payment methods         | `GET /v1/payment_methods?customer={id}&type=card`                                                                                                                   | Partial          | Returns a deterministic sandbox card projection for a known customer. Create, attach, detach, and update are not supported.                                                                                                                                                                                                                                                                                                                                             |
@@ -216,8 +217,18 @@ Current scenario boundaries:
 
 - `checkout.complete` mutates local billing state and emits checkout-related
   webhook evidence.
-- `invoice.retry` is currently deterministic scenario evidence; it does not yet
-  mutate the generic billing invoice/payment-intent state.
+- `invoice.retry` calls the same local invoice payment mutation as
+  `POST /v1/invoices/{id}/pay` when a billing service is configured. Success
+  marks the invoice paid, clears `next_payment_attempt`, succeeds the payment
+  intent, and reactivates the subscription. Declines keep the invoice open,
+  increment `attempt_count`, set the next retry time, and update the
+  subscription to `past_due`. SaaS profile-only scenarios that run without the
+  billing service still record deterministic evidence only.
+- `clock.advance` advances scenario time and asks the local billing service to
+  process due active/trialing subscriptions. It creates paid renewal
+  invoice/payment-intent evidence or cancels subscriptions scheduled with
+  `cancel_at_period_end`. This is a Billtap local clock subset, not Stripe Test
+  Clock API parity.
 - Generic webhook replay is available through `POST /api/events/{id}/replay`
   and the `webhook.replay` scenario action. Replay can schedule duplicate,
   delayed, out-of-order, simulated endpoint status, timeout, generic transport
@@ -282,7 +293,9 @@ Billtap does not support or claim:
 - Provider-specific settlement, risk, tax, invoice rendering, fraud, account,
   payout, or dispute behavior.
 - Complete webhook event coverage.
-- Direct invoice finalize/pay/void endpoints.
+- Direct invoice create, finalize, send, void, line mutation, collection, and
+  full dunning automation. Billtap only supports the local `pay` retry subset
+  documented above.
 
 Use Stripe testmode or the real provider sandbox as the fallback lane for these
 behaviors.

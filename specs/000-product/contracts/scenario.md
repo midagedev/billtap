@@ -128,6 +128,21 @@ Numeric path segments address list entries, for example
 use `duplicate`, `delay` or `delay_seconds`, `outOfOrder`, `responseStatus`,
 `responseBody`, `timeout`, `error`, and `signatureMismatch` parameters.
 
+`invoice.retry` mutates the local billing graph when the runner has a billing
+service. It accepts `invoiceRef`/`invoice`, `payment_method` or `outcome`.
+Successful retries mark the invoice paid, clear `next_payment_attempt`, succeed
+the payment intent, and make the subscription active. Declined retries keep the
+invoice open, increment `attempt_count`, schedule the next attempt, and move the
+subscription to `past_due`. Profile-only runs without a billing service keep
+the older deterministic evidence-only behavior.
+
+`clock.advance` advances scenario time and then asks the billing service to
+process due local subscription periods. Active or trialing subscriptions renew
+with a paid invoice/payment intent when their period end is reached.
+Subscriptions scheduled with `cancel_at_period_end` are canceled at the period
+boundary without creating a renewal invoice. This is Billtap's local clock
+subset, not full Stripe Test Clock API parity.
+
 ## SaaS Profile Actions
 
 The representative adoption scenario is

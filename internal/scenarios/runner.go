@@ -24,9 +24,12 @@ type BillingService interface {
 	CreatePrice(context.Context, billing.Price) (billing.Price, error)
 	CreateCheckoutSession(context.Context, billing.CheckoutSession) (billing.CheckoutSession, error)
 	CompleteCheckout(context.Context, string, string) (billing.CheckoutSession, error)
+	CompleteCheckoutAt(context.Context, string, string, time.Time) (billing.CheckoutSession, error)
 	GetSubscription(context.Context, string) (billing.Subscription, error)
 	GetInvoice(context.Context, string) (billing.Invoice, error)
 	GetPaymentIntent(context.Context, string) (billing.PaymentIntent, error)
+	PayInvoice(context.Context, string, billing.InvoicePaymentOptions) (billing.InvoicePaymentResult, error)
+	AdvanceClock(context.Context, time.Time) (billing.ClockAdvanceResult, error)
 }
 
 type WebhookService interface {
@@ -207,9 +210,9 @@ func (r *Runner) runStep(ctx context.Context, scenario Scenario, step Step, stat
 	case "checkout.complete":
 		return finish(r.completeCheckout(ctx, scenario, step, params, state))
 	case "clock.advance":
-		return finish(r.advanceClock(step, params, state))
+		return finish(r.advanceClock(ctx, scenario, step, params, state))
 	case "invoice.retry":
-		return finish(r.retryInvoice(step, params, state))
+		return finish(r.retryInvoice(ctx, scenario, step, params, state))
 	case "webhook.replay":
 		return finish(r.replayWebhook(ctx, step, params, state))
 	case "webhook.deliver_duplicate", "webhook.deliver_out_of_order":
@@ -331,7 +334,7 @@ func (r *Runner) completeCheckout(ctx context.Context, scenario Scenario, step S
 	if outcome == "" {
 		outcome = "payment_succeeded"
 	}
-	session, err := r.Billing.CompleteCheckout(ctx, sessionRef, outcome)
+	session, err := r.Billing.CompleteCheckoutAt(ctx, sessionRef, outcome, state.clock.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -371,7 +374,7 @@ func (r *Runner) completeCheckout(ctx context.Context, scenario Scenario, step S
 	return output, nil
 }
 
-func (r *Runner) advanceClock(step Step, params map[string]any, state *runState) (map[string]any, error) {
+func (r *Runner) advanceClock(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
 	raw := stringValue(params, "duration")
 	before := state.clock.Now()
 	d, err := state.clock.Advance(raw)
@@ -383,18 +386,60 @@ func (r *Runner) advanceClock(step Step, params map[string]any, state *runState)
 		"after":    state.clock.Now(),
 		"duration": d.String(),
 	}
+	if r.Billing != nil {
+		advance, err := r.Billing.AdvanceClock(ctx, state.clock.Now())
+		if err != nil {
+			return nil, err
+		}
+		output["billing"] = advance
+		events, err := r.emitClockAdvanceWebhooks(ctx, scenario, advance, state)
+		if err != nil {
+			return nil, err
+		}
+		if len(events) > 0 {
+			output["events"] = events
+		}
+	}
 	state.results[step.ID] = output
 	return output, nil
 }
 
-func (r *Runner) retryInvoice(step Step, params map[string]any, state *runState) (map[string]any, error) {
+func (r *Runner) retryInvoice(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
+	if r.Billing == nil {
+		output := map[string]any{
+			"subscription":  firstString(params, "subscriptionRef", "subscription", "subscription_id"),
+			"invoice":       firstString(params, "invoiceRef", "invoice", "invoice_id"),
+			"outcome":       stringDefault(params, "outcome", "payment_succeeded"),
+			"clock":         state.clock.Now(),
+			"deterministic": true,
+			"note":          "invoice.retry recorded as scenario evidence because no billing service is configured",
+		}
+		state.results[step.ID] = output
+		return output, nil
+	}
+	invoiceID := firstString(params, "invoiceRef", "invoice", "invoice_id")
+	result, err := r.Billing.PayInvoice(ctx, invoiceID, billing.InvoicePaymentOptions{
+		Outcome:         firstString(params, "outcome", "paymentMethod", "payment_method", "payment_method_id"),
+		PaymentMethodID: firstString(params, "paymentMethod", "payment_method", "payment_method_id"),
+		At:              state.clock.Now(),
+	})
+	if err != nil {
+		return nil, err
+	}
 	output := map[string]any{
-		"subscription":  firstString(params, "subscriptionRef", "subscription", "subscription_id"),
-		"invoice":       firstString(params, "invoiceRef", "invoice", "invoice_id"),
-		"outcome":       stringDefault(params, "outcome", "payment_succeeded"),
-		"clock":         state.clock.Now(),
-		"deterministic": true,
-		"note":          "invoice.retry recorded as a deterministic scenario step; billing mutation is not available in the current service boundary",
+		"subscription":   result.Subscription,
+		"invoice":        result.Invoice,
+		"payment_intent": result.PaymentIntent,
+		"outcome":        stringDefault(params, "outcome", stringDefault(params, "payment_method", "payment_succeeded")),
+		"clock":          state.clock.Now(),
+		"deterministic":  true,
+	}
+	events, err := r.emitInvoicePaymentWebhooks(ctx, scenario, result, state)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		output["events"] = events
 	}
 	state.results[step.ID] = output
 	return output, nil
@@ -512,6 +557,65 @@ func (r *Runner) emitCheckoutWebhooks(ctx context.Context, scenario Scenario, ou
 	return events, nil
 }
 
+func (r *Runner) emitInvoicePaymentWebhooks(ctx context.Context, scenario Scenario, result billing.InvoicePaymentResult, state *runState) ([]webhooks.Event, error) {
+	if r.Webhooks == nil {
+		return nil, nil
+	}
+	var events []webhooks.Event
+	for _, item := range invoicePaymentWebhookPayloads(result) {
+		state.sequence++
+		event, _, err := r.Webhooks.CreateEvent(ctx, webhooks.EventInput{
+			Type:           item.eventType,
+			ObjectPayload:  item.payload,
+			RequestID:      "req_" + item.objectID,
+			IdempotencyKey: "billtap:" + item.eventType + ":" + item.objectID,
+			ScenarioRunID:  scenario.Name,
+			Source:         webhooks.SourceScenario,
+			Sequence:       state.sequence,
+		})
+		if err != nil {
+			return events, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
+func (r *Runner) emitClockAdvanceWebhooks(ctx context.Context, scenario Scenario, advance billing.ClockAdvanceResult, state *runState) ([]webhooks.Event, error) {
+	if r.Webhooks == nil {
+		return nil, nil
+	}
+	var events []webhooks.Event
+	for _, renewal := range advance.Renewals {
+		emitted, err := r.emitInvoicePaymentWebhooks(ctx, scenario, renewal, state)
+		if err != nil {
+			return events, err
+		}
+		events = append(events, emitted...)
+	}
+	for _, subscription := range advance.Canceled {
+		raw, err := json.Marshal(subscription)
+		if err != nil {
+			continue
+		}
+		state.sequence++
+		event, _, err := r.Webhooks.CreateEvent(ctx, webhooks.EventInput{
+			Type:           "customer.subscription.deleted",
+			ObjectPayload:  raw,
+			RequestID:      "req_" + subscription.ID,
+			IdempotencyKey: "billtap:customer.subscription.deleted:" + subscription.ID,
+			ScenarioRunID:  scenario.Name,
+			Source:         webhooks.SourceScenario,
+			Sequence:       state.sequence,
+		})
+		if err != nil {
+			return events, err
+		}
+		events = append(events, event)
+	}
+	return events, nil
+}
+
 func replayOptions(params map[string]any) webhooks.ReplayOptions {
 	delay := durationValue(params, "delay")
 	if delay == 0 {
@@ -569,6 +673,31 @@ func checkoutWebhookPayloads(result map[string]any) []webhookPayload {
 	}
 	if subscription.ID != "" {
 		appendPayload("customer.subscription.updated", subscription.ID, subscription)
+	}
+	return out
+}
+
+func invoicePaymentWebhookPayloads(result billing.InvoicePaymentResult) []webhookPayload {
+	var out []webhookPayload
+	appendPayload := func(eventType string, objectID string, value any) {
+		if eventType == "" || objectID == "" {
+			return
+		}
+		raw, err := json.Marshal(value)
+		if err == nil {
+			out = append(out, webhookPayload{eventType: eventType, objectID: objectID, payload: raw})
+		}
+	}
+	if result.PaymentIntent.ID != "" {
+		appendPayload(paymentIntentTerminalEvent(result.PaymentIntent.Status), result.PaymentIntent.ID, result.PaymentIntent)
+	}
+	if result.Invoice.ID != "" {
+		for _, eventType := range invoiceTerminalEvents(result.Invoice.Status, result.PaymentIntent.Status) {
+			appendPayload(eventType, result.Invoice.ID, result.Invoice)
+		}
+	}
+	if result.Subscription.ID != "" {
+		appendPayload("customer.subscription.updated", result.Subscription.ID, result.Subscription)
 	}
 	return out
 }

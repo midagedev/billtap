@@ -334,19 +334,8 @@ func (s *SQLiteStore) UpdateSubscription(ctx context.Context, sub billing.Subscr
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `UPDATE subscriptions
-		SET status = ?, items = ?, current_period_start = ?, current_period_end = ?, cancel_at_period_end = ?, canceled_at = ?, latest_invoice_id = ?, metadata = ?
-		WHERE id = ?`,
-		sub.Status, encodeLineItems(sub.Items), encodeTime(sub.CurrentPeriodStart), encodeTime(sub.CurrentPeriodEnd), boolInt(sub.CancelAtPeriodEnd), encodeOptionalTime(sub.CanceledAt), sub.LatestInvoiceID, encodeMap(sub.Metadata), sub.ID)
-	if err != nil {
+	if err := updateSubscriptionTx(ctx, tx, sub); err != nil {
 		return billing.Subscription{}, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return billing.Subscription{}, err
-	}
-	if changed == 0 {
-		return billing.Subscription{}, billing.ErrNotFound
 	}
 	for _, entry := range timeline {
 		if err := s.insertTimeline(ctx, tx, entry); err != nil {
@@ -357,6 +346,60 @@ func (s *SQLiteStore) UpdateSubscription(ctx context.Context, sub billing.Subscr
 		return billing.Subscription{}, err
 	}
 	return s.GetSubscription(ctx, sub.ID)
+}
+
+func updateSubscriptionTx(ctx context.Context, tx *sql.Tx, sub billing.Subscription) error {
+	result, err := tx.ExecContext(ctx, `UPDATE subscriptions
+		SET status = ?, items = ?, current_period_start = ?, current_period_end = ?, cancel_at_period_end = ?, canceled_at = ?, latest_invoice_id = ?, metadata = ?
+		WHERE id = ?`,
+		sub.Status, encodeLineItems(sub.Items), encodeTime(sub.CurrentPeriodStart), encodeTime(sub.CurrentPeriodEnd), boolInt(sub.CancelAtPeriodEnd), encodeOptionalTime(sub.CanceledAt), sub.LatestInvoiceID, encodeMap(sub.Metadata), sub.ID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return billing.ErrNotFound
+	}
+	return nil
+}
+
+func updateInvoiceTx(ctx context.Context, tx *sql.Tx, invoice billing.Invoice) error {
+	result, err := tx.ExecContext(ctx, `UPDATE invoices
+		SET status = ?, currency = ?, subtotal = ?, total = ?, amount_due = ?, amount_paid = ?, attempt_count = ?, next_payment_attempt = ?, payment_intent_id = ?
+		WHERE id = ?`,
+		invoice.Status, invoice.Currency, invoice.Subtotal, invoice.Total, invoice.AmountDue, invoice.AmountPaid, invoice.AttemptCount, encodeOptionalTime(invoice.NextPaymentAttempt), invoice.PaymentIntentID, invoice.ID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return billing.ErrNotFound
+	}
+	return nil
+}
+
+func updatePaymentIntentTx(ctx context.Context, tx *sql.Tx, pi billing.PaymentIntent) error {
+	result, err := tx.ExecContext(ctx, `UPDATE payment_intents
+		SET customer_id = ?, invoice_id = ?, amount = ?, currency = ?, status = ?, capture_method = ?, failure_code = ?, failure_decline_code = ?, failure_message = ?, payment_method_id = ?
+		WHERE id = ?`,
+		encodeOptionalString(pi.CustomerID), encodeOptionalString(pi.InvoiceID), pi.Amount, pi.Currency, pi.Status, pi.CaptureMethod, pi.FailureCode, pi.DeclineCode, pi.FailureMessage, pi.PaymentMethodID, pi.ID)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return billing.ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStore) GetInvoice(ctx context.Context, id string) (billing.Invoice, error) {
@@ -413,6 +456,88 @@ func (s *SQLiteStore) ListInvoicesFiltered(ctx context.Context, filter billing.I
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) UpdateInvoicePayment(ctx context.Context, sub billing.Subscription, invoice billing.Invoice, pi billing.PaymentIntent, timeline []billing.TimelineEntry) (billing.Subscription, billing.Invoice, billing.PaymentIntent, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	defer tx.Rollback()
+
+	if err := updateSubscriptionTx(ctx, tx, sub); err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	if err := updateInvoiceTx(ctx, tx, invoice); err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	if err := updatePaymentIntentTx(ctx, tx, pi); err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	updatedSub, err := s.GetSubscription(ctx, sub.ID)
+	if err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	updatedInvoice, err := s.GetInvoice(ctx, invoice.ID)
+	if err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	updatedPI, err := s.GetPaymentIntent(ctx, pi.ID)
+	if err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	return updatedSub, updatedInvoice, updatedPI, nil
+}
+
+func (s *SQLiteStore) RecordSubscriptionRenewal(ctx context.Context, sub billing.Subscription, invoice billing.Invoice, pi billing.PaymentIntent, timeline []billing.TimelineEntry) (billing.Subscription, billing.Invoice, billing.PaymentIntent, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	defer tx.Rollback()
+
+	if err := updateSubscriptionTx(ctx, tx, sub); err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, subscription_id, status, currency, subtotal, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		invoice.ID, invoice.CustomerID, invoice.SubscriptionID, invoice.Status, invoice.Currency, invoice.Subtotal, invoice.Total, invoice.AmountDue, invoice.AmountPaid, invoice.AttemptCount, encodeOptionalTime(invoice.NextPaymentAttempt), invoice.PaymentIntentID, encodeTime(invoice.CreatedAt)); err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO payment_intents (id, customer_id, invoice_id, amount, currency, status, capture_method, failure_code, failure_decline_code, failure_message, payment_method_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		pi.ID, encodeOptionalString(pi.CustomerID), encodeOptionalString(pi.InvoiceID), pi.Amount, pi.Currency, pi.Status, pi.CaptureMethod, pi.FailureCode, pi.DeclineCode, pi.FailureMessage, pi.PaymentMethodID, encodeTime(pi.CreatedAt)); err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	updatedSub, err := s.GetSubscription(ctx, sub.ID)
+	if err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	createdInvoice, err := s.GetInvoice(ctx, invoice.ID)
+	if err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	createdPI, err := s.GetPaymentIntent(ctx, pi.ID)
+	if err != nil {
+		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
+	}
+	return updatedSub, createdInvoice, createdPI, nil
+}
+
 func (s *SQLiteStore) CreatePaymentIntent(ctx context.Context, pi billing.PaymentIntent) (billing.PaymentIntent, error) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO payment_intents (id, customer_id, invoice_id, amount, currency, status, capture_method, failure_code, failure_decline_code, failure_message, payment_method_id, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -438,19 +563,8 @@ func (s *SQLiteStore) UpdatePaymentIntent(ctx context.Context, pi billing.Paymen
 	}
 	defer tx.Rollback()
 
-	result, err := tx.ExecContext(ctx, `UPDATE payment_intents
-		SET customer_id = ?, invoice_id = ?, amount = ?, currency = ?, status = ?, capture_method = ?, failure_code = ?, failure_decline_code = ?, failure_message = ?, payment_method_id = ?
-		WHERE id = ?`,
-		encodeOptionalString(pi.CustomerID), encodeOptionalString(pi.InvoiceID), pi.Amount, pi.Currency, pi.Status, pi.CaptureMethod, pi.FailureCode, pi.DeclineCode, pi.FailureMessage, pi.PaymentMethodID, pi.ID)
-	if err != nil {
+	if err := updatePaymentIntentTx(ctx, tx, pi); err != nil {
 		return billing.PaymentIntent{}, err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return billing.PaymentIntent{}, err
-	}
-	if changed == 0 {
-		return billing.PaymentIntent{}, billing.ErrNotFound
 	}
 	for _, entry := range timeline {
 		if err := s.insertTimeline(ctx, tx, entry); err != nil {

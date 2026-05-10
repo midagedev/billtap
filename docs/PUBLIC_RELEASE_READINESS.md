@@ -81,8 +81,8 @@ The scorecard evidence should state:
 
 Current scorecard evidence on 2026-05-10:
 
-- Scorecard version: `l3-public-readiness-v6`
-- Scorecard result: `imported=44 skipped=1 unsupported=1 mismatch=0 error=0`
+- Scorecard version: `l3-public-readiness-v7`
+- Scorecard result: `imported=49 skipped=1 unsupported=1 mismatch=0 error=0`
 - Apache-2.0 `LICENSE`, `NOTICE`, `package.json`, and `package-lock.json`
   metadata are aligned.
 

@@ -44,6 +44,8 @@ type Repository interface {
 	GetInvoice(context.Context, string) (Invoice, error)
 	ListInvoices(context.Context) ([]Invoice, error)
 	ListInvoicesFiltered(context.Context, InvoiceFilter) ([]Invoice, error)
+	UpdateInvoicePayment(context.Context, Subscription, Invoice, PaymentIntent, []TimelineEntry) (Subscription, Invoice, PaymentIntent, error)
+	RecordSubscriptionRenewal(context.Context, Subscription, Invoice, PaymentIntent, []TimelineEntry) (Subscription, Invoice, PaymentIntent, error)
 	GetPaymentIntent(context.Context, string) (PaymentIntent, error)
 	CreatePaymentIntent(context.Context, PaymentIntent) (PaymentIntent, error)
 	UpdatePaymentIntent(context.Context, PaymentIntent, []TimelineEntry) (PaymentIntent, error)
@@ -198,6 +200,10 @@ func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcom
 	return s.completeCheckout(ctx, sessionID, outcome, CheckoutCompletionOptions{})
 }
 
+func (s *Service) CompleteCheckoutAt(ctx context.Context, sessionID string, outcome string, at time.Time) (CheckoutSession, error) {
+	return s.completeCheckout(ctx, sessionID, outcome, CheckoutCompletionOptions{At: at})
+}
+
 func (s *Service) CompleteCheckoutWithOptions(ctx context.Context, sessionID string, outcome string, opts CheckoutCompletionOptions) (CheckoutSession, error) {
 	return s.completeCheckout(ctx, sessionID, outcome, opts)
 }
@@ -230,6 +236,9 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	}
 
 	now := s.now()
+	if !opts.At.IsZero() {
+		now = opts.At
+	}
 	periodEnd := now.AddDate(0, 1, 0)
 	paid := outcomeSpec.Paid
 	trialing := paid && session.TrialPeriodDays > 0
@@ -389,6 +398,127 @@ func (s *Service) GetInvoice(ctx context.Context, id string) (Invoice, error) {
 
 func (s *Service) ListInvoices(ctx context.Context) ([]Invoice, error) {
 	return s.repo.ListInvoices(ctx)
+}
+
+func (s *Service) PayInvoice(ctx context.Context, invoiceID string, opts InvoicePaymentOptions) (InvoicePaymentResult, error) {
+	if strings.TrimSpace(invoiceID) == "" {
+		return InvoicePaymentResult{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
+	}
+	at := opts.At
+	if at.IsZero() {
+		at = s.now()
+	}
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	subscription, err := s.repo.GetSubscription(ctx, invoice.SubscriptionID)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	intent, err := s.repo.GetPaymentIntent(ctx, invoice.PaymentIntentID)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	if invoice.Status != "open" {
+		return InvoicePaymentResult{}, fmt.Errorf("%w: status must be open", ErrInvalidInput)
+	}
+
+	outcome := firstNonEmpty(opts.Outcome, opts.PaymentMethodID, "payment_succeeded")
+	if opts.PaidOutOfBand {
+		outcome = "payment_succeeded"
+	}
+	spec, ok := intentOutcomeSpec(outcome)
+	if !ok {
+		return InvoicePaymentResult{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
+	}
+	if opts.PaymentMethodID != "" {
+		intent.PaymentMethodID = opts.PaymentMethodID
+	}
+	intent.PaymentMethodID = firstNonEmpty(intent.PaymentMethodID, spec.PaymentMethodID)
+	intent.Status = spec.PaymentIntentStatus
+	intent.FailureCode = spec.FailureCode
+	intent.DeclineCode = spec.DeclineCode
+	intent.FailureMessage = spec.FailureMessage
+	invoice.AttemptCount++
+	if invoice.AttemptCount <= 0 {
+		invoice.AttemptCount = 1
+	}
+
+	success := intent.Status == "succeeded"
+	if success {
+		invoice.Status = "paid"
+		invoice.AmountPaid = invoice.Total
+		invoice.AmountDue = 0
+		invoice.NextPaymentAttempt = nil
+		intent.FailureCode = ""
+		intent.DeclineCode = ""
+		intent.FailureMessage = ""
+		if subscription.Status != "canceled" {
+			subscription.Status = "active"
+		}
+	} else {
+		invoice.Status = "open"
+		invoice.AmountPaid = 0
+		invoice.AmountDue = invoice.Total
+		nextAttempt := at.Add(24 * time.Hour)
+		invoice.NextPaymentAttempt = &nextAttempt
+		if subscription.Status != "canceled" {
+			subscription.Status = "past_due"
+		}
+	}
+	subscription.Metadata = copyMap(subscription.Metadata)
+	subscription.Metadata["billtap_last_invoice_payment_attempt"] = at.Format(time.RFC3339Nano)
+	subscription.Metadata["billtap_last_invoice_payment_outcome"] = outcome
+
+	timeline := invoicePaymentTimeline(subscription, invoice, intent, success, at)
+	subscription, invoice, intent, err = s.repo.UpdateInvoicePayment(ctx, subscription, invoice, intent, timeline)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	return InvoicePaymentResult{Invoice: invoice, Subscription: subscription, PaymentIntent: intent}, nil
+}
+
+func (s *Service) AdvanceClock(ctx context.Context, at time.Time) (ClockAdvanceResult, error) {
+	if at.IsZero() {
+		at = s.now()
+	}
+	result := ClockAdvanceResult{Object: "clock_advance", AdvancedTo: at}
+	subscriptions, err := s.repo.ListSubscriptions(ctx)
+	if err != nil {
+		return result, err
+	}
+	for _, sub := range subscriptions {
+		if sub.Status == "canceled" {
+			result.Skipped = append(result.Skipped, sub.ID)
+			continue
+		}
+		current := sub
+		for cycles := 0; !current.CurrentPeriodEnd.IsZero() && !current.CurrentPeriodEnd.After(at) && cycles < 24; cycles++ {
+			result.Processed++
+			if current.CancelAtPeriodEnd {
+				canceled, err := s.cancelSubscriptionAtClock(ctx, current, at)
+				if err != nil {
+					return result, err
+				}
+				result.Canceled = append(result.Canceled, canceled)
+				result.CanceledCount++
+				break
+			}
+			if current.Status != "active" && current.Status != "trialing" {
+				result.Skipped = append(result.Skipped, current.ID)
+				break
+			}
+			renewal, err := s.renewSubscription(ctx, current, current.CurrentPeriodEnd)
+			if err != nil {
+				return result, err
+			}
+			result.Renewals = append(result.Renewals, renewal)
+			result.Renewed++
+			current = renewal.Subscription
+		}
+	}
+	return result, nil
 }
 
 func (s *Service) GetPaymentIntent(ctx context.Context, id string) (PaymentIntent, error) {
@@ -853,6 +983,178 @@ func (s *Service) SimulatePaymentMethodUpdate(ctx context.Context, customerID st
 	return result, nil
 }
 
+func (s *Service) cancelSubscriptionAtClock(ctx context.Context, sub Subscription, at time.Time) (Subscription, error) {
+	sub.Status = "canceled"
+	sub.CancelAtPeriodEnd = false
+	if sub.CanceledAt == nil {
+		canceledAt := at
+		sub.CanceledAt = &canceledAt
+	}
+	sub.Metadata = copyMap(sub.Metadata)
+	sub.Metadata["billtap_clock_canceled_at"] = at.Format(time.RFC3339Nano)
+	delete(sub.Metadata, "cancel_at")
+	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{billingTimelineEntry(
+		"clock_cancel_"+sub.ID+"_"+at.Format(time.RFC3339Nano),
+		"customer.subscription.deleted",
+		"Subscription canceled at period end",
+		ObjectSubscription,
+		sub.ID,
+		sub.CustomerID,
+		"",
+		sub.ID,
+		sub.LatestInvoiceID,
+		"",
+		map[string]string{"source": "clock.advance", "status": sub.Status},
+		at,
+	)})
+}
+
+func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at time.Time) (InvoicePaymentResult, error) {
+	total, currency, err := s.subscriptionTotal(ctx, sub.Items)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	periodStart := sub.CurrentPeriodEnd
+	if periodStart.IsZero() {
+		periodStart = at
+	}
+	periodEnd, err := s.nextPeriodEnd(ctx, sub.Items, periodStart)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	sub.Status = "active"
+	sub.CurrentPeriodStart = periodStart
+	sub.CurrentPeriodEnd = periodEnd
+	sub.Metadata = copyMap(sub.Metadata)
+	sub.Metadata["billtap_last_renewal_at"] = at.Format(time.RFC3339Nano)
+	sub.Metadata["billtap_last_renewal_period_start"] = periodStart.Format(time.RFC3339Nano)
+	sub.Metadata["billtap_last_renewal_period_end"] = periodEnd.Format(time.RFC3339Nano)
+
+	invoice := Invoice{
+		ID:             id("in"),
+		Object:         ObjectInvoice,
+		CustomerID:     sub.CustomerID,
+		SubscriptionID: sub.ID,
+		Status:         "paid",
+		Currency:       currency,
+		Subtotal:       total,
+		Total:          total,
+		AmountDue:      0,
+		AmountPaid:     total,
+		AttemptCount:   1,
+		CreatedAt:      at,
+	}
+	intent := PaymentIntent{
+		ID:              id("pi"),
+		Object:          ObjectPaymentIntent,
+		CustomerID:      sub.CustomerID,
+		InvoiceID:       invoice.ID,
+		Amount:          total,
+		Currency:        currency,
+		Status:          "succeeded",
+		CaptureMethod:   "automatic",
+		PaymentMethodID: "pm_card_visa",
+		CreatedAt:       at,
+	}
+	invoice.PaymentIntentID = intent.ID
+	sub.LatestInvoiceID = invoice.ID
+
+	timeline := []TimelineEntry{
+		billingTimelineEntry("renewal_invoice_created_"+invoice.ID, "invoice.created", "Renewal invoice created", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
+		billingTimelineEntry("renewal_invoice_finalized_"+invoice.ID, "invoice.finalized", "Renewal invoice finalized", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
+		billingTimelineEntry("renewal_payment_intent_created_"+intent.ID, "payment_intent.created", "Renewal payment intent created", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": intent.Status}, at),
+		billingTimelineEntry("renewal_payment_intent_succeeded_"+intent.ID, "payment_intent.succeeded", "Renewal payment intent succeeded", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": intent.Status}, at),
+		billingTimelineEntry("renewal_invoice_payment_succeeded_"+invoice.ID, "invoice.payment_succeeded", "Renewal invoice payment succeeded", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
+		billingTimelineEntry("renewal_invoice_paid_"+invoice.ID, "invoice.paid", "Renewal invoice paid", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
+		billingTimelineEntry("renewal_subscription_updated_"+sub.ID+"_"+invoice.ID, "customer.subscription.updated", "Subscription renewed", ObjectSubscription, sub.ID, sub.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": sub.Status}, at),
+	}
+
+	sub, invoice, intent, err = s.repo.RecordSubscriptionRenewal(ctx, sub, invoice, intent, timeline)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	return InvoicePaymentResult{Invoice: invoice, Subscription: sub, PaymentIntent: intent}, nil
+}
+
+func (s *Service) subscriptionTotal(ctx context.Context, items []LineItem) (int64, string, error) {
+	total := int64(0)
+	currency := "usd"
+	for _, item := range items {
+		price, err := s.repo.GetPrice(ctx, item.PriceID)
+		if err != nil {
+			return 0, "", err
+		}
+		if price.Currency != "" {
+			currency = price.Currency
+		}
+		quantity := item.Quantity
+		if quantity <= 0 {
+			quantity = 1
+		}
+		total += price.UnitAmount * quantity
+	}
+	return total, currency, nil
+}
+
+func (s *Service) nextPeriodEnd(ctx context.Context, items []LineItem, start time.Time) (time.Time, error) {
+	if len(items) == 0 {
+		return start.AddDate(0, 1, 0), nil
+	}
+	price, err := s.repo.GetPrice(ctx, items[0].PriceID)
+	if err != nil {
+		return time.Time{}, err
+	}
+	count := price.RecurringIntervalCount
+	if count <= 0 {
+		count = 1
+	}
+	switch price.RecurringInterval {
+	case "day":
+		return start.AddDate(0, 0, count), nil
+	case "week":
+		return start.AddDate(0, 0, 7*count), nil
+	case "year":
+		return start.AddDate(count, 0, 0), nil
+	default:
+		return start.AddDate(0, count, 0), nil
+	}
+}
+
+func invoicePaymentTimeline(sub Subscription, invoice Invoice, intent PaymentIntent, success bool, at time.Time) []TimelineEntry {
+	source := "invoice.pay"
+	entries := []TimelineEntry{
+		billingTimelineEntry("invoice_pay_payment_intent_"+intent.ID+"_"+at.Format(time.RFC3339Nano), paymentIntentEvent(intent.Status), "Invoice payment intent "+intent.Status, ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": intent.Status}, at),
+	}
+	if success {
+		entries = append(entries,
+			billingTimelineEntry("invoice_pay_succeeded_"+invoice.ID+"_"+at.Format(time.RFC3339Nano), "invoice.payment_succeeded", "Invoice payment succeeded", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
+			billingTimelineEntry("invoice_paid_"+invoice.ID+"_"+at.Format(time.RFC3339Nano), "invoice.paid", "Invoice paid", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
+		)
+	} else {
+		entries = append(entries, billingTimelineEntry("invoice_pay_failed_"+invoice.ID+"_"+at.Format(time.RFC3339Nano), "invoice.payment_failed", "Invoice payment failed", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at))
+	}
+	entries = append(entries, billingTimelineEntry("invoice_pay_subscription_"+sub.ID+"_"+at.Format(time.RFC3339Nano), "customer.subscription.updated", "Subscription updated after invoice payment attempt", ObjectSubscription, sub.ID, sub.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": sub.Status}, at))
+	return entries
+}
+
+func billingTimelineEntry(seed, action, message, objectType, objectID, customerID, checkoutSessionID, subscriptionID, invoiceID, paymentIntentID string, data map[string]string, at time.Time) TimelineEntry {
+	return TimelineEntry{
+		ID:                "tl_" + sanitizeID(seed),
+		Object:            ObjectTimelineEntry,
+		Action:            action,
+		Message:           message,
+		ObjectType:        objectType,
+		ObjectID:          objectID,
+		CustomerID:        customerID,
+		CheckoutSessionID: checkoutSessionID,
+		SubscriptionID:    subscriptionID,
+		InvoiceID:         invoiceID,
+		PaymentIntentID:   paymentIntentID,
+		Data:              compactMetadata(data),
+		CreatedAt:         at,
+	}
+}
+
 type CheckoutCompletion struct {
 	SessionID     string
 	SessionStatus string
@@ -869,6 +1171,7 @@ type CheckoutCompletionOptions struct {
 	SubscriptionID  string
 	InvoiceID       string
 	PaymentIntentID string
+	At              time.Time
 }
 
 type TimelineFilter struct {

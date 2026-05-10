@@ -11,7 +11,7 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `46 / 619` operations, `7.4%`, using Stripe OpenAPI
+- **Current baseline:** `47 / 619` operations, `7.6%`, using Stripe OpenAPI
   `2026-04-22.dahlia`.
 - **Minimum target count:** `558 / 619` operations at `L1` or higher.
 - **Remaining inventory-only budget:** at most `61 / 619` operations at `L0`.
@@ -58,7 +58,7 @@ Latest measured baseline from `stripe/openapi` latest on 2026-05-10:
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | P0 | webhooks | 9 | 7 | 77.8% | 9 | Raise missing event/webhook routes to `L5-L6`. |
 | P0 | checkout | 6 | 3 | 50.0% | 6 | Close checkout route gaps and SDK smoke. |
-| P0 | billing | 39 | 10 | 25.6% | 36 | Add invoices, schedules, test clocks, coupons, discounts, credit notes. |
+| P0 | billing | 39 | 11 | 28.2% | 36 | Add remaining invoice, schedule, test clock, coupon, discount, and credit note behavior. |
 | P0 | billing_portal | 5 | 1 | 20.0% | 5 | Add portal configurations and session retrieval fixtures. |
 | P1 | catalog | 54 | 9 | 16.7% | 49 | Add low-state product/price/coupon/promotion/tax fixtures and validation. |
 | P1 | customers | 31 | 4 | 12.9% | 28 | Add search, sources, tax ids, cash balance, and validation fixtures. |
@@ -82,7 +82,7 @@ Each chunk follows PR -> review -> fix -> merge.
 | T6 | Connect smoke L2 | +50 ops | Accounts, account links/sessions, application fees, transfers, payouts, `Stripe-Account` traces. |
 | T7 | Payments and setup breadth | +29 ops | PaymentMethod create/retrieve/list/update/cancel fixture/state coverage and remaining PaymentIntent/SetupIntent adjunct routes. |
 | T8 | Payment history L2-L3 | +30 ops | Charges, refunds, balance transactions, disputes, debug bundle evidence. |
-| T9 | Billing lifecycle depth | +38 ops | Schedules, invoice items, trials, renewals, coupons, discounts, credit notes, test clocks. |
+| T9 | Billing lifecycle depth | +37 ops | Schedules, invoice items, trials, renewals, coupons, discounts, credit notes, test clocks. |
 | T10 | SDK/adoption matrix | 0 ops | Node/Go/Java/Python/Ruby smoke and adoption-style reports that promote existing operations to `L6`. |
 
 The deltas are planning targets, not claims. Each PR records the actual
@@ -101,7 +101,7 @@ into tested `L1+` claims.
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
 coverage must come from T3-T9. The planned T3-T9 delta is `+529` operations,
-which would move the baseline from `46 / 619` to `575 / 619`, leaving a small
+which would move the baseline from `47 / 619` to `576 / 619`, leaving a small
 buffer above the `558 / 619` target.
 
 ## Derived Gate Checks
