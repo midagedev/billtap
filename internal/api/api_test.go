@@ -1036,6 +1036,53 @@ func TestIdempotencyKeySimulation(t *testing.T) {
 	})
 }
 
+func TestStripeProtocolCompatibilityBaseline(t *testing.T) {
+	handler := newTestHandler(t)
+
+	status, body, headers := postFormStatusWithResponseHeaders(t, handler, "/v1/customers", url.Values{
+		"email":    {"protocol@example.test"},
+		"expand[]": {"subscriptions"},
+	}, map[string]string{"Request-Id": "req_protocol_expand"})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200", status, body)
+	}
+	if got := headers.Get("Request-Id"); got != "req_protocol_expand" {
+		t.Fatalf("Request-Id response header = %q, want caller request id", got)
+	}
+
+	status, body = postFormStatus(t, handler, "/v1/products", url.Values{
+		"name":      {"Protocol Product"},
+		"expand[0]": {"default_price"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want expand[0] accepted and ignored", status, body)
+	}
+
+	list := getJSON[struct {
+		Object  string `json:"object"`
+		URL     string `json:"url"`
+		HasMore bool   `json:"has_more"`
+		Data    []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/customers?limit=1&expand[]=data.subscriptions")
+	if list.Object != "list" || list.URL != "/v1/customers" || list.HasMore || len(list.Data) != 1 {
+		t.Fatalf("list envelope = %#v, want Stripe-style list envelope", list)
+	}
+
+	traces := getJSON[struct {
+		Object string                     `json:"object"`
+		Data   []diagnostics.RequestTrace `json:"data"`
+	}](t, handler, "/api/request-traces?requestId=req_protocol_expand")
+	if traces.Object != "list" || len(traces.Data) != 1 {
+		t.Fatalf("request traces = %#v, want trace filtered by request id", traces)
+	}
+	trace := traces.Data[0]
+	if trace.RequestID != "req_protocol_expand" || trace.ResponseObject != "customer" || !strings.Contains(trace.RequestBody, "expand%5B%5D=subscriptions") {
+		t.Fatalf("trace = %#v, want request id, response object, and expand request evidence", trace)
+	}
+}
+
 func TestDashboardObjectsAndDebugBundle(t *testing.T) {
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -1867,6 +1914,12 @@ func postFormStatus(t *testing.T, handler http.Handler, path string, values url.
 
 func postFormStatusWithHeaders(t *testing.T, handler http.Handler, path string, values url.Values, headers map[string]string) (int, string) {
 	t.Helper()
+	status, body, _ := postFormStatusWithResponseHeaders(t, handler, path, values, headers)
+	return status, body
+}
+
+func postFormStatusWithResponseHeaders(t *testing.T, handler http.Handler, path string, values url.Values, headers map[string]string) (int, string, http.Header) {
+	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, path, stringsReader(values.Encode()))
 	req.Host = "billtap.test"
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
@@ -1875,7 +1928,7 @@ func postFormStatusWithHeaders(t *testing.T, handler http.Handler, path string, 
 	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	return rec.Code, rec.Body.String()
+	return rec.Code, rec.Body.String(), rec.Header()
 }
 
 func getJSON[T any](t *testing.T, handler http.Handler, path string) T {

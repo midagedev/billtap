@@ -21,7 +21,7 @@ import (
 )
 
 const (
-	ScorecardVersion = "l3-public-readiness-v3"
+	ScorecardVersion = "l3-public-readiness-v4"
 	DefaultOutputDir = "dist/compatibility"
 )
 

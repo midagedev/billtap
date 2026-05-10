@@ -76,12 +76,10 @@ The scorecard evidence should state:
 - imported/skipped/unsupported/mismatch/error counts
 - whether `passed` is `true`
 
-Current local evidence on 2026-05-09:
+Current scorecard evidence on 2026-05-10:
 
-- Scorecard version: `l3-public-readiness-v3`
-- Scorecard result: `imported=29 skipped=1 unsupported=1 mismatch=0 error=0`
-- Local release checks listed in `docs/GATE_STATUS.md` passed on branch
-  `codex/apache-license-release-readiness`.
+- Scorecard version: `l3-public-readiness-v4`
+- Scorecard result: `imported=30 skipped=1 unsupported=1 mismatch=0 error=0`
 - Apache-2.0 `LICENSE`, `NOTICE`, `package.json`, and `package-lock.json`
   metadata are aligned.
 

@@ -38,7 +38,7 @@ func TestWriteArtifactsGeneratesPassingScorecard(t *testing.T) {
 
 	jsonPath := filepath.Join(dir, "compatibility-scorecard.json")
 	mdPath := filepath.Join(dir, "compatibility-scorecard.md")
-	if !fileContains(t, jsonPath, `"scorecard_version": "l3-public-readiness-v3"`) {
+	if !fileContains(t, jsonPath, `"scorecard_version": "l3-public-readiness-v4"`) {
 		t.Fatalf("JSON scorecard missing version")
 	}
 	if !fileContains(t, jsonPath, `"mismatch": 0`) || !fileContains(t, jsonPath, `"error": 0`) {
@@ -46,6 +46,7 @@ func TestWriteArtifactsGeneratesPassingScorecard(t *testing.T) {
 	}
 	for _, id := range []string{
 		`"id": "prices.create.invalid_json_amount_type"`,
+		`"id": "customers.create.expand_accepted"`,
 		`"id": "checkout.sessions.create.java_sdk_optional_params"`,
 		`"id": "subscription_items.create.invalid_quantity"`,
 		`"id": "checkout.complete.processing_error_outcome"`,
