@@ -260,16 +260,17 @@ func (s *SQLiteStore) RecordCheckoutCompletion(ctx context.Context, c billing.Ch
 	if _, err := tx.ExecContext(ctx, `UPDATE checkout_sessions
 		SET status = ?, payment_status = ?, subscription_id = ?, invoice_id = ?, payment_intent_id = ?, completed_at = ?
 		WHERE id = ?`,
-		"complete", paymentStatus(c), c.Subscription.ID, c.Invoice.ID, c.PaymentIntent.ID, encodeTime(c.CompletedAt), c.SessionID); err != nil {
+		firstNonEmpty(c.SessionStatus, "complete"), paymentStatus(c), c.Subscription.ID, c.Invoice.ID, c.PaymentIntent.ID, encodeTime(c.CompletedAt), c.SessionID); err != nil {
 		return billing.CheckoutSession{}, err
 	}
-	if err := s.insertTimeline(ctx, tx, timelineCreate(c.SessionID+"_"+c.Outcome, "checkout.session.completed", "Checkout completed with "+c.Outcome, billing.ObjectCheckoutSession, c.SessionID, c.Subscription.CustomerID, c.SessionID, c.Subscription.ID, c.Invoice.ID, c.PaymentIntent.ID, map[string]string{"outcome": c.Outcome}, c.CompletedAt)); err != nil {
+	checkoutEvent := firstNonEmpty(c.CheckoutEvent, "checkout.session.completed")
+	if err := s.insertTimeline(ctx, tx, timelineCreate(c.SessionID+"_"+c.Outcome, checkoutEvent, checkoutMessage(checkoutEvent, c.Outcome), billing.ObjectCheckoutSession, c.SessionID, c.Subscription.CustomerID, c.SessionID, c.Subscription.ID, c.Invoice.ID, c.PaymentIntent.ID, map[string]string{"outcome": c.Outcome}, c.CompletedAt)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
 	if err := s.insertTimeline(ctx, tx, timelineCreate(c.Subscription.ID, "customer.subscription.created", "Subscription created from checkout", billing.ObjectSubscription, c.Subscription.ID, c.Subscription.CustomerID, c.SessionID, c.Subscription.ID, c.Invoice.ID, c.PaymentIntent.ID, map[string]string{"status": c.Subscription.Status}, c.CompletedAt)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
-	if err := s.insertTimeline(ctx, tx, timelineCreate(c.Invoice.ID, invoiceEvent(c.Invoice.Status), "Invoice "+c.Invoice.Status, billing.ObjectInvoice, c.Invoice.ID, c.Invoice.CustomerID, c.SessionID, c.Subscription.ID, c.Invoice.ID, c.PaymentIntent.ID, map[string]string{"status": c.Invoice.Status}, c.CompletedAt)); err != nil {
+	if err := s.insertTimeline(ctx, tx, timelineCreate(c.Invoice.ID, invoiceEvent(c.Invoice.Status, c.PaymentIntent.Status), "Invoice "+c.Invoice.Status, billing.ObjectInvoice, c.Invoice.ID, c.Invoice.CustomerID, c.SessionID, c.Subscription.ID, c.Invoice.ID, c.PaymentIntent.ID, map[string]string{"status": c.Invoice.Status}, c.CompletedAt)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
 	if err := s.insertTimeline(ctx, tx, timelineCreate(c.PaymentIntent.ID, paymentIntentEvent(c.PaymentIntent.Status), "Payment intent "+c.PaymentIntent.Status, billing.ObjectPaymentIntent, c.PaymentIntent.ID, c.PaymentIntent.CustomerID, c.SessionID, c.Subscription.ID, c.Invoice.ID, c.PaymentIntent.ID, map[string]string{"status": c.PaymentIntent.Status}, c.CompletedAt)); err != nil {
@@ -745,6 +746,9 @@ func boolInt(v bool) int {
 }
 
 func paymentStatus(c billing.CheckoutCompletion) string {
+	if c.PaymentStatus != "" {
+		return c.PaymentStatus
+	}
 	if c.Subscription.Status == "trialing" && c.Invoice.Total == 0 {
 		return "no_payment_required"
 	}
@@ -754,18 +758,45 @@ func paymentStatus(c billing.CheckoutCompletion) string {
 	return "unpaid"
 }
 
-func invoiceEvent(status string) string {
+func invoiceEvent(status string, paymentIntentStatus string) string {
 	if status == "paid" {
 		return "invoice.payment_succeeded"
+	}
+	if status == "void" {
+		return "invoice.voided"
+	}
+	if paymentIntentStatus == "processing" {
+		return "invoice.finalized"
 	}
 	return "invoice.payment_failed"
 }
 
 func paymentIntentEvent(status string) string {
-	if status == "succeeded" {
+	switch status {
+	case "succeeded":
 		return "payment_intent.succeeded"
+	case "processing":
+		return "payment_intent.processing"
+	case "canceled":
+		return "payment_intent.canceled"
 	}
 	return "payment_intent.payment_failed"
+}
+
+func checkoutMessage(eventType string, outcome string) string {
+	if eventType == "checkout.session.expired" {
+		return "Checkout expired with " + outcome
+	}
+	return "Checkout completed with " + outcome
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func sanitizeID(raw string) string {

@@ -234,6 +234,10 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	if trialing {
 		invoiceTotal = 0
 	}
+	invoiceAttemptCount := 1
+	if outcomeSpec.InvoiceAttemptCount != nil {
+		invoiceAttemptCount = *outcomeSpec.InvoiceAttemptCount
+	}
 
 	sub := Subscription{
 		ID:                 firstNonEmpty(opts.SubscriptionID, id("sub")),
@@ -277,12 +281,18 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		CreatedAt:       now,
 	}
 	if !paid {
-		nextAttempt := now.Add(24 * time.Hour)
-		sub.Status = "incomplete"
-		invoice.Status = "open"
+		sub.Status = firstNonEmpty(outcomeSpec.SubscriptionStatus, "incomplete")
+		invoice.Status = firstNonEmpty(outcomeSpec.InvoiceStatus, "open")
 		invoice.AmountDue = total
 		invoice.AmountPaid = 0
-		invoice.NextPaymentAttempt = &nextAttempt
+		invoice.AttemptCount = invoiceAttemptCount
+		if invoice.Status == "void" {
+			invoice.AmountDue = 0
+		}
+		if outcomeSpec.NextPaymentAttempt {
+			nextAttempt := now.Add(24 * time.Hour)
+			invoice.NextPaymentAttempt = &nextAttempt
+		}
 		intent.FailureCode = outcomeSpec.FailureCode
 		intent.DeclineCode = outcomeSpec.DeclineCode
 		intent.FailureMessage = outcomeSpec.FailureMessage
@@ -292,6 +302,9 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 
 	return s.repo.RecordCheckoutCompletion(ctx, CheckoutCompletion{
 		SessionID:     session.ID,
+		SessionStatus: firstNonEmpty(outcomeSpec.SessionStatus, "complete"),
+		PaymentStatus: outcomeSpec.PaymentStatus,
+		CheckoutEvent: firstNonEmpty(outcomeSpec.CheckoutEvent, "checkout.session.completed"),
 		Outcome:       outcomeSpec.Outcome,
 		CompletedAt:   now,
 		Subscription:  sub,
@@ -659,6 +672,9 @@ func (s *Service) SimulatePaymentMethodUpdate(ctx context.Context, customerID st
 
 type CheckoutCompletion struct {
 	SessionID     string
+	SessionStatus string
+	PaymentStatus string
+	CheckoutEvent string
 	Outcome       string
 	CompletedAt   time.Time
 	Subscription  Subscription
@@ -805,6 +821,13 @@ func id(prefix string) string {
 type checkoutOutcomeSpec struct {
 	Outcome             string
 	Paid                bool
+	SessionStatus       string
+	PaymentStatus       string
+	CheckoutEvent       string
+	SubscriptionStatus  string
+	InvoiceStatus       string
+	InvoiceAttemptCount *int
+	NextPaymentAttempt  bool
 	PaymentIntentStatus string
 	PaymentMethodID     string
 	FailureCode         string
@@ -840,6 +863,30 @@ func checkoutOutcomeFor(outcome string) (checkoutOutcomeSpec, bool) {
 		spec := failedCheckoutOutcome("authentication_required", paymentMethodID(normalized), "authentication_required", "authentication_required", "This payment requires authentication.")
 		spec.PaymentIntentStatus = "requires_action"
 		return spec, true
+	case "payment_pending", "pending", "processing", "async_payment_pending":
+		return checkoutOutcomeSpec{
+			Outcome:             "payment_pending",
+			Paid:                false,
+			PaymentStatus:       "unpaid",
+			SubscriptionStatus:  "incomplete",
+			InvoiceStatus:       "open",
+			PaymentIntentStatus: "processing",
+			PaymentMethodID:     paymentMethodID(normalized),
+		}, true
+	case "canceled", "cancelled", "cancel", "payment_canceled", "pm_card_chargecustomercancel":
+		zeroAttempts := 0
+		return checkoutOutcomeSpec{
+			Outcome:             "canceled",
+			Paid:                false,
+			SessionStatus:       "expired",
+			PaymentStatus:       "unpaid",
+			CheckoutEvent:       "checkout.session.expired",
+			SubscriptionStatus:  "incomplete_expired",
+			InvoiceStatus:       "void",
+			InvoiceAttemptCount: &zeroAttempts,
+			PaymentIntentStatus: "canceled",
+			PaymentMethodID:     paymentMethodID(normalized),
+		}, true
 	default:
 		return checkoutOutcomeSpec{}, false
 	}
@@ -849,6 +896,10 @@ func failedCheckoutOutcome(outcome string, paymentMethodID string, code string, 
 	return checkoutOutcomeSpec{
 		Outcome:             outcome,
 		Paid:                false,
+		PaymentStatus:       "unpaid",
+		SubscriptionStatus:  "incomplete",
+		InvoiceStatus:       "open",
+		NextPaymentAttempt:  true,
 		PaymentIntentStatus: "requires_payment_method",
 		PaymentMethodID:     paymentMethodID,
 		FailureCode:         code,

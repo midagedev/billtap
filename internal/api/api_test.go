@@ -141,6 +141,108 @@ func TestCheckoutFailureOutcome(t *testing.T) {
 	}
 }
 
+func TestCheckoutTerminalOutcomeVariants(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"variants@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+
+	tests := []struct {
+		name                string
+		outcome             string
+		sessionStatus       string
+		paymentStatus       string
+		subscriptionStatus  string
+		invoiceStatus       string
+		paymentIntentStatus string
+		events              []string
+		notEvents           []string
+	}{
+		{
+			name:                "pending async payment",
+			outcome:             "payment_pending",
+			sessionStatus:       "complete",
+			paymentStatus:       "unpaid",
+			subscriptionStatus:  "incomplete",
+			invoiceStatus:       "open",
+			paymentIntentStatus: "processing",
+			events:              []string{"checkout.session.completed", "payment_intent.processing", "customer.subscription.updated"},
+			notEvents:           []string{"invoice.payment_failed"},
+		},
+		{
+			name:                "canceled checkout",
+			outcome:             "canceled",
+			sessionStatus:       "expired",
+			paymentStatus:       "unpaid",
+			subscriptionStatus:  "incomplete_expired",
+			invoiceStatus:       "void",
+			paymentIntentStatus: "canceled",
+			events:              []string{"checkout.session.expired", "payment_intent.canceled", "invoice.voided"},
+			notEvents:           []string{"checkout.session.completed", "invoice.payment_failed"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+				"customer":             {customer.ID},
+				"line_items[0][price]": {price.ID},
+			})
+			completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+				"outcome": tt.outcome,
+			})
+
+			var completed billing.CheckoutSession
+			if err := json.Unmarshal(completion["session"], &completed); err != nil {
+				t.Fatalf("decode checkout session: %v", err)
+			}
+			var subscription billing.Subscription
+			if err := json.Unmarshal(completion["subscription"], &subscription); err != nil {
+				t.Fatalf("decode subscription: %v", err)
+			}
+			var invoice billing.Invoice
+			if err := json.Unmarshal(completion["invoice"], &invoice); err != nil {
+				t.Fatalf("decode invoice: %v", err)
+			}
+			var paymentIntent billing.PaymentIntent
+			if err := json.Unmarshal(completion["payment_intent"], &paymentIntent); err != nil {
+				t.Fatalf("decode payment intent: %v", err)
+			}
+
+			if completed.Status != tt.sessionStatus || completed.PaymentStatus != tt.paymentStatus {
+				t.Fatalf("session status=%s payment_status=%s, want %s/%s", completed.Status, completed.PaymentStatus, tt.sessionStatus, tt.paymentStatus)
+			}
+			if subscription.Status != tt.subscriptionStatus || invoice.Status != tt.invoiceStatus || paymentIntent.Status != tt.paymentIntentStatus {
+				t.Fatalf("subscription=%s invoice=%s payment_intent=%s, want %s/%s/%s", subscription.Status, invoice.Status, paymentIntent.Status, tt.subscriptionStatus, tt.invoiceStatus, tt.paymentIntentStatus)
+			}
+
+			var events []webhooks.Event
+			if err := json.Unmarshal(completion["webhook_events"], &events); err != nil {
+				t.Fatalf("decode webhook events: %v", err)
+			}
+			types := map[string]bool{}
+			for _, event := range events {
+				types[event.Type] = true
+			}
+			for _, eventType := range tt.events {
+				if !types[eventType] {
+					t.Fatalf("webhook events missing %s in %#v", eventType, types)
+				}
+			}
+			for _, eventType := range tt.notEvents {
+				if types[eventType] {
+					t.Fatalf("webhook events unexpectedly include %s in %#v", eventType, types)
+				}
+			}
+		})
+	}
+}
+
 func TestCheckoutPaymentErrorSimulation(t *testing.T) {
 	handler := newTestHandler(t)
 	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"errors@example.test"}})

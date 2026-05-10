@@ -54,8 +54,11 @@ Required fields for delivery are `id`, `object`, `type`, `created`, `livemode`, 
 | `invoice.finalized`             | an invoice is finalized                                          | invoice snapshot          |
 | `invoice.payment_succeeded`     | invoice payment succeeds                                         | invoice snapshot          |
 | `invoice.payment_failed`        | invoice payment fails                                            | invoice snapshot          |
+| `invoice.voided`                | invoice is voided after checkout cancellation                    | invoice snapshot          |
 | `payment_intent.created`        | a payment intent is created                                      | payment intent snapshot   |
 | `payment_intent.succeeded`      | a payment intent succeeds                                        | payment intent snapshot   |
+| `payment_intent.processing`     | an async payment remains pending                                 | payment intent snapshot   |
+| `payment_intent.canceled`       | payment intent is canceled                                       | payment intent snapshot   |
 | `payment_intent.payment_failed` | a payment intent fails                                           | payment intent snapshot   |
 
 SaaS profile events may add `saas.*` profile evidence events, but generic Stripe-like billing events remain the compatibility surface.
@@ -87,8 +90,15 @@ Failed subscription checkout emits, in order:
 Canceled checkout emits:
 
 1. `checkout.session.expired`
+2. `customer.subscription.created`
+3. `invoice.created`
+4. `invoice.finalized`
+5. `payment_intent.created`
+6. `payment_intent.canceled`
+7. `invoice.voided`
+8. `customer.subscription.updated`
 
-Requires-action and async-pending outcomes keep the payment intent non-terminal until a scenario or UI action resolves it.
+Async-pending checkout emits `payment_intent.processing` and no invoice terminal payment event. Requires-action outcomes keep the subscription incomplete and emit the failure sequence with a `requires_action` payment intent status.
 
 ## Signatures
 

@@ -68,7 +68,7 @@ Base path: `/v1`
 | Product search          | `GET /v1/products/search`                                                                                                                                           | Partial          | Supports metadata equality filters such as `metadata['tenantId']:'saas'` and `active:'true'`. This is not Stripe Search Query Language parity.                                                                                                                                                                                                                                                                                                                          |
 | Prices                  | `POST /v1/prices`, `GET /v1/prices`, `GET /v1/prices/{id}`, `POST /v1/prices/{id}`                                                                                  | Supported        | Create, list, retrieve, and update prices. Supports `product`, `currency`, `unit_amount`, `lookup_key`, recurring interval fields, `active`, and metadata. List supports `product`, `active`, and `type=recurring`.                                                                                                                                                                                                                                                     |
 | Checkout sessions       | `POST /v1/checkout/sessions`, `GET /v1/checkout/sessions`, `GET /v1/checkout/sessions/{id}`                                                                         | Supported        | Creates subscription-mode sandbox checkout sessions from request line items and hosted Billtap URLs. The Stripe-style session response leaves `line_items` unexpanded. Accepts Stripe SDK form params `allow_promotion_codes` and `subscription_data[trial_period_days]`; trial checkout creates local `trialing` subscription evidence. Hosted URLs use the request host by default, or `BILLTAP_PUBLIC_BASE_URL` when configured for container-to-host browser flows. |
-| Checkout completion     | `POST /v1/checkout/sessions/{id}/complete`, `POST /api/checkout/sessions/{id}/complete`                                                                             | Billtap-specific | Completes a sandbox checkout and creates subscription, invoice, payment intent, timeline, and checkout webhook evidence. Supports success plus deterministic failure aliases such as `card_declined`, `insufficient_funds`, `expired_card`, `incorrect_cvc`, `processing_error`, `authentication_required`, and documented Stripe test PaymentMethod IDs such as `pm_card_visa_chargeDeclined`.                                                                         |
+| Checkout completion     | `POST /v1/checkout/sessions/{id}/complete`, `POST /api/checkout/sessions/{id}/complete`                                                                             | Billtap-specific | Completes a sandbox checkout and creates subscription, invoice, payment intent, timeline, and checkout webhook evidence. Supports success plus deterministic failure aliases such as `card_declined`, `insufficient_funds`, `expired_card`, `incorrect_cvc`, `processing_error`, `authentication_required`, `payment_pending`, `canceled`, and documented Stripe test PaymentMethod IDs such as `pm_card_visa_chargeDeclined`.                                      |
 | Billing portal sessions | `POST /v1/billing_portal/sessions`                                                                                                                                  | Partial          | Returns a Billtap portal URL for a known customer. Portal configuration and full Stripe-hosted portal behavior are not modeled, but the hosted portal includes Stripe-like selectors for common local Page Object flows.                                                                                                                                                                                                                                                |
 | Subscriptions           | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}`                     | Partial          | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation.                                                                                                                                                                                                                                                      |
 | Subscription items      | `POST /v1/subscription_items`, `DELETE /v1/subscription_items/{id}`                                                                                                 | Partial          | Add or remove local subscription items for integration smoke paths. Billing proration and invoice recalculation are not modeled.                                                                                                                                                                                                                                                                                                                                        |
@@ -102,23 +102,34 @@ metadata, and Billtap metadata.
 Supported generic event types:
 
 - `checkout.session.completed`
+- `checkout.session.expired`
 - `customer.subscription.created`
 - `customer.subscription.updated`
+- `customer.subscription.deleted`
 - `invoice.created`
 - `invoice.finalized`
 - `invoice.payment_succeeded`
 - `invoice.paid`
 - `invoice.payment_failed`
+- `invoice.voided`
 - `payment_intent.created`
 - `payment_intent.succeeded`
+- `payment_intent.processing`
+- `payment_intent.canceled`
 - `payment_intent.payment_failed`
 
 Current event boundaries:
 
 - Checkout completion emits the generic checkout, subscription, invoice, and
-  payment-intent sequence.
-- Portal actions update local billing state and timeline evidence, but they do
-  not currently enqueue separate Stripe-like webhook events.
+  payment-intent sequence. Async-pending checkout emits
+  `payment_intent.processing` without an invoice failure event; canceled
+  checkout emits `checkout.session.expired`, `payment_intent.canceled`, and
+  `invoice.voided`.
+- Portal subscription actions update local billing state and timeline evidence,
+  and enqueue `customer.subscription.updated` or
+  `customer.subscription.deleted` when the subscription changes. Portal payment
+  method simulation remains Billtap evidence and does not claim Stripe Billing
+  Portal parity.
 - Replay keeps the original event ID and payload, then creates new delivery
   attempts with replay metadata.
 - Duplicate delivery reuses the event ID and payload.

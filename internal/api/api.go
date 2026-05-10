@@ -2464,7 +2464,7 @@ func (h *Handler) checkoutWebhookPayloads(r *http.Request, result map[string]any
 			out = append(out, webhookPayload{eventType: eventType, objectID: objectID, payload: raw})
 		}
 	}
-	appendPayload("checkout.session.completed", session.ID, stripeCheckoutSession(session))
+	appendPayload(checkoutSessionEvent(session.Status), session.ID, stripeCheckoutSession(session))
 	if subscription.ID != "" {
 		appendPayload("customer.subscription.created", subscription.ID, h.stripeSubscription(r, subscription))
 	}
@@ -2474,22 +2474,55 @@ func (h *Handler) checkoutWebhookPayloads(r *http.Request, result map[string]any
 	}
 	if paymentIntent.ID != "" {
 		appendPayload("payment_intent.created", paymentIntent.ID, stripePaymentIntent(paymentIntent))
-		if paymentIntent.Status == "succeeded" {
-			appendPayload("payment_intent.succeeded", paymentIntent.ID, stripePaymentIntent(paymentIntent))
-		} else {
-			appendPayload("payment_intent.payment_failed", paymentIntent.ID, stripePaymentIntent(paymentIntent))
+		if eventType := paymentIntentTerminalEvent(paymentIntent.Status); eventType != "" {
+			appendPayload(eventType, paymentIntent.ID, stripePaymentIntent(paymentIntent))
 		}
 	}
 	if invoice.ID != "" {
-		if invoice.Status == "paid" {
-			appendPayload("invoice.payment_succeeded", invoice.ID, stripeInvoice(invoice))
-			appendPayload("invoice.paid", invoice.ID, stripeInvoice(invoice))
-		} else {
-			appendPayload("invoice.payment_failed", invoice.ID, stripeInvoice(invoice))
+		for _, eventType := range invoiceTerminalEvents(invoice.Status, paymentIntent.Status) {
+			appendPayload(eventType, invoice.ID, stripeInvoice(invoice))
 		}
 	}
 	if subscription.ID != "" {
 		appendPayload("customer.subscription.updated", subscription.ID, h.stripeSubscription(r, subscription))
 	}
 	return out
+}
+
+func paymentIntentTerminalEvent(status string) string {
+	switch status {
+	case "succeeded":
+		return "payment_intent.succeeded"
+	case "processing":
+		return "payment_intent.processing"
+	case "canceled":
+		return "payment_intent.canceled"
+	case "requires_payment_method":
+		return "payment_intent.payment_failed"
+	default:
+		return "payment_intent.payment_failed"
+	}
+}
+
+func checkoutSessionEvent(status string) string {
+	if status == "expired" {
+		return "checkout.session.expired"
+	}
+	return "checkout.session.completed"
+}
+
+func invoiceTerminalEvents(status string, paymentIntentStatus string) []string {
+	switch status {
+	case "paid":
+		return []string{"invoice.payment_succeeded", "invoice.paid"}
+	case "void":
+		return []string{"invoice.voided"}
+	case "open":
+		if paymentIntentStatus == "processing" {
+			return nil
+		}
+		return []string{"invoice.payment_failed"}
+	default:
+		return []string{"invoice.payment_failed"}
+	}
 }
