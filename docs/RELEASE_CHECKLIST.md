@@ -39,7 +39,9 @@ go run ./cmd/billtap compatibility inventory --openapi /tmp/stripe-openapi.spec3
 
 This check is not a release blocker by itself. Use it to review newly visible
 Stripe endpoint families, inventory-only gaps, and accepted Billtap-specific
-exceptions before making broader compatibility claims.
+exceptions before making broader compatibility claims. Record
+`summary.implemented_percent` and the changed `summary.families[]` row in the
+release notes whenever compatibility coverage changes.
 
 ## Manual Smoke
 

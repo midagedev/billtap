@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,7 +15,7 @@ import (
 	"time"
 )
 
-const InventoryVersion = "stripe-api-inventory-v1"
+const InventoryVersion = "stripe-api-inventory-v2"
 
 type InventoryOptions struct {
 	OpenAPIPath string
@@ -36,12 +37,26 @@ type StripeAPIInventory struct {
 }
 
 type InventorySummary struct {
+	TotalOperations         int              `json:"total_operations"`
+	ImplementedOperations   int              `json:"implemented_operations"`
+	InventoryOnlyOperations int              `json:"inventory_only_operations"`
+	BilltapOnlyRoutes       int              `json:"billtap_only_routes"`
+	ImplementedPercent      float64          `json:"implemented_percent"`
+	ByLevel                 map[string]int   `json:"by_level"`
+	ByFamily                map[string]int   `json:"by_family"`
+	Families                []FamilyCoverage `json:"families"`
+}
+
+type FamilyCoverage struct {
+	Family                  string         `json:"family"`
+	Priority                string         `json:"priority"`
+	TargetLevel             string         `json:"target_level"`
 	TotalOperations         int            `json:"total_operations"`
 	ImplementedOperations   int            `json:"implemented_operations"`
 	InventoryOnlyOperations int            `json:"inventory_only_operations"`
-	BilltapOnlyRoutes       int            `json:"billtap_only_routes"`
+	ImplementedPercent      float64        `json:"implemented_percent"`
 	ByLevel                 map[string]int `json:"by_level"`
-	ByFamily                map[string]int `json:"by_family"`
+	NextMilestone           string         `json:"next_milestone"`
 }
 
 type StripeOperationCoverage struct {
@@ -145,6 +160,7 @@ func GenerateInventory(ctx context.Context, opts InventoryOptions) (StripeAPIInv
 	}
 
 	coverage := currentStripeRouteCoverage()
+	familyStats := map[string]*FamilyCoverage{}
 	paths := sortedKeys(spec.Paths)
 	for _, path := range paths {
 		methods := spec.Paths[path]
@@ -186,14 +202,31 @@ func GenerateInventory(ctx context.Context, opts InventoryOptions) (StripeAPIInv
 			inventory.Summary.TotalOperations++
 			inventory.Summary.ByLevel[level]++
 			inventory.Summary.ByFamily[family]++
+			stats := familyStats[family]
+			if stats == nil {
+				stats = &FamilyCoverage{
+					Family:        family,
+					Priority:      priorityForFamily(family),
+					TargetLevel:   targetLevelForFamily(family),
+					ByLevel:       map[string]int{},
+					NextMilestone: nextMilestoneForFamily(family),
+				}
+				familyStats[family] = stats
+			}
+			stats.TotalOperations++
+			stats.ByLevel[level]++
 			if implemented {
 				inventory.Summary.ImplementedOperations++
+				stats.ImplementedOperations++
 			} else {
 				inventory.Summary.InventoryOnlyOperations++
+				stats.InventoryOnlyOperations++
 			}
 		}
 	}
 	inventory.Summary.BilltapOnlyRoutes = len(inventory.BilltapOnlyRoutes)
+	inventory.Summary.ImplementedPercent = percentage(inventory.Summary.ImplementedOperations, inventory.Summary.TotalOperations)
+	inventory.Summary.Families = sortedFamilyCoverage(familyStats)
 	sort.Slice(inventory.Operations, func(i, j int) bool {
 		left := inventory.Operations[i]
 		right := inventory.Operations[j]
@@ -243,17 +276,28 @@ func (i StripeAPIInventory) Markdown() string {
 	if i.StripeAPIVersion != "" {
 		fmt.Fprintf(&b, "- Stripe API version: `%s`\n", i.StripeAPIVersion)
 	}
-	fmt.Fprintf(&b, "- Operations: `%d` total, `%d` implemented, `%d` inventory-only\n",
-		i.Summary.TotalOperations, i.Summary.ImplementedOperations, i.Summary.InventoryOnlyOperations)
+	fmt.Fprintf(&b, "- Operations: `%d` total, `%d` implemented, `%d` inventory-only, `%.1f%%` implemented\n",
+		i.Summary.TotalOperations, i.Summary.ImplementedOperations, i.Summary.InventoryOnlyOperations, i.Summary.ImplementedPercent)
 
 	b.WriteString("\n## Levels\n\n")
 	for _, level := range sortedKeys(i.Summary.ByLevel) {
 		fmt.Fprintf(&b, "- `%s`: `%d`\n", level, i.Summary.ByLevel[level])
 	}
 
-	b.WriteString("\n## Families\n\n")
-	for _, family := range sortedKeys(i.Summary.ByFamily) {
-		fmt.Fprintf(&b, "- `%s`: `%d`\n", family, i.Summary.ByFamily[family])
+	b.WriteString("\n## Family Coverage\n\n")
+	b.WriteString("| Priority | Family | Target | Total | Implemented | Inventory-only | Coverage | Next milestone |\n")
+	b.WriteString("| --- | --- | --- | ---: | ---: | ---: | ---: | --- |\n")
+	for _, family := range i.Summary.Families {
+		fmt.Fprintf(&b, "| `%s` | `%s` | `%s` | %d | %d | %d | %.1f%% | %s |\n",
+			escapeTable(family.Priority),
+			escapeTable(family.Family),
+			escapeTable(family.TargetLevel),
+			family.TotalOperations,
+			family.ImplementedOperations,
+			family.InventoryOnlyOperations,
+			family.ImplementedPercent,
+			escapeTable(family.NextMilestone),
+		)
 	}
 
 	b.WriteString("\n## Operations\n\n")
@@ -383,7 +427,7 @@ func inferFamily(path string) string {
 		return "payments"
 	case strings.Contains(path, "/refunds") || strings.Contains(path, "/disputes") || strings.Contains(path, "/balance_transactions") || strings.Contains(path, "/credit_notes"):
 		return "payment_history"
-	case strings.Contains(path, "/accounts") || strings.Contains(path, "/account_links") || strings.Contains(path, "/transfers") || strings.Contains(path, "/payouts") || strings.Contains(path, "/application_fees"):
+	case path == "/v1/account" || strings.Contains(path, "/accounts") || strings.Contains(path, "/account_links") || strings.Contains(path, "/account_sessions") || strings.Contains(path, "/transfers") || strings.Contains(path, "/payouts") || strings.Contains(path, "/application_fees"):
 		return "connect"
 	case strings.Contains(path, "/products") || strings.Contains(path, "/prices") || strings.Contains(path, "/coupons") || strings.Contains(path, "/promotion_codes") || strings.Contains(path, "/tax"):
 		return "catalog"
@@ -436,6 +480,87 @@ func targetLevelForFamily(family string) string {
 	default:
 		return "L1-L2"
 	}
+}
+
+func priorityForFamily(family string) string {
+	switch family {
+	case "checkout", "billing_portal", "webhooks", "billing":
+		return "P0"
+	case "customers", "catalog", "payments", "payment_history", "connect":
+		return "P1"
+	default:
+		return "P3"
+	}
+}
+
+func nextMilestoneForFamily(family string) string {
+	switch family {
+	case "checkout":
+		return "Close subscription checkout gaps and add SDK/adoption smoke for optional params."
+	case "billing_portal":
+		return "Add portal configuration fixtures and subscription/payment-method update scenarios."
+	case "webhooks":
+		return "Expand connected-account routing, thin event fixtures, and replay evidence."
+	case "billing":
+		return "Add renewal, trial, dunning, subscription schedule, coupon, and credit-note scenarios."
+	case "customers":
+		return "Add OpenAPI-backed validation, search/list parity, and payment source fixtures."
+	case "catalog":
+		return "Add coupon, promotion code, tax-rate, and product/price search validation."
+	case "payments":
+		return "Add PaymentIntent and SetupIntent create/confirm/capture/cancel state machines."
+	case "payment_history":
+		return "Add charge, refund, balance transaction, dispute, and payment history evidence."
+	case "connect":
+		return "Add account retrieve/list fixtures, Stripe-Account tracing, and connected-account webhook smoke."
+	default:
+		return "Keep inventory visible and add schema/fixture smoke only when adoption requires it."
+	}
+}
+
+func sortedFamilyCoverage(stats map[string]*FamilyCoverage) []FamilyCoverage {
+	keys := make([]string, 0, len(stats))
+	for key := range stats {
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		left := stats[keys[i]]
+		right := stats[keys[j]]
+		if priorityRank(left.Priority) == priorityRank(right.Priority) {
+			return left.Family < right.Family
+		}
+		return priorityRank(left.Priority) < priorityRank(right.Priority)
+	})
+
+	families := make([]FamilyCoverage, 0, len(keys))
+	for _, key := range keys {
+		family := *stats[key]
+		family.ImplementedPercent = percentage(family.ImplementedOperations, family.TotalOperations)
+		families = append(families, family)
+	}
+	return families
+}
+
+func priorityRank(priority string) int {
+	switch priority {
+	case "P0":
+		return 0
+	case "P1":
+		return 1
+	case "P2":
+		return 2
+	case "P3":
+		return 3
+	default:
+		return 99
+	}
+}
+
+func percentage(part int, total int) float64 {
+	if total == 0 {
+		return 0
+	}
+	return math.Round((float64(part)/float64(total))*1000) / 10
 }
 
 func sortedKeys[V any](m map[string]V) []string {

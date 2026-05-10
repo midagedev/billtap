@@ -69,7 +69,7 @@ real local testing value.
 | P1       | Payment method lifecycle        | L4-L6        | PaymentMethods, SetupIntents, saved cards, failed setup, mandates, SCA-style transitions. |
 | P1       | Payment/refund/dispute surface  | L3-L5        | Charges, refunds, balance transactions, disputes, payment history, refund webhooks.       |
 | P1       | Entitlements and metering       | L4-L6        | Modern subscription apps use entitlements, features, usage events, and meter summaries.   |
-| P2       | Connect/platform smoke          | L2-L5        | Accounts, transfers, application fees, connected-account webhook routing, payout evidence. |
+| P1       | Connect/platform smoke          | L2-L5        | Accounts, transfers, application fees, connected-account webhook routing, payout evidence for platform-style adoption. |
 | P2       | Tax and invoice rendering smoke | L2-L4        | Tax rates/codes/calculation-like fixtures enough for subscription app tests.              |
 | P3       | Low-state auxiliary resources   | L1-L2        | Files, reporting, balance, country/spec resources, webhook destinations, search stubs.    |
 | P3       | Risk, Issuing, Treasury, Atlas  | L0-L2        | Track inventory and schema fixtures; do not model real financial behavior.                |
@@ -85,6 +85,8 @@ Output:
 - Generate `dist/compatibility/stripe-api-inventory.json` and Markdown matrix.
 - Track every path, method, resource id, event type, expandable field, and
   current Billtap level.
+- Track total and family-level implemented percentages, priorities, target
+  levels, and next measurable milestones.
 - Add drift detection when Stripe OpenAPI changes.
 
 Gate:
@@ -99,6 +101,13 @@ Current command:
 ```bash
 go run ./cmd/billtap compatibility inventory --openapi path/to/openapi.spec3.json --output-dir dist/compatibility
 ```
+
+Long-running tracking workflow:
+
+- Use `docs/COMPATIBILITY_TRACKING.md` as the fill loop.
+- Treat `summary.implemented_percent` and `summary.families[]` in the generated
+  JSON as the measurable scoreboard.
+- Include before/after family deltas in each compatibility PR.
 
 Optional workflow:
 
@@ -240,7 +249,24 @@ questions quickly.
   "api_version": "2025-12-15.clover",
   "source": "stripe/openapi latest",
   "generated_at": "2026-05-10T00:00:00Z",
-  "resources": [
+  "summary": {
+    "total_operations": 619,
+    "implemented_operations": 37,
+    "inventory_only_operations": 582,
+    "implemented_percent": 6.0,
+    "families": [
+      {
+        "family": "connect",
+        "priority": "P1",
+        "target_level": "L2-L5",
+        "total_operations": 69,
+        "implemented_operations": 0,
+        "implemented_percent": 0.0,
+        "next_milestone": "Add account retrieve/list fixtures, Stripe-Account tracing, and connected-account webhook smoke."
+      }
+    ]
+  },
+  "operations": [
     {
       "family": "billing",
       "resource": "subscription",

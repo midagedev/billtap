@@ -5,6 +5,20 @@
     "version": "2025-12-15.clover"
   },
   "paths": {
+    "/v1/account": {
+      "get": {
+        "operationId": "GetAccount",
+        "tags": ["Account"],
+        "x-resourceId": "account"
+      }
+    },
+    "/v1/account_sessions": {
+      "post": {
+        "operationId": "PostAccountSessions",
+        "tags": ["Account Sessions"],
+        "x-resourceId": "account_session"
+      }
+    },
     "/v1/checkout/sessions": {
       "post": {
         "operationId": "PostCheckoutSessions",

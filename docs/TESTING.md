@@ -56,9 +56,14 @@ go run ./cmd/billtap compatibility inventory --openapi path/to/openapi.spec3.jso
 The inventory writes `stripe-api-inventory.json` and
 `stripe-api-inventory.md`. It classifies OpenAPI operations by endpoint family,
 current Billtap compatibility level, target level, statefulness, scorecard/SDK
-evidence, and Billtap-specific `/v1` route exceptions. This is the first gate
-for expanding beyond the current public subset without silently implying full
+evidence, and Billtap-specific `/v1` route exceptions. It also emits
+`summary.implemented_percent` and `summary.families[]` so compatibility work can
+be tracked as measurable family-level coverage. This is the first gate for
+expanding beyond the current public subset without silently implying full
 Stripe parity.
+
+Use `docs/COMPATIBILITY_TRACKING.md` for the long-running fill workflow and PR
+gate.
 
 The optional `Stripe API Inventory` GitHub Actions workflow downloads Stripe's
 public latest OpenAPI spec, runs the same command, prints the summary, and
