@@ -39,6 +39,7 @@ type Handler struct {
 	idem        *idempotencyStore
 	compat      stripecompat.Registry
 	knownRoutes stripecompat.RouteCatalog
+	validation  stripecompat.ValidationCatalog
 }
 
 func New(opts Options) http.Handler {
@@ -51,6 +52,7 @@ func New(opts Options) http.Handler {
 		idem:        newIdempotencyStore(),
 		compat:      stripecompat.DefaultRegistry(),
 		knownRoutes: stripecompat.DefaultRouteCatalog(),
+		validation:  stripecompat.DefaultValidationCatalog(),
 	}
 	h.routes()
 	return h
@@ -148,6 +150,15 @@ func (h *Handler) writeKnownUnsupportedRoute(w http.ResponseWriter, r *http.Requ
 	}
 	if claim, ok := h.compatibilityClaim(r); ok && stripecompat.NormalizePath(claim.Path) == stripecompat.NormalizePath(route.Path) {
 		return false
+	}
+	if validationErr := h.validation.Validate(r); validationErr != nil {
+		writeStripeError(w, http.StatusBadRequest, stripeAPIError{
+			Type:    stripeErrorInvalidReq,
+			Message: validationErr.Message,
+			Param:   validationErr.Param,
+			Code:    validationErr.Code,
+		})
+		return true
 	}
 	message := fmt.Sprintf("Billtap knows this Stripe API route from %s but does not implement it yet: %s %s.", route.Source, route.Method, route.Path)
 	writeStripeError(w, http.StatusBadRequest, stripeAPIError{

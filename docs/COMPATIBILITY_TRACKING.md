@@ -28,6 +28,13 @@ Stripe OpenAPI lane. That catalog is diagnostic-only: matching a route there
 returns `unsupported_endpoint` for unimplemented operations, but it does not
 increase `summary.implemented_operations`.
 
+The runtime also carries a generated OpenAPI validation catalog for all known
+Stripe operations. For routes that are known but otherwise unsupported, Billtap
+now returns Stripe-shaped `parameter_unknown`, `parameter_missing`, and
+`parameter_invalid` errors before the final `unsupported_endpoint` fallback.
+This helps agents distinguish "bad test setup" from "endpoint not implemented"
+without inflating compatibility coverage.
+
 `dist/` is intentionally ignored. PRs should quote the before/after summary
 instead of committing generated artifacts.
 
@@ -39,6 +46,10 @@ The inventory summary is the compatibility scoreboard:
 - `summary.implemented_operations`: operations with a tested Billtap runtime
   claim.
 - `summary.inventory_only_operations`: known Stripe operations still at `L0`.
+- `summary.schema_validated_operations`: operations from the input OpenAPI file
+  that expose parameter or request-body schemas and also match Billtap's bundled
+  OpenAPI validation catalog. This is a diagnostic breadth metric, not an
+  implementation count.
 - `summary.implemented_percent`: implemented operations divided by total
   operations.
 - `summary.families[]`: family-level totals, implemented counts, percentage,

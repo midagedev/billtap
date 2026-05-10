@@ -643,7 +643,7 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 		t.Fatalf("refund status=%d error=%#v, want known-route unsupported", refundStatus, refundErr.Error)
 	}
 
-	searchReq := httptest.NewRequest(http.MethodGet, "/v1/customers/search", nil)
+	searchReq := httptest.NewRequest(http.MethodGet, "/v1/customers/search?query=email:'buyer@example.test'", nil)
 	searchReq.Header.Set("Request-Id", "req_known_search_unsupported")
 	searchRec := httptest.NewRecorder()
 	handler.ServeHTTP(searchRec, searchReq)
@@ -658,6 +658,51 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 	v2Err := decodeErrorBody(t, v2Body)
 	if v2Status != http.StatusBadRequest || v2Err.Error.Code != "unsupported_endpoint" {
 		t.Fatalf("v2 account status=%d error=%#v, want known-route unsupported", v2Status, v2Err.Error)
+	}
+
+	invalidLimitReq := httptest.NewRequest(http.MethodGet, "/v1/country_specs?limit=not-an-int", nil)
+	invalidLimitReq.Header.Set("Request-Id", "req_known_schema_invalid_limit")
+	invalidLimitRec := httptest.NewRecorder()
+	handler.ServeHTTP(invalidLimitRec, invalidLimitReq)
+	invalidLimitErr := decodeErrorBody(t, invalidLimitRec.Body.String())
+	if invalidLimitRec.Code != http.StatusBadRequest || invalidLimitErr.Error.Code != "parameter_invalid" || invalidLimitErr.Error.Param != "limit" {
+		t.Fatalf("country specs status=%d error=%#v, want OpenAPI-backed invalid limit", invalidLimitRec.Code, invalidLimitErr.Error)
+	}
+
+	unknownParamReq := httptest.NewRequest(http.MethodGet, "/v1/country_specs?nickname=legacy", nil)
+	unknownParamRec := httptest.NewRecorder()
+	handler.ServeHTTP(unknownParamRec, unknownParamReq)
+	unknownParamErr := decodeErrorBody(t, unknownParamRec.Body.String())
+	if unknownParamRec.Code != http.StatusBadRequest || unknownParamErr.Error.Code != "parameter_unknown" || unknownParamErr.Error.Param != "nickname" {
+		t.Fatalf("country specs status=%d error=%#v, want OpenAPI-backed unknown parameter", unknownParamRec.Code, unknownParamErr.Error)
+	}
+
+	missingBodyStatus, missingBodyBody := postFormStatus(t, handler, "/v1/apps/secrets", url.Values{
+		"payload":     {"secret"},
+		"scope[type]": {"account"},
+	})
+	missingBodyErr := decodeErrorBody(t, missingBodyBody)
+	if missingBodyStatus != http.StatusBadRequest || missingBodyErr.Error.Code != "parameter_missing" || missingBodyErr.Error.Param != "name" {
+		t.Fatalf("apps secrets status=%d error=%#v, want OpenAPI-backed missing name", missingBodyStatus, missingBodyErr.Error)
+	}
+
+	invalidEnumStatus, invalidEnumBody := postFormStatus(t, handler, "/v1/apps/secrets", url.Values{
+		"name":        {"token"},
+		"payload":     {"secret"},
+		"scope[type]": {"workspace"},
+	})
+	invalidEnumErr := decodeErrorBody(t, invalidEnumBody)
+	if invalidEnumStatus != http.StatusBadRequest || invalidEnumErr.Error.Code != "parameter_invalid" || invalidEnumErr.Error.Param != "scope[type]" {
+		t.Fatalf("apps secrets status=%d error=%#v, want OpenAPI-backed invalid nested enum", invalidEnumStatus, invalidEnumErr.Error)
+	}
+
+	deepNestedStatus, deepNestedBody := postFormStatus(t, handler, "/v1/account_sessions", url.Values{
+		"account": {"acct_123"},
+		"components[account_onboarding][enabled]": {"maybe"},
+	})
+	deepNestedErr := decodeErrorBody(t, deepNestedBody)
+	if deepNestedStatus != http.StatusBadRequest || deepNestedErr.Error.Code != "parameter_invalid" || deepNestedErr.Error.Param != "components[account_onboarding][enabled]" {
+		t.Fatalf("account sessions status=%d error=%#v, want OpenAPI-backed invalid deep nested boolean", deepNestedStatus, deepNestedErr.Error)
 	}
 
 	patchReq := httptest.NewRequest(http.MethodPatch, "/v1/products", nil)
@@ -697,6 +742,17 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 	trace := traces.Data[0]
 	if trace.Status != http.StatusBadRequest || trace.ErrorCode != "unsupported_endpoint" || trace.Path != "/v1/payment_intents/pi_123/confirm" {
 		t.Fatalf("trace = %#v, want unsupported endpoint evidence", trace)
+	}
+
+	validationTraces := getJSON[struct {
+		Object string                     `json:"object"`
+		Data   []diagnostics.RequestTrace `json:"data"`
+	}](t, handler, "/api/request-traces?requestId=req_known_schema_invalid_limit")
+	if validationTraces.Object != "list" || len(validationTraces.Data) != 1 {
+		t.Fatalf("validation request traces = %#v, want schema-validation request trace", validationTraces)
+	}
+	if validationTraces.Data[0].Path != "/v1/country_specs" || validationTraces.Data[0].ErrorCode != "parameter_invalid" || validationTraces.Data[0].ErrorParam != "limit" {
+		t.Fatalf("validation trace = %#v, want OpenAPI schema validation evidence", validationTraces.Data[0])
 	}
 
 	searchTraces := getJSON[struct {

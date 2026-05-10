@@ -31,6 +31,9 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if inventory.Summary.ImplementedOperations != 7 {
 		t.Fatalf("implemented operations = %d, want 7", inventory.Summary.ImplementedOperations)
 	}
+	if inventory.Summary.SchemaValidatedOperations != 0 {
+		t.Fatalf("schema validated operations = %d, want 0 because fixture has no parameter/requestBody schemas", inventory.Summary.SchemaValidatedOperations)
+	}
 	if inventory.Summary.InventoryOnlyOperations != 7 {
 		t.Fatalf("inventory-only operations = %d, want 7", inventory.Summary.InventoryOnlyOperations)
 	}
@@ -47,6 +50,9 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	customerCreate := findOperation(t, inventory, http.MethodPost, "/v1/customers")
 	if !customerCreate.Implemented || customerCreate.BilltapLevel != "L3" || !customerCreate.Stateful {
 		t.Fatalf("customer create coverage = %#v, want implemented L3 stateful", customerCreate)
+	}
+	if customerCreate.SchemaValidated {
+		t.Fatalf("customer create schema_validated = true, want false because fixture has no parameter/requestBody schemas")
 	}
 	if customerCreate.Docs == "" {
 		t.Fatalf("customer create docs = empty, want traceable compatibility docs")
@@ -113,11 +119,62 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if !fileContains(t, jsonPath, `"families"`) || !fileContains(t, jsonPath, `"implemented_percent": 50`) {
 		t.Fatalf("JSON inventory missing measurable coverage fields")
 	}
+	if !fileContains(t, jsonPath, `"schema_validated_operations": 0`) || !fileContains(t, mdPath, "OpenAPI validation catalog") {
+		t.Fatalf("inventory artifacts missing schema validation coverage fields")
+	}
 	if !fileContains(t, jsonPath, `"billtap_only_routes"`) || !fileContains(t, jsonPath, `/v1/checkout/sessions/{id}/complete`) {
 		t.Fatalf("JSON inventory missing Billtap-specific route exception")
 	}
 	if !fileContains(t, mdPath, "# Stripe API Compatibility Inventory") || !fileContains(t, mdPath, "Family Coverage") || !fileContains(t, mdPath, "Billtap-Specific `/v1` Exceptions") {
 		t.Fatalf("Markdown inventory missing expected sections")
+	}
+}
+
+func TestGenerateInventorySchemaValidatedUsesInputOpenAPISurface(t *testing.T) {
+	dir := t.TempDir()
+	specPath := filepath.Join(dir, "schema-surface.json")
+	if err := os.WriteFile(specPath, []byte(`{
+  "openapi": "3.0.0",
+  "info": {"title": "schema surface", "version": "test"},
+  "paths": {
+    "/v1/country_specs": {
+      "get": {
+        "operationId": "GetCountrySpecs",
+        "parameters": [
+          {"name": "limit", "in": "query", "schema": {"type": "integer"}}
+        ],
+        "x-resourceId": "country_spec"
+      }
+    },
+    "/v1/exchange_rates": {
+      "get": {
+        "operationId": "GetExchangeRates",
+        "x-resourceId": "exchange_rate"
+      }
+    }
+  }
+}`), 0o644); err != nil {
+		t.Fatalf("write schema surface spec: %v", err)
+	}
+
+	inventory, err := GenerateInventory(context.Background(), InventoryOptions{
+		OpenAPIPath: specPath,
+		Source:      "schema surface fixture",
+		Now:         fixedNow,
+	})
+	if err != nil {
+		t.Fatalf("GenerateInventory returned error: %v", err)
+	}
+	if inventory.Summary.TotalOperations != 2 || inventory.Summary.SchemaValidatedOperations != 1 || inventory.Summary.SchemaValidatedPercent != 50 {
+		t.Fatalf("summary = %#v, want one of two operations schema-visible from input OpenAPI", inventory.Summary)
+	}
+	countrySpecs := findOperation(t, inventory, http.MethodGet, "/v1/country_specs")
+	if !countrySpecs.SchemaValidated {
+		t.Fatalf("country specs = %#v, want schema_validated true", countrySpecs)
+	}
+	exchangeRates := findOperation(t, inventory, http.MethodGet, "/v1/exchange_rates")
+	if exchangeRates.SchemaValidated {
+		t.Fatalf("exchange rates = %#v, want schema_validated false without input schema surface", exchangeRates)
 	}
 }
 

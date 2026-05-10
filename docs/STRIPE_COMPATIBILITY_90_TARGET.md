@@ -44,6 +44,12 @@ runtime claim:
 
 Inventory-only documentation does not count.
 
+The generated OpenAPI validation catalog is separate from implementation
+coverage. `summary.schema_validated_operations` can rise independently for a
+Stripe OpenAPI input with parameter/request-body schemas while
+`summary.implemented_operations` remains unchanged; an operation only counts
+toward the 90% target after it has an explicit tested claim at `L1+`.
+
 ## Baseline By Family
 
 Latest measured baseline from `stripe/openapi` latest on 2026-05-10:
@@ -86,6 +92,11 @@ T1 and T2 intentionally do not increase coverage. They prevent long-term
 coverage inflation from becoming a hardcoded list in
 `currentStripeRouteCoverage()` and ensure inventory-only routes are visible at
 runtime without being counted as implemented.
+
+T135 adds the broad OpenAPI validation catalog and schema-validation fallback
+for known routes, but it does not by itself increase
+`summary.implemented_operations`. T3-T9 still need to opt specific operations
+into tested `L1+` claims.
 
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
