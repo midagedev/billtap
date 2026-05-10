@@ -135,3 +135,23 @@ Gate:
 Gate:
 
 - G9 Release Candidate
+
+## Phase 10+: Broader Stripe API Compatibility
+
+The current public claim remains a documented, stateful Stripe-like subset for
+local subscription billing tests. Broader compatibility work should proceed
+through `STRIPE_API_COMPATIBILITY_ROADMAP.md`:
+
+- OpenAPI inventory and drift tracking
+- protocol-level compatibility for errors, pagination, expand, idempotency, and
+  request traces
+- OpenAPI-backed validation and fixture-shaped responses
+- deeper subscription, invoice, payment-intent, setup-intent, refund, dispute,
+  entitlement, metering, and Connect simulation
+- official Stripe SDK smoke lanes and optional `stripe-mock`/live-testmode
+  oracle jobs
+
+Gate:
+
+- new compatibility claims are levelled, scorecard-backed, and documented
+  before release

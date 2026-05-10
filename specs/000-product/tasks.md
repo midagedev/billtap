@@ -249,3 +249,29 @@ Suggested agents:
 Gate:
 
 - [x] G12 Public Release Readiness
+
+## Phase 13: Broader Stripe API Compatibility Roadmap
+
+- [x] T130 Define compatibility levels for inventory, schema validation, fixture responses, stateful behavior, scenarios, webhooks, and SDK smoke
+- [x] T131 Document endpoint family priorities beyond the DS/SaaS adoption path
+- [x] T132 Define OpenAPI inventory, scorecard expansion, and optional oracle lanes
+- [ ] T133 Implement Stripe OpenAPI inventory generator and coverage matrix
+- [ ] T134 Add protocol baseline tests for pagination, expand, request IDs, API version, and idempotency traces across supported endpoints
+- [ ] T135 Add OpenAPI-backed validation for broad L1 route/parameter/type coverage
+- [ ] T136 Add direct PaymentIntent and SetupIntent state machines
+- [ ] T137 Add renewal/test-clock/retry mutation for subscriptions and invoices
+- [ ] T138 Add coupons, discounts, credit notes, refunds, disputes, and payment-history simulation
+- [ ] T139 Add Connect/platform smoke fixtures and connected-account webhook routing
+- [ ] T140 Add official Stripe SDK matrix for Node, Go, Java, Python, and Ruby
+
+Suggested agents:
+
+- Compatibility Agent
+- Billing Engine Agent
+- Webhook Agent
+- Scenario Agent
+- Release Agent
+
+Gate:
+
+- [ ] G13 Stripe API Compatibility Expansion Readiness

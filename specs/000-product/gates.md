@@ -17,6 +17,7 @@
 | G10 | sample-app Billtap Replacement Smoke | SaaS repo replacement proof |
 | G11 | Fixture Assertion Ergonomics | developer integration test adoption |
 | G12 | Public Release Readiness | community release |
+| G13 | Stripe API Compatibility Expansion Readiness | broad endpoint-family expansion |
 
 ## G0: Spec Readiness
 
@@ -166,3 +167,17 @@ Pass criteria:
 - release checklist includes sample-app scenario preconditions
 - public docs do not imply real payment processing, full Stripe parity, or production payment dependency
 - `LICENSE` exists before public community release
+
+## G13: Stripe API Compatibility Expansion Readiness
+
+Pass criteria:
+
+- broader compatibility roadmap defines levels for inventory, schema validation,
+  fixture responses, stateful behavior, scenarios, webhooks, and SDK smoke
+- endpoint families are prioritized separately from DS/SaaS adoption needs
+- OpenAPI inventory, scorecard expansion, and optional oracle lanes are
+  documented before broad endpoint work starts
+- new compatibility claims require fixtures, tests, and `docs/COMPATIBILITY.md`
+  updates
+- docs continue to distinguish Billtap's stateful local billing lab from full
+  Stripe parity and real payment processing
