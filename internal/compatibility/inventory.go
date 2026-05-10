@@ -9,10 +9,11 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/hckim/billtap/internal/stripecompat"
 )
 
 const InventoryVersion = "stripe-api-inventory-v2"
@@ -333,51 +334,18 @@ func (i StripeAPIInventory) Markdown() string {
 }
 
 func currentStripeRouteCoverage() map[string]routeCoverage {
-	docs := "docs/COMPATIBILITY.md#supported-stripe-like-api-subset"
 	out := map[string]routeCoverage{}
-	add := func(method string, path string, coverage routeCoverage) {
-		if coverage.Docs == "" {
-			coverage.Docs = docs
+	for _, claim := range stripecompat.DefaultRegistry().Claims() {
+		out[routeKey(claim.Method, claim.Path)] = routeCoverage{
+			Level:          claim.Level,
+			Stateful:       claim.Stateful,
+			Docs:           claim.Docs,
+			WebhookEvents:  append([]string(nil), claim.WebhookEvents...),
+			ScorecardCases: append([]string(nil), claim.ScorecardCases...),
+			SDKSmoke:       append([]string(nil), claim.SDKSmoke...),
+			Risks:          append([]string(nil), claim.Risks...),
 		}
-		out[routeKey(method, path)] = coverage
 	}
-
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		add(method, "/v1/customers", routeCoverage{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-		add(method, "/v1/customers/{id}", routeCoverage{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-		add(method, "/v1/products", routeCoverage{Level: "L3", Stateful: true, ScorecardCases: []string{"products.create.success"}, SDKSmoke: []string{"stripe-node"}})
-		add(method, "/v1/products/{id}", routeCoverage{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-		add(method, "/v1/prices", routeCoverage{Level: "L3", Stateful: true, ScorecardCases: []string{"prices.create.invalid_json_amount_type"}, SDKSmoke: []string{"stripe-node"}})
-		add(method, "/v1/prices/{id}", routeCoverage{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-		add(method, "/v1/subscriptions", routeCoverage{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}})
-		add(method, "/v1/subscriptions/{id}", routeCoverage{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted"}})
-	}
-	add(http.MethodGet, "/v1/products/search", routeCoverage{Level: "L2", Stateful: false, Risks: []string{"metadata equality filters only; no Stripe Search Query Language parity"}})
-
-	add(http.MethodPost, "/v1/checkout/sessions", routeCoverage{Level: "L4", Stateful: true, ScorecardCases: []string{"checkout.sessions.create.java_sdk_optional_params"}, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
-	add(http.MethodGet, "/v1/checkout/sessions", routeCoverage{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
-	add(http.MethodGet, "/v1/checkout/sessions/{id}", routeCoverage{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
-	add(http.MethodPost, "/v1/billing_portal/sessions", routeCoverage{Level: "L2", Stateful: false, Risks: []string{"portal configuration and full Stripe-hosted portal behavior are not modeled"}})
-
-	add(http.MethodPost, "/v1/subscription_items", routeCoverage{Level: "L3", Stateful: true, ScorecardCases: []string{"subscription_items.create.invalid_quantity"}})
-	add(http.MethodDelete, "/v1/subscription_items/{id}", routeCoverage{Level: "L3", Stateful: true})
-	add(http.MethodDelete, "/v1/subscriptions/{id}", routeCoverage{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.deleted"}})
-
-	add(http.MethodGet, "/v1/invoices", routeCoverage{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-	add(http.MethodGet, "/v1/invoices/{id}", routeCoverage{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-	add(http.MethodPost, "/v1/invoices/create_preview", routeCoverage{Level: "L2", Stateful: false, Risks: []string{"zero-value local smoke-test invoice; no full proration model"}})
-
-	add(http.MethodGet, "/v1/payment_intents", routeCoverage{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-	add(http.MethodGet, "/v1/payment_intents/{id}", routeCoverage{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-	add(http.MethodGet, "/v1/payment_methods", routeCoverage{Level: "L2", Stateful: false, Risks: []string{"deterministic sandbox card projection only"}})
-
-	for _, method := range []string{http.MethodGet, http.MethodPost} {
-		add(method, "/v1/webhook_endpoints", routeCoverage{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-		add(method, "/v1/webhook_endpoints/{id}", routeCoverage{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-	}
-	add(http.MethodDelete, "/v1/webhook_endpoints/{id}", routeCoverage{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-	add(http.MethodGet, "/v1/events", routeCoverage{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
-	add(http.MethodGet, "/v1/events/{id}", routeCoverage{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
 	return out
 }
 
@@ -395,13 +363,11 @@ func billtapOnlyRoutes() []BilltapRouteCoverage {
 }
 
 func routeKey(method string, normalizedPath string) string {
-	return strings.ToUpper(method) + " " + normalizedPath
+	return stripecompat.RouteKey(method, normalizedPath)
 }
 
-var pathParamPattern = regexp.MustCompile(`\{[^}/]+\}`)
-
 func normalizeOpenAPIPath(path string) string {
-	return pathParamPattern.ReplaceAllString(path, "{id}")
+	return stripecompat.NormalizePath(path)
 }
 
 func isHTTPMethod(method string) bool {

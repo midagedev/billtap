@@ -70,14 +70,14 @@ Each chunk follows PR -> review -> fix -> merge.
 | T0 | 90% target and scoreboard gate | 0 ops | This target doc, thresholds, and PR queue. |
 | T1 | Runtime claim registry | 0 ops | Add `internal/stripecompat` claim registry and route matching shared by runtime and inventory. |
 | T2 | Known-route unsupported fallback | 0 ops | Known OpenAPI routes return Stripe-shaped unsupported errors and traces without counting as implemented. |
-| T3 | Auxiliary L1 route validation | +120 ops | Generic OpenAPI route registry, auth/error/list envelope validation, no fake financial state. |
-| T4 | Auxiliary L2 fixture responses | +120 ops | Deterministic fixture responses for safe low-state retrieve/list endpoints. |
-| T5 | Catalog/customers L1-L2 breadth | +80 ops | Products, prices, coupons, promotion codes, tax rates, customer adjunct resources. |
-| T6 | Connect smoke L2 | +35 ops | Accounts, account links/sessions, application fees, transfers, payouts, `Stripe-Account` traces. |
-| T7 | Payments and setup breadth | +50 ops | PaymentIntent, SetupIntent, PaymentMethod create/retrieve/list/update/cancel fixture/state coverage. |
-| T8 | Payment history L2-L3 | +35 ops | Charges, refunds, balance transactions, disputes, debug bundle evidence. |
-| T9 | Billing lifecycle depth | +45 ops | Schedules, invoice items, trials, renewals, coupons, discounts, credit notes, test clocks. |
-| T10 | SDK/adoption matrix | +56 ops | Node/Go/Java/Python/Ruby smoke and adoption-style reports. |
+| T3 | Auxiliary L1 route validation | +155 ops | Generic OpenAPI route registry, auth/error/list envelope validation, no fake financial state. |
+| T4 | Auxiliary L2 fixture responses | +155 ops | Deterministic fixture responses for safe low-state retrieve/list endpoints. |
+| T5 | Catalog/customers L1-L2 breadth | +72 ops | Products, prices, coupons, promotion codes, tax rates, customer adjunct resources. |
+| T6 | Connect smoke L2 | +50 ops | Accounts, account links/sessions, application fees, transfers, payouts, `Stripe-Account` traces. |
+| T7 | Payments and setup breadth | +38 ops | PaymentIntent, SetupIntent, PaymentMethod create/retrieve/list/update/cancel fixture/state coverage. |
+| T8 | Payment history L2-L3 | +30 ops | Charges, refunds, balance transactions, disputes, debug bundle evidence. |
+| T9 | Billing lifecycle depth | +38 ops | Schedules, invoice items, trials, renewals, coupons, discounts, credit notes, test clocks. |
+| T10 | SDK/adoption matrix | 0 ops | Node/Go/Java/Python/Ruby smoke and adoption-style reports that promote existing operations to `L6`. |
 
 The deltas are planning targets, not claims. Each PR records the actual
 before/after `summary.implemented_percent` and changed family rows.
@@ -86,6 +86,22 @@ T1 and T2 intentionally do not increase coverage. They prevent long-term
 coverage inflation from becoming a hardcoded list in
 `currentStripeRouteCoverage()` and ensure inventory-only routes are visible at
 runtime without being counted as implemented.
+
+T10 also does not increase `summary.implemented_operations` by itself. It
+raises confidence and levels for already counted operations; new operation
+coverage must come from T3-T9. The planned T3-T9 delta is `+538` operations,
+which would move the baseline from `37 / 619` to `575 / 619`, leaving a small
+buffer above the `558 / 619` target.
+
+## Derived Gate Checks
+
+The overall `summary.implemented_percent` check is necessary but not sufficient.
+G14 also uses `summary.families[].by_level` to calculate family depth:
+
+- P0 depth: for each P0 family, `(L3 + L4 + L5 + L6) / total >= 85%`.
+- P1 depth: for each P1 family, `(L2 + L3 + L4 + L5 + L6) / total >= 75%`.
+- P3 breadth: for auxiliary families, `(L1 + L2) / total >= 90%`, unless the
+  family is explicitly documented as unsafe or out of scope.
 
 ## Non-Goals
 

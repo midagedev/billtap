@@ -1,0 +1,201 @@
+package stripecompat
+
+import (
+	"fmt"
+	"net/http"
+	"regexp"
+	"strings"
+)
+
+const DefaultDocs = "docs/COMPATIBILITY.md#supported-stripe-like-api-subset"
+
+type Claim struct {
+	Method         string
+	Path           string
+	Level          string
+	Stateful       bool
+	Docs           string
+	WebhookEvents  []string
+	ScorecardCases []string
+	SDKSmoke       []string
+	Risks          []string
+}
+
+type Registry struct {
+	claims  map[string]Claim
+	ordered []Claim
+}
+
+func NewRegistry(claims []Claim) (Registry, error) {
+	registry := Registry{claims: map[string]Claim{}}
+	for _, claim := range claims {
+		claim.Method = strings.ToUpper(strings.TrimSpace(claim.Method))
+		claim.Path = NormalizePath(claim.Path)
+		if claim.Method == "" {
+			return Registry{}, fmt.Errorf("claim for %s has empty method", claim.Path)
+		}
+		if claim.Path == "" {
+			return Registry{}, fmt.Errorf("claim for %s has empty path", claim.Method)
+		}
+		if claim.Level == "" {
+			return Registry{}, fmt.Errorf("claim for %s %s has empty level", claim.Method, claim.Path)
+		}
+		if !validLevel(claim.Level) {
+			return Registry{}, fmt.Errorf("claim for %s %s has unsupported level %q", claim.Method, claim.Path, claim.Level)
+		}
+		if claim.Docs == "" {
+			claim.Docs = DefaultDocs
+		}
+		key := RouteKey(claim.Method, claim.Path)
+		if _, exists := registry.claims[key]; exists {
+			return Registry{}, fmt.Errorf("duplicate compatibility claim: %s", key)
+		}
+		copied := cloneClaim(claim)
+		registry.claims[key] = copied
+		registry.ordered = append(registry.ordered, copied)
+	}
+	return registry, nil
+}
+
+func MustRegistry(claims []Claim) Registry {
+	registry, err := NewRegistry(claims)
+	if err != nil {
+		panic(err)
+	}
+	return registry
+}
+
+func DefaultRegistry() Registry {
+	return MustRegistry(DefaultClaims())
+}
+
+func (r Registry) Lookup(method string, path string) (Claim, bool) {
+	claim, ok := r.claims[RouteKey(method, NormalizePath(path))]
+	if ok {
+		return cloneClaim(claim), true
+	}
+	normalizedMethod := strings.ToUpper(strings.TrimSpace(method))
+	for _, claim := range r.ordered {
+		if claim.Method == normalizedMethod && pathMatches(claim.Path, path) {
+			return cloneClaim(claim), true
+		}
+	}
+	return Claim{}, false
+}
+
+func (r Registry) Claims() []Claim {
+	claims := make([]Claim, 0, len(r.ordered))
+	for _, claim := range r.ordered {
+		claims = append(claims, cloneClaim(claim))
+	}
+	return claims
+}
+
+func RouteKey(method string, normalizedPath string) string {
+	return strings.ToUpper(strings.TrimSpace(method)) + " " + NormalizePath(normalizedPath)
+}
+
+var pathParamPattern = regexp.MustCompile(`\{[^}/]+\}`)
+
+func NormalizePath(path string) string {
+	return pathParamPattern.ReplaceAllString(strings.TrimSpace(path), "{id}")
+}
+
+func pathMatches(template string, candidate string) bool {
+	template = NormalizePath(template)
+	candidate = strings.TrimSpace(strings.Split(candidate, "?")[0])
+	if NormalizePath(candidate) == template {
+		return true
+	}
+
+	templateParts := splitPath(template)
+	candidateParts := splitPath(candidate)
+	if len(templateParts) != len(candidateParts) {
+		return false
+	}
+	for i := range templateParts {
+		if templateParts[i] == "{id}" {
+			if candidateParts[i] == "" {
+				return false
+			}
+			continue
+		}
+		if templateParts[i] != candidateParts[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func splitPath(path string) []string {
+	path = strings.Trim(strings.TrimSpace(path), "/")
+	if path == "" {
+		return nil
+	}
+	return strings.Split(path, "/")
+}
+
+func validLevel(level string) bool {
+	switch level {
+	case "L1", "L2", "L3", "L4", "L5", "L6":
+		return true
+	default:
+		return false
+	}
+}
+
+func DefaultClaims() []Claim {
+	var claims []Claim
+	add := func(method string, path string, claim Claim) {
+		claim.Method = method
+		claim.Path = path
+		claims = append(claims, claim)
+	}
+	statefulL3 := Claim{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}}
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		add(method, "/v1/customers", statefulL3)
+		add(method, "/v1/customers/{id}", statefulL3)
+		add(method, "/v1/products", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"products.create.success"}, SDKSmoke: []string{"stripe-node"}})
+		add(method, "/v1/products/{id}", statefulL3)
+		add(method, "/v1/prices", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"prices.create.invalid_json_amount_type"}, SDKSmoke: []string{"stripe-node"}})
+		add(method, "/v1/prices/{id}", statefulL3)
+		add(method, "/v1/subscriptions", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.created", "customer.subscription.updated", "customer.subscription.deleted"}})
+		add(method, "/v1/subscriptions/{id}", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted"}})
+	}
+	add(http.MethodGet, "/v1/products/search", Claim{Level: "L2", Risks: []string{"metadata equality filters only; no Stripe Search Query Language parity"}})
+
+	add(http.MethodPost, "/v1/checkout/sessions", Claim{Level: "L4", Stateful: true, ScorecardCases: []string{"checkout.sessions.create.java_sdk_optional_params"}, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
+	add(http.MethodGet, "/v1/checkout/sessions", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
+	add(http.MethodGet, "/v1/checkout/sessions/{id}", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
+	add(http.MethodPost, "/v1/billing_portal/sessions", Claim{Level: "L2", Risks: []string{"portal configuration and full Stripe-hosted portal behavior are not modeled"}})
+
+	add(http.MethodPost, "/v1/subscription_items", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"subscription_items.create.invalid_quantity"}})
+	add(http.MethodDelete, "/v1/subscription_items/{id}", Claim{Level: "L3", Stateful: true})
+	add(http.MethodDelete, "/v1/subscriptions/{id}", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.deleted"}})
+
+	add(http.MethodGet, "/v1/invoices", statefulL3)
+	add(http.MethodGet, "/v1/invoices/{id}", statefulL3)
+	add(http.MethodPost, "/v1/invoices/create_preview", Claim{Level: "L2", Risks: []string{"zero-value local smoke-test invoice; no full proration model"}})
+
+	add(http.MethodGet, "/v1/payment_intents", statefulL3)
+	add(http.MethodGet, "/v1/payment_intents/{id}", statefulL3)
+	add(http.MethodGet, "/v1/payment_methods", Claim{Level: "L2", Risks: []string{"deterministic sandbox card projection only"}})
+
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		add(method, "/v1/webhook_endpoints", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
+		add(method, "/v1/webhook_endpoints/{id}", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
+	}
+	add(http.MethodDelete, "/v1/webhook_endpoints/{id}", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
+	add(http.MethodGet, "/v1/events", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
+	add(http.MethodGet, "/v1/events/{id}", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
+
+	return claims
+}
+
+func cloneClaim(claim Claim) Claim {
+	claim.WebhookEvents = append([]string(nil), claim.WebhookEvents...)
+	claim.ScorecardCases = append([]string(nil), claim.ScorecardCases...)
+	claim.SDKSmoke = append([]string(nil), claim.SDKSmoke...)
+	claim.Risks = append([]string(nil), claim.Risks...)
+	return claim
+}

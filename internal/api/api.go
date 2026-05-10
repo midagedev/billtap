@@ -18,6 +18,7 @@ import (
 	"github.com/hckim/billtap/internal/fixtures"
 	"github.com/hckim/billtap/internal/scenarios"
 	"github.com/hckim/billtap/internal/security"
+	"github.com/hckim/billtap/internal/stripecompat"
 	"github.com/hckim/billtap/internal/webhooks"
 	"gopkg.in/yaml.v3"
 )
@@ -36,6 +37,7 @@ type Handler struct {
 	publicBase  string
 	mux         *http.ServeMux
 	idem        *idempotencyStore
+	compat      stripecompat.Registry
 }
 
 func New(opts Options) http.Handler {
@@ -46,6 +48,7 @@ func New(opts Options) http.Handler {
 		publicBase:  strings.TrimRight(opts.PublicBaseURL, "/"),
 		mux:         http.NewServeMux(),
 		idem:        newIdempotencyStore(),
+		compat:      stripecompat.DefaultRegistry(),
 	}
 	h.routes()
 	return h
@@ -101,6 +104,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/api/audit-log", h.handleAuditLog)
 	h.mux.HandleFunc("/api/retention/apply", h.handleRetentionApply)
 	h.mux.HandleFunc("/api/events/", h.handleEventAction)
+}
+
+func (h *Handler) compatibilityClaim(r *http.Request) (stripecompat.Claim, bool) {
+	return h.compat.Lookup(r.Method, r.URL.Path)
 }
 
 func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
