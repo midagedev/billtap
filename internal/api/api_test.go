@@ -2535,6 +2535,101 @@ func TestFixtureResolveStatusAndTestClockAdvance(t *testing.T) {
 	}
 }
 
+func TestFixtureApplyBackfillsCreatedEventForExistingSubscriptionSeed(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+	billingService := billing.NewService(store)
+	handler := New(Options{
+		Billing:     billingService,
+		Webhooks:    webhooks.NewService(store),
+		Diagnostics: diagnostics.NewService(store),
+	})
+
+	pack := fixtures.Pack{
+		Name:      "sample-existing-subscription",
+		RunID:     "run-existing-created-1",
+		Namespace: "sample-e2e",
+		Customers: []fixtures.CustomerFixture{{
+			ID:    "cus_fixture_existing_created",
+			Email: "existing-created@example.test",
+		}},
+		Products: []fixtures.ProductFixture{{
+			ID:   "prod_fixture_existing_plan",
+			Name: "Existing Fixture Plan",
+		}},
+		Prices: []fixtures.PriceFixture{{
+			ID:         "price_fixture_existing_monthly",
+			Product:    "prod_fixture_existing_plan",
+			Currency:   "usd",
+			UnitAmount: 30000,
+			LookupKey:  "sample_existing_monthly",
+			Interval:   "month",
+		}},
+		Subscriptions: []fixtures.SubscriptionFixture{{
+			ID:                 "sub_fixture_existing_created",
+			CheckoutSessionID:  "cs_fixture_existing_created",
+			InvoiceID:          "in_fixture_existing_created",
+			PaymentIntentID:    "pi_fixture_existing_created",
+			Ref:                "existing-created-ref",
+			Customer:           "cus_fixture_existing_created",
+			Price:              "price_fixture_existing_monthly",
+			Status:             "active",
+			CurrentPeriodStart: "2026-05-01T00:00:00Z",
+			CurrentPeriodEnd:   "2026-06-01T00:00:00Z",
+		}},
+	}
+
+	if _, err := fixtures.NewService(billingService).Apply(ctx, pack); err != nil {
+		t.Fatalf("preseed fixture graph: %v", err)
+	}
+	if count, _ := countSubscriptionCreatedEvents(t, handler, "sub_fixture_existing_created"); count != 0 {
+		t.Fatalf("created events before HTTP apply = %d, want 0", count)
+	}
+
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if len(applied.CheckoutSessions) != 0 || len(applied.Subscriptions) != 1 {
+		t.Fatalf("apply result sessions=%#v subscriptions=%#v, want existing subscription path", applied.CheckoutSessions, applied.Subscriptions)
+	}
+	if count, source := countSubscriptionCreatedEvents(t, handler, "sub_fixture_existing_created"); count != 1 || source != webhooks.SourceFixture {
+		t.Fatalf("created events count=%d source=%q, want one fixture backfill", count, source)
+	}
+
+	_ = postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if count, _ := countSubscriptionCreatedEvents(t, handler, "sub_fixture_existing_created"); count != 1 {
+		t.Fatalf("created events after reapply = %d, want idempotent backfill", count)
+	}
+}
+
+func countSubscriptionCreatedEvents(t *testing.T, handler http.Handler, subscriptionID string) (int, string) {
+	t.Helper()
+	events := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=customer.subscription.created")
+	count := 0
+	source := ""
+	for _, event := range events.Data {
+		var object struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(event.Data.Object, &object); err != nil {
+			t.Fatalf("decode event object: %v", err)
+		}
+		if object.ID == subscriptionID {
+			count++
+			source = event.Billtap.Source
+		}
+	}
+	return count, source
+}
+
 func TestRefundCreditNoteAPIsAndEvents(t *testing.T) {
 	handler := newTestHandler(t)
 	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"refund@example.test"}})

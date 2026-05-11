@@ -284,6 +284,8 @@ Fixture packs support repeatable local setup and assertions for:
 - fixture `ref` resolution through `GET /api/fixtures/resolve`
 - seeded webhook events for fixture-created checkout, subscription, invoice,
   payment-intent, refund, and credit-note evidence
+- missing `customer.subscription.created` event backfill for pre-seeded or
+  re-applied subscription fixtures
 - fixture-scoped snapshots
 - assertion reports for customers, products, prices, checkout sessions,
   subscriptions, invoices, payment intents, refunds, credit notes, and timeline

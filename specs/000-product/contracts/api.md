@@ -234,6 +234,10 @@ When the HTTP fixture apply API is used, Billtap also creates seeded webhook
 events for the local checkout, subscription, invoice, payment-intent, refund,
 and credit-note evidence so tests can list and replay those events through the
 same `/v1/events` and `/api/events/{id}/replay` paths.
+If a subscription already exists when the fixture is applied, Billtap backfills
+a missing `customer.subscription.created` event for that subscription before
+emitting fixture state updates. This keeps re-applied or pre-seeded fixture
+graphs replayable without requiring a dedicated checkout flow.
 
 Fixture-provided IDs are preserved for seeded objects. Fixtures also tag
 objects with `billtap_fixture_ref`, and the resolve endpoint below can map a
