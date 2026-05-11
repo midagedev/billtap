@@ -24,6 +24,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Forbidden keyword scan
+        shell: bash
+        env:
+          BILLTAP_FORBIDDEN_KEYWORDS: ${{ secrets.BILLTAP_FORBIDDEN_KEYWORDS }}
+        run: bash scripts/check-forbidden-keywords.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
