@@ -163,6 +163,7 @@ func DefaultClaims() []Claim {
 		add(method, "/v1/subscriptions/{id}", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted"}})
 	}
 	add(http.MethodGet, "/v1/products/search", Claim{Level: "L2", Risks: []string{"metadata equality filters only; no Stripe Search Query Language parity"}})
+	add(http.MethodGet, "/v1/prices/search", Claim{Level: "L3", Stateful: true, Risks: []string{"supports a measured prices search subset for active, type, lookup_key, and metadata equality clauses joined by AND"}})
 
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
 		add(method, "/v1/accounts", Claim{Level: "L3", Stateful: true, Risks: []string{"local Connect smoke only; onboarding, KYC, external accounts, and platform settlement are not modeled"}})

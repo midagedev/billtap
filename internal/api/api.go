@@ -78,6 +78,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/coupons/", h.handleCoupon)
 	h.mux.HandleFunc("/v1/promotion_codes", h.handlePromotionCodes)
 	h.mux.HandleFunc("/v1/promotion_codes/", h.handlePromotionCode)
+	h.mux.HandleFunc("/v1/prices/search", h.handlePriceSearch)
 	h.mux.HandleFunc("/v1/prices", h.handlePrices)
 	h.mux.HandleFunc("/v1/prices/", h.handlePrice)
 	h.mux.HandleFunc("/v1/account", h.handlePlatformAccount)
@@ -418,6 +419,33 @@ func (h *Handler) handlePrices(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
+}
+
+func (h *Handler) handlePriceSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	p := paramsFromValues(r.URL.Query())
+	if err := validatePriceSearch(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	criteria, err := parsePriceSearchQuery(p.string("query"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	prices, err := h.billing.ListPrices(r.Context())
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	filtered := filterPriceSearchResults(prices, criteria)
+	if limit := queryInt(r, "limit"); limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	writeResult(w, stripeSearchResult(r.URL.Path, p.string("query"), stripePrices(filtered)), nil)
 }
 
 func (h *Handler) handlePrice(w http.ResponseWriter, r *http.Request) {
@@ -1466,6 +1494,9 @@ func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Req
 		"object":        "billing_portal.session",
 		"customer":      customerID,
 		"configuration": emptyToNil(p.string("configuration")),
+		"flow":          nil,
+		"locale":        emptyToNil(p.string("locale")),
+		"on_behalf_of":  emptyToNil(p.string("on_behalf_of")),
 		"return_url":    returnURL,
 		"url":           h.absoluteURL(r, billingPortalSessionPath(customerID, sessionID, returnURL, flowType, billingPortalSessionSubscriptionID(p))),
 		"created":       time.Now().UTC().Unix(),
@@ -2334,6 +2365,11 @@ func (h *Handler) handleCustomerPaymentMethods(w http.ResponseWriter, r *http.Re
 }
 
 func (h *Handler) writeCustomerPaymentMethods(w http.ResponseWriter, r *http.Request, customerID string) {
+	p := paramsFromValues(r.URL.Query())
+	if err := validatePaymentMethodList(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
 	if customerID == "" {
 		writeResult(w, stripeList(r.URL.Path, []map[string]any{}), nil)
 		return
@@ -2341,6 +2377,10 @@ func (h *Handler) writeCustomerPaymentMethods(w http.ResponseWriter, r *http.Req
 	customer, err := h.billing.GetCustomer(r.Context(), customerID)
 	if err != nil {
 		writeResult(w, nil, err)
+		return
+	}
+	if paymentMethodType := strings.TrimSpace(r.URL.Query().Get("type")); paymentMethodType != "" && paymentMethodType != "card" {
+		writeResult(w, stripeList(r.URL.Path, []map[string]any{}), nil)
 		return
 	}
 	writeResult(w, stripeList(r.URL.Path, stripePaymentMethods(customer)), nil)
@@ -3535,16 +3575,25 @@ func parseParams(r *http.Request) (params, error) {
 	if err := r.ParseForm(); err != nil {
 		return params{}, err
 	}
-	values := map[string]string{}
-	for key, value := range r.Form {
-		if len(value) > 0 {
-			values[key] = value[0]
-		}
-	}
+	values := firstValues(r.Form)
 	if security.ContainsCardData(values) {
 		return params{}, fmt.Errorf("%w: real card data is not accepted by Billtap", webhooks.ErrInvalidInput)
 	}
 	return params{values: values}, nil
+}
+
+func paramsFromValues(values url.Values) params {
+	return params{values: firstValues(values)}
+}
+
+func firstValues(values url.Values) map[string]string {
+	out := map[string]string{}
+	for key, value := range values {
+		if len(value) > 0 {
+			out[key] = value[0]
+		}
+	}
+	return out
 }
 
 func (p params) string(key string) string {
@@ -3764,19 +3813,46 @@ func stripePaymentMethod(customerID string, paymentMethodID string) map[string]a
 	if strings.TrimSpace(paymentMethodID) == "" {
 		paymentMethodID = "pm_" + sanitizeID(customerID)
 	}
+	brand := paymentMethodBrand(paymentMethodID)
 	return map[string]any{
-		"id":       paymentMethodID,
-		"object":   "payment_method",
+		"id":              paymentMethodID,
+		"object":          "payment_method",
+		"allow_redisplay": "unspecified",
+		"billing_details": map[string]any{
+			"address": map[string]any{
+				"city":        nil,
+				"country":     nil,
+				"line1":       nil,
+				"line2":       nil,
+				"postal_code": nil,
+				"state":       nil,
+			},
+			"email": nil,
+			"name":  nil,
+			"phone": nil,
+		},
 		"customer": customerID,
 		"type":     "card",
 		"card": map[string]any{
-			"brand":     "visa",
-			"last4":     paymentMethodLast4(paymentMethodID),
-			"exp_month": 12,
-			"exp_year":  2035,
+			"brand":          brand,
+			"checks":         map[string]any{"address_line1_check": nil, "address_postal_code_check": nil, "cvc_check": "pass"},
+			"country":        "US",
+			"exp_month":      12,
+			"exp_year":       2035,
+			"fingerprint":    paymentMethodFingerprint(paymentMethodID),
+			"funding":        paymentMethodFunding(paymentMethodID),
+			"generated_from": nil,
+			"last4":          paymentMethodLast4(paymentMethodID),
+			"networks":       map[string]any{"available": []string{brand}, "preferred": nil},
+			"three_d_secure_usage": map[string]any{
+				"supported": true,
+			},
+			"wallet": nil,
 		},
-		"created":  time.Now().UTC().Unix(),
-		"livemode": false,
+		"created":   time.Now().UTC().Unix(),
+		"livemode":  false,
+		"metadata":  map[string]string{},
+		"redaction": nil,
 	}
 }
 
@@ -3854,6 +3930,35 @@ func paymentMethodLast4(paymentMethodID string) string {
 	}
 }
 
+func paymentMethodBrand(paymentMethodID string) string {
+	id := strings.ToLower(strings.TrimSpace(paymentMethodID))
+	switch {
+	case strings.Contains(id, "mastercard"):
+		return "mastercard"
+	case strings.Contains(id, "amex"):
+		return "amex"
+	case strings.Contains(id, "discover"):
+		return "discover"
+	default:
+		return "visa"
+	}
+}
+
+func paymentMethodFunding(paymentMethodID string) string {
+	if strings.Contains(strings.ToLower(strings.TrimSpace(paymentMethodID)), "debit") {
+		return "debit"
+	}
+	return "credit"
+}
+
+func paymentMethodFingerprint(paymentMethodID string) string {
+	value := sanitizeID(paymentMethodID)
+	if len(value) > 16 {
+		value = value[:16]
+	}
+	return "bt_" + value
+}
+
 func stripeProduct(product billing.Product) map[string]any {
 	return map[string]any{
 		"id":            product.ID,
@@ -3881,19 +3986,13 @@ func stripeProducts(products []billing.Product) []map[string]any {
 }
 
 func stripePrice(price billing.Price) map[string]any {
-	priceType := "one_time"
 	var recurring any
 	if price.RecurringInterval != "" {
-		priceType = "recurring"
 		recurring = map[string]any{
 			"interval":       price.RecurringInterval,
 			"interval_count": price.RecurringIntervalCount,
 			"usage_type":     "licensed",
 		}
-	}
-	lookupKey := price.LookupKey
-	if lookupKey == "" {
-		lookupKey = price.Metadata["lookup_key"]
 	}
 	return map[string]any{
 		"id":                       price.ID,
@@ -3904,14 +4003,14 @@ func stripePrice(price billing.Price) map[string]any {
 		"created_at":               price.CreatedAt,
 		"currency":                 strings.ToLower(price.Currency),
 		"livemode":                 false,
-		"lookup_key":               lookupKey,
+		"lookup_key":               priceLookupKey(price),
 		"metadata":                 nonNilMap(price.Metadata),
 		"product":                  price.ProductID,
 		"recurring":                recurring,
 		"recurring_interval":       price.RecurringInterval,
 		"recurring_interval_count": price.RecurringIntervalCount,
 		"tax_behavior":             "unspecified",
-		"type":                     priceType,
+		"type":                     priceSearchType(price),
 		"unit_amount":              price.UnitAmount,
 		"unit_amount_decimal":      strconv.FormatInt(price.UnitAmount, 10),
 	}
@@ -4495,7 +4594,7 @@ func filterPrices(prices []billing.Price, r *http.Request) []billing.Price {
 		if active := query.Get("active"); active != "" && price.Active != (active == "true" || active == "1") {
 			continue
 		}
-		if priceType := query.Get("type"); priceType == "recurring" && price.RecurringInterval == "" {
+		if priceType := query.Get("type"); priceType != "" && priceSearchType(price) != priceType {
 			continue
 		}
 		out = append(out, price)
@@ -4588,6 +4687,90 @@ var (
 	searchMetadataPattern = regexp.MustCompile(`metadata\['([^']+)'\]:'([^']*)'`)
 	searchActivePattern   = regexp.MustCompile(`active:'(true|false)'`)
 )
+
+type priceSearchCriteria struct {
+	Active    *bool
+	Type      string
+	LookupKey string
+	Metadata  map[string]string
+}
+
+var (
+	priceSearchActiveClause   = regexp.MustCompile(`^active:'(true|false)'$`)
+	priceSearchTypeClause     = regexp.MustCompile(`^type:'(one_time|recurring)'$`)
+	priceSearchLookupClause   = regexp.MustCompile(`^lookup_key:'([^']*)'$`)
+	priceSearchMetadataClause = regexp.MustCompile(`^metadata\['([^']+)'\]:'([^']*)'$`)
+	priceSearchANDPattern     = regexp.MustCompile(`(?i)\s+AND\s+`)
+)
+
+func parsePriceSearchQuery(query string) (priceSearchCriteria, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return priceSearchCriteria{}, missingParam("query")
+	}
+	criteria := priceSearchCriteria{Metadata: map[string]string{}}
+	for _, rawClause := range priceSearchANDPattern.Split(query, -1) {
+		clause := strings.TrimSpace(rawClause)
+		if clause == "" {
+			return priceSearchCriteria{}, invalidParam("query", "Expected field:'value' clauses joined by AND.")
+		}
+		switch {
+		case priceSearchActiveClause.MatchString(clause):
+			match := priceSearchActiveClause.FindStringSubmatch(clause)
+			active := match[1] == "true"
+			criteria.Active = &active
+		case priceSearchTypeClause.MatchString(clause):
+			match := priceSearchTypeClause.FindStringSubmatch(clause)
+			criteria.Type = match[1]
+		case priceSearchLookupClause.MatchString(clause):
+			match := priceSearchLookupClause.FindStringSubmatch(clause)
+			criteria.LookupKey = match[1]
+		case priceSearchMetadataClause.MatchString(clause):
+			match := priceSearchMetadataClause.FindStringSubmatch(clause)
+			criteria.Metadata[match[1]] = match[2]
+		default:
+			return priceSearchCriteria{}, invalidParam("query", "Unsupported prices search clause: "+clause+".")
+		}
+	}
+	if len(criteria.Metadata) == 0 {
+		criteria.Metadata = nil
+	}
+	return criteria, nil
+}
+
+func filterPriceSearchResults(prices []billing.Price, criteria priceSearchCriteria) []billing.Price {
+	out := make([]billing.Price, 0, len(prices))
+	for _, price := range prices {
+		if criteria.Active != nil && price.Active != *criteria.Active {
+			continue
+		}
+		if criteria.Type != "" && priceSearchType(price) != criteria.Type {
+			continue
+		}
+		if criteria.LookupKey != "" && priceLookupKey(price) != criteria.LookupKey {
+			continue
+		}
+		if !metadataMatches(price.Metadata, criteria.Metadata) {
+			continue
+		}
+		out = append(out, price)
+	}
+	return out
+}
+
+func priceSearchType(price billing.Price) string {
+	if price.RecurringInterval != "" {
+		return "recurring"
+	}
+	return "one_time"
+}
+
+func priceLookupKey(price billing.Price) string {
+	if price.LookupKey != "" {
+		return price.LookupKey
+	}
+	return price.Metadata["lookup_key"]
+}
 
 func filterProducts(products []billing.Product, query string) []billing.Product {
 	metadata := map[string]string{}

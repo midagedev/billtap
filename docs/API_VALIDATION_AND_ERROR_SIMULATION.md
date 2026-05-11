@@ -1,13 +1,13 @@
 # API Validation and Error Simulation Plan
 
-Status date: 2026-05-09
+Status date: 2026-05-12
 
 This document defines the public-release target and current status for
 Billtap's Stripe-like request validation and deterministic error simulation. It
-is intentionally narrower than full Stripe parity: Billtap should help
-subscription apps test local billing flows with realistic request failures,
-payment failures, idempotency hazards, and webhook delivery problems without
-processing real payments.
+is parity-driven for the documented Stripe API subset: each claimed endpoint
+should move toward Stripe-compatible request validation, response shape, SDK
+access, and error envelopes while preserving deterministic local billing flows
+and avoiding real payment processing.
 
 Current release status:
 
@@ -19,6 +19,12 @@ Current release status:
   `error=0` required for release.
 - L4 adoption smoke is covered by the `stripe-node` SDK smoke lane for the
   documented subset.
+- Billing portal session creation and customer payment-method listing now have
+  focused shape/validation tests for the documented Stripe-like fields Billtap
+  exposes, including portal flow enums and PaymentMethod card detail objects.
+- Prices search now has focused tests for the documented search subset used by
+  one-time price lookup paths: `active`, `type`, `lookup_key`, metadata
+  equality, `limit`, and unsupported-clause validation.
 - Live Stripe calls and the external `stripe-mock` oracle lane remain optional
   outside normal CI.
 
@@ -65,8 +71,9 @@ The local JongoDB compatibility suite has several patterns that fit Billtap:
 
 Patterns not to copy directly:
 
-- Do not target 100% provider parity. Billtap's value is deterministic billing
-  lab behavior for a documented subset.
+- Do not imply parity for undocumented surfaces. Add endpoints through measured
+  compatibility levels: inventory, validation, fixture response, stateful
+  behavior, webhook modeling, and SDK smoke.
 - Do not make live Stripe calls in normal CI. A live Stripe testmode lane can be
   optional and manually triggered later.
 - Do not treat `stripe-mock` as a behavioral oracle for declines, webhooks, or
@@ -98,6 +105,12 @@ Required behavior:
   - `POST /v1/checkout/sessions`: `line_items`, each item `price` or
     `price_data`, and redirect URL rules for hosted checkout modes
   - `POST /v1/billing_portal/sessions`: `customer`
+  - `GET /v1/prices/search`: `query`, `limit`, and supported
+    `field:'value'` clauses joined by `AND`
+  - `GET /v1/payment_methods` and
+    `GET /v1/customers/{id}/payment_methods`: `type`, `allow_redisplay`,
+    `limit`, unknown query parameters, and empty-list behavior for valid
+    non-card types that Billtap does not locally model
   - `POST /v1/payment_intents` and direct intent actions: amount/currency,
     capture method, deterministic outcome aliases, and cancellation reason
   - `POST /v1/setup_intents` and direct setup actions: usage, deterministic

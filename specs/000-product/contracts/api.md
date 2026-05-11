@@ -37,6 +37,13 @@ Storage and worker readiness.
 - `POST /v1/prices`
 - `GET /v1/prices/{id}`
 - `GET /v1/prices`
+- `GET /v1/prices/search`
+
+Price search returns a Stripe-like `search_result` envelope. The supported
+query subset covers `active:'true|false'`, `type:'one_time|recurring'`,
+`lookup_key:'...'`, and `metadata['key']:'value'` clauses joined by `AND`.
+This supports one-time price lookup paths while keeping unsupported query
+clauses explicit validation errors.
 
 ### Coupons
 
@@ -144,6 +151,10 @@ the current release-compatible subset.
 
 Returns deterministic sandbox card projections for known customers, including
 the saved default payment method set by local portal payment-method simulation.
+The response includes Stripe-like SDK fields such as `billing_details`,
+`card.checks`, `card.networks`, `card.three_d_secure_usage`, `metadata`, and
+`redaction`. Query validation covers `type`, `allow_redisplay`, `limit`, and
+unknown parameters; valid non-card types return an empty local list.
 
 ### Customer Cash Balance
 
@@ -211,9 +222,12 @@ period-end cancellations for attached objects.
 
 Returns a Stripe-like `billing_portal.session` object and Billtap hosted portal
 URL for a known customer. The request accepts `customer`, `return_url`, optional
-`configuration`, and `flow_data`. Hosted portal actions can save a deterministic
-payment method, cancel a subscription, emit the matching local webhook evidence,
-and redirect to `return_url`.
+`configuration`, `locale`, `on_behalf_of`, and `flow_data`. The response
+includes explicit `flow`, `locale`, `on_behalf_of`, `livemode`, and
+`return_url` fields. Flow enum values and required nested flow fields are
+validated with Stripe-style error envelopes. Hosted portal actions can save a
+deterministic payment method, cancel a subscription, emit the matching local
+webhook evidence, and redirect to `return_url`.
 
 ### Connect Platform Evidence
 
