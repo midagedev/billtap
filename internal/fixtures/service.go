@@ -65,6 +65,13 @@ func (s *Service) Apply(ctx context.Context, pack Pack) (ApplyResult, error) {
 		}
 		result.Prices = append(result.Prices, price)
 	}
+	for _, fixture := range pack.ConnectedAccounts {
+		account, err := s.upsertAccount(ctx, pack, fixture)
+		if err != nil {
+			return result, err
+		}
+		result.ConnectedAccounts = append(result.ConnectedAccounts, account)
+	}
 	for _, fixture := range pack.TestClocks {
 		clock, err := s.upsertTestClock(ctx, fixture)
 		if err != nil {
@@ -98,14 +105,15 @@ func (s *Service) Apply(ctx context.Context, pack Pack) (ApplyResult, error) {
 	}
 
 	result.Summary = map[string]int{
-		"customers":         len(result.Customers),
-		"products":          len(result.Products),
-		"prices":            len(result.Prices),
-		"test_clocks":       len(result.TestClocks),
-		"checkout_sessions": len(result.CheckoutSessions),
-		"subscriptions":     len(result.Subscriptions),
-		"refunds":           len(result.Refunds),
-		"credit_notes":      len(result.CreditNotes),
+		"customers":          len(result.Customers),
+		"products":           len(result.Products),
+		"prices":             len(result.Prices),
+		"connected_accounts": len(result.ConnectedAccounts),
+		"test_clocks":        len(result.TestClocks),
+		"checkout_sessions":  len(result.CheckoutSessions),
+		"subscriptions":      len(result.Subscriptions),
+		"refunds":            len(result.Refunds),
+		"credit_notes":       len(result.CreditNotes),
 	}
 
 	if len(pack.Assertions) > 0 {
@@ -121,6 +129,11 @@ func (s *Service) Apply(ctx context.Context, pack Pack) (ApplyResult, error) {
 	}
 
 	return result, nil
+}
+
+func (s *Service) Validate(pack Pack) error {
+	pack = normalizePack(pack)
+	return validatePack(pack)
 }
 
 func (s *Service) Snapshot(ctx context.Context, filter SnapshotFilter) (Snapshot, error) {
@@ -318,6 +331,7 @@ func (s *Service) upsertCustomer(ctx context.Context, pack Pack, fixture Custome
 		return billing.Customer{}, err
 	}
 	metadata = applyCustomerDefaultPaymentIntentOutcome(metadata, fixture)
+	metadata = applyCustomerDefaultInvoiceOutcome(metadata, fixture)
 	if fixture.ID != "" {
 		current, err := s.billing.GetCustomer(ctx, fixture.ID)
 		if err == nil {
@@ -327,6 +341,7 @@ func (s *Service) upsertCustomer(ctx context.Context, pack Pack, fixture Custome
 				return billing.Customer{}, err
 			}
 			metadata = applyCustomerDefaultPaymentIntentOutcome(metadata, fixture)
+			metadata = applyCustomerDefaultInvoiceOutcome(metadata, fixture)
 			return s.billing.UpdateCustomer(ctx, fixture.ID, billing.Customer{
 				Email:    fixture.Email,
 				Name:     fixture.Name,
@@ -343,6 +358,43 @@ func (s *Service) upsertCustomer(ctx context.Context, pack Pack, fixture Custome
 		Name:     fixture.Name,
 		Metadata: metadata,
 	})
+}
+
+func (s *Service) upsertAccount(ctx context.Context, pack Pack, fixture AccountFixture) (billing.Account, error) {
+	id := strings.TrimSpace(fixture.ID)
+	metadata := fixtureMetadata(fixture.Metadata, pack, id)
+	chargesEnabled := boolDefaultPtr(fixture.ChargesEnabled, true)
+	payoutsEnabled := boolDefaultPtr(fixture.PayoutsEnabled, true)
+	detailsSubmitted := boolDefaultPtr(fixture.DetailsSubmitted, true)
+	account := billing.Account{
+		ID:               id,
+		Type:             firstFixtureNonEmpty(fixture.Type, "express"),
+		Country:          strings.ToUpper(firstFixtureNonEmpty(fixture.Country, "US")),
+		Email:            strings.TrimSpace(fixture.Email),
+		BusinessType:     strings.TrimSpace(fixture.BusinessType),
+		DefaultCurrency:  strings.ToLower(firstFixtureNonEmpty(fixture.DefaultCurrency, "usd")),
+		ChargesEnabled:   chargesEnabled,
+		PayoutsEnabled:   payoutsEnabled,
+		DetailsSubmitted: detailsSubmitted,
+		Capabilities:     fixture.Capabilities,
+		Metadata:         metadata,
+	}
+	if id != "" {
+		current, err := s.billing.GetAccount(ctx, id)
+		if err == nil {
+			if account.Capabilities == nil {
+				account.Capabilities = current.Capabilities
+			}
+			if metadata != nil {
+				account.Metadata = mergeStringMap(current.Metadata, metadata)
+			}
+			return s.billing.UpdateAccount(ctx, id, account)
+		}
+		if !errors.Is(err, billing.ErrNotFound) {
+			return billing.Account{}, err
+		}
+	}
+	return s.billing.CreateAccount(ctx, account)
 }
 
 func (s *Service) upsertProduct(ctx context.Context, pack Pack, fixture ProductFixture) (billing.Product, error) {
@@ -559,6 +611,14 @@ func (s *Service) createRefund(ctx context.Context, pack Pack, fixture RefundFix
 		}
 	}
 	metadata := fixtureMetadata(fixture.Metadata, pack, firstFixtureNonEmpty(fixture.ID, fixture.Charge, fixture.PaymentIntent, fixture.Invoice))
+	if strings.TrimSpace(fixture.TestClock) != "" {
+		metadata = ensureStringMap(metadata)
+		metadata["test_clock"] = strings.TrimSpace(fixture.TestClock)
+	}
+	if settleAt := firstFixtureNonEmpty(fixture.SettleAt, fixture.AvailableOn); settleAt != "" {
+		metadata = ensureStringMap(metadata)
+		metadata["billtap_settle_at"] = settleAt
+	}
 	return s.billing.CreateRefund(ctx, billing.Refund{
 		ID:              strings.TrimSpace(fixture.ID),
 		ChargeID:        strings.TrimSpace(fixture.Charge),
@@ -568,6 +628,7 @@ func (s *Service) createRefund(ctx context.Context, pack Pack, fixture RefundFix
 		Amount:          fixture.Amount,
 		Currency:        strings.TrimSpace(fixture.Currency),
 		Reason:          strings.TrimSpace(fixture.Reason),
+		Status:          strings.TrimSpace(fixture.Status),
 		Metadata:        metadata,
 	})
 }
@@ -590,6 +651,7 @@ func (s *Service) createCreditNote(ctx context.Context, pack Pack, fixture Credi
 		Amount:     fixture.Amount,
 		Currency:   strings.TrimSpace(fixture.Currency),
 		Reason:     strings.TrimSpace(fixture.Reason),
+		Status:     strings.TrimSpace(fixture.Status),
 		Metadata:   metadata,
 	})
 }
@@ -674,6 +736,14 @@ func validatePack(pack Pack) error {
 		if outcome := customerDefaultPaymentIntentOutcomeFixture(customer); outcome != "" && !billing.IsSupportedPaymentIntentOutcome(outcome) {
 			problems = append(problems, fmt.Sprintf("customers[%d].default_payment_intent_outcome is invalid", idx))
 		}
+		if outcome := customerDefaultInvoiceOutcomeFixture(customer); outcome != "" && !billing.IsSupportedInvoiceOutcome(outcome) {
+			problems = append(problems, fmt.Sprintf("customers[%d].default_invoice_outcome is invalid", idx))
+		}
+	}
+	for idx, account := range pack.ConnectedAccounts {
+		if strings.TrimSpace(account.ID) == "" {
+			problems = append(problems, fmt.Sprintf("connected_accounts[%d].id is required", idx))
+		}
 	}
 	for idx, product := range pack.Products {
 		if strings.TrimSpace(product.Name) == "" {
@@ -721,6 +791,16 @@ func validatePack(pack Pack) error {
 		if refund.Amount <= 0 {
 			problems = append(problems, fmt.Sprintf("refunds[%d].amount must be positive", idx))
 		}
+		if strings.TrimSpace(refund.SettleAt) != "" {
+			if _, err := parseFixtureTime(refund.SettleAt); err != nil {
+				problems = append(problems, fmt.Sprintf("refunds[%d].settle_at is invalid", idx))
+			}
+		}
+		if strings.TrimSpace(refund.AvailableOn) != "" {
+			if _, err := parseFixtureTime(refund.AvailableOn); err != nil {
+				problems = append(problems, fmt.Sprintf("refunds[%d].available_on is invalid", idx))
+			}
+		}
 	}
 	for idx, note := range pack.CreditNotes {
 		if strings.TrimSpace(note.Invoice) == "" {
@@ -728,6 +808,14 @@ func validatePack(pack Pack) error {
 		}
 		if note.Amount <= 0 {
 			problems = append(problems, fmt.Sprintf("credit_notes[%d].amount must be positive", idx))
+		}
+	}
+	for idx, dispute := range pack.Disputes {
+		if strings.TrimSpace(dispute.Charge) == "" {
+			problems = append(problems, fmt.Sprintf("disputes[%d].charge is required", idx))
+		}
+		if dispute.Amount < 0 {
+			problems = append(problems, fmt.Sprintf("disputes[%d].amount must be non-negative", idx))
 		}
 	}
 	if len(problems) > 0 {
@@ -911,12 +999,37 @@ func applyCustomerDefaultPaymentIntentOutcome(metadata map[string]string, fixtur
 	return metadata
 }
 
+func applyCustomerDefaultInvoiceOutcome(metadata map[string]string, fixture CustomerFixture) map[string]string {
+	outcome := customerDefaultInvoiceOutcomeFixture(fixture)
+	if outcome == "" {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata[billing.MetadataDefaultInvoiceOutcome] = outcome
+	return metadata
+}
+
 func customerDefaultPaymentIntentOutcomeFixture(fixture CustomerFixture) string {
 	return firstFixtureNonEmpty(
 		fixture.DefaultPaymentIntentOutcome,
 		fixture.DefaultPIOutcomeCamel,
 		fixture.Metadata[billing.MetadataDefaultPaymentIntentOutcome],
 		fixture.Metadata["default_payment_intent_outcome"],
+	)
+}
+
+func customerDefaultInvoiceOutcomeFixture(fixture CustomerFixture) string {
+	return firstFixtureNonEmpty(
+		fixture.DefaultInvoiceOutcome,
+		fixture.DefaultInvoiceOutcomeCamel,
+		fixture.DefaultRenewalOutcome,
+		fixture.DefaultRenewalOutcomeCamel,
+		fixture.Metadata[billing.MetadataDefaultInvoiceOutcome],
+		fixture.Metadata["billtap_default_renewal_outcome"],
+		fixture.Metadata["default_invoice_outcome"],
+		fixture.Metadata["default_renewal_outcome"],
 	)
 }
 
@@ -1206,6 +1319,13 @@ func firstFixtureNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func boolDefaultPtr(value *bool, fallback bool) bool {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 func uniqueFixtureStrings(values []string) []string {

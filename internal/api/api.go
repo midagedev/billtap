@@ -102,6 +102,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/subscription_items", h.handleSubscriptionItems)
 	h.mux.HandleFunc("/v1/subscription_items/", h.handleSubscriptionItem)
 	h.mux.HandleFunc("/v1/invoices/create_preview", h.handleInvoicePreview)
+	h.mux.HandleFunc("/v1/invoices/upcoming", h.handleInvoicePreview)
 	h.mux.HandleFunc("/v1/invoices", h.handleInvoices)
 	h.mux.HandleFunc("/v1/invoices/", h.handleInvoice)
 	h.mux.HandleFunc("/v1/refunds", h.handleRefunds)
@@ -133,6 +134,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/api/diagnostics", h.handleDiagnostics)
 	h.mux.HandleFunc("/api/request-traces", h.handleRequestTraces)
 	h.mux.HandleFunc("/api/fixtures/apply", h.handleFixtureApply)
+	h.mux.HandleFunc("/api/fixtures/validate", h.handleFixtureValidate)
 	h.mux.HandleFunc("/api/fixtures/snapshot", h.handleFixtureSnapshot)
 	h.mux.HandleFunc("/api/fixtures/resolve", h.handleFixtureResolve)
 	h.mux.HandleFunc("/api/fixtures/assert", h.handleFixtureAssert)
@@ -185,8 +187,13 @@ func (h *Handler) writeKnownUnsupportedRoute(w http.ResponseWriter, r *http.Requ
 	if !ok {
 		return false
 	}
-	if claim, ok := h.compatibilityClaim(r); ok && stripecompat.NormalizePath(claim.Path) == stripecompat.NormalizePath(route.Path) {
-		return false
+	if claim, ok := h.compatibilityClaim(r); ok {
+		claimPath := stripecompat.NormalizePath(claim.Path)
+		routePath := stripecompat.NormalizePath(route.Path)
+		requestPath := stripecompat.NormalizePath(r.URL.Path)
+		if claimPath == routePath || (!strings.Contains(claim.Path, "{") && claimPath == requestPath) {
+			return false
+		}
 	}
 	if validationErr := h.validation.Validate(r); validationErr != nil {
 		writeStripeError(w, http.StatusBadRequest, stripeAPIError{
@@ -1823,24 +1830,215 @@ func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request)
 }
 
 func (h *Handler) handleInvoicePreview(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+	if r.URL.Path == "/v1/invoices/create_preview" && r.Method != http.MethodPost {
 		h.methodNotAllowed(w, r, "POST")
 		return
 	}
-	now := time.Now().UTC().Unix()
-	writeJSON(w, http.StatusOK, map[string]any{
-		"id":          "upcoming_in_" + strconv.FormatInt(now, 10),
-		"object":      "invoice",
-		"amount_due":  0,
-		"subtotal":    0,
-		"total":       0,
-		"currency":    "usd",
-		"created":     now,
-		"status":      "draft",
-		"lines":       stripeList("/v1/invoices/create_preview/lines", []map[string]any{}),
-		"livemode":    false,
-		"description": "Billtap preview uses zero-value proration for local smoke tests",
-	})
+	if r.URL.Path == "/v1/invoices/upcoming" && r.Method != http.MethodGet && r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "GET, POST")
+		return
+	}
+	var (
+		p   params
+		err error
+	)
+	if r.Method == http.MethodGet {
+		p = params{values: firstValues(r.URL.Query())}
+	} else {
+		p, err = parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+	}
+	if err := validateInvoicePreview(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	preview, err := h.invoicePreview(r.Context(), r.URL.Path, p)
+	writeResult(w, preview, err)
+}
+
+func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (map[string]any, error) {
+	now := time.Now().UTC()
+	subscriptionID := p.string("subscription")
+	customerID := p.string("customer")
+	var subscription billing.Subscription
+	var err error
+	if subscriptionID != "" {
+		subscription, err = h.billing.GetSubscription(ctx, subscriptionID)
+		if err != nil {
+			return nil, err
+		}
+		if customerID == "" {
+			customerID = subscription.CustomerID
+		}
+	}
+	items := invoicePreviewLineItems(p)
+	if len(items) == 0 && subscription.ID != "" {
+		items = append([]billing.LineItem{}, subscription.Items...)
+	}
+	newTotal, currency, prices, err := h.lineItemTotal(ctx, items)
+	if err != nil {
+		return nil, err
+	}
+	if currency == "" {
+		currency = strings.ToLower(p.stringDefault("currency", "usd"))
+	}
+	behavior := invoicePreviewProrationBehavior(p)
+	createdAt := invoicePreviewProrationDate(p, now)
+	amount := newTotal
+	lines := []map[string]any{}
+	description := "Upcoming invoice preview"
+	if subscription.ID != "" {
+		oldTotal, oldCurrency, _, err := h.lineItemTotal(ctx, subscription.Items)
+		if err != nil {
+			return nil, err
+		}
+		if currency == "" {
+			currency = oldCurrency
+		}
+		amount = 0
+		if behavior != "none" && !subscription.CurrentPeriodStart.IsZero() && !subscription.CurrentPeriodEnd.IsZero() && subscription.CurrentPeriodEnd.After(createdAt) && subscription.CurrentPeriodEnd.After(subscription.CurrentPeriodStart) {
+			periodSeconds := subscription.CurrentPeriodEnd.Unix() - subscription.CurrentPeriodStart.Unix()
+			remainingSeconds := subscription.CurrentPeriodEnd.Unix() - createdAt.Unix()
+			if periodSeconds > 0 && remainingSeconds > 0 {
+				amount = (newTotal - oldTotal) * remainingSeconds / periodSeconds
+			}
+		}
+		description = "Subscription update preview"
+		if amount != 0 {
+			priceID := ""
+			quantity := int64(1)
+			var pricePayload any
+			if len(items) > 0 {
+				priceID = items[0].PriceID
+				quantity = items[0].Quantity
+				pricePayload = prices[priceID]
+			}
+			lines = append(lines, map[string]any{
+				"id":           "il_preview_" + sanitizeID(subscription.ID),
+				"object":       "line_item",
+				"amount":       amount,
+				"currency":     currency,
+				"description":  "Proration for subscription update",
+				"discountable": false,
+				"period": map[string]any{
+					"start": createdAt.Unix(),
+					"end":   subscription.CurrentPeriodEnd.Unix(),
+				},
+				"proration":    true,
+				"price":        pricePayload,
+				"quantity":     quantity,
+				"subscription": subscription.ID,
+				"type":         "invoiceitem",
+				"parent": map[string]any{
+					"type": "subscription_item_details",
+					"subscription_item_details": map[string]any{
+						"price":        priceID,
+						"proration":    true,
+						"subscription": subscription.ID,
+					},
+				},
+			})
+		}
+	}
+	if behavior == "none" {
+		amount = 0
+		lines = nil
+	}
+	return map[string]any{
+		"id":               "upcoming_in_" + strconv.FormatInt(now.Unix(), 10),
+		"object":           "invoice",
+		"customer":         emptyToNil(customerID),
+		"subscription":     emptyToNil(subscriptionID),
+		"amount_due":       amount,
+		"amount_paid":      0,
+		"amount_remaining": amount,
+		"subtotal":         amount,
+		"total":            amount,
+		"currency":         currency,
+		"created":          now.Unix(),
+		"status":           "draft",
+		"lines":            stripeList(path+"/lines", lines),
+		"livemode":         false,
+		"description":      description,
+		"billtap_preview": map[string]any{
+			"proration_behavior": behavior,
+			"proration_date":     createdAt.Unix(),
+		},
+	}, nil
+}
+
+func (h *Handler) lineItemTotal(ctx context.Context, items []billing.LineItem) (int64, string, map[string]map[string]any, error) {
+	total := int64(0)
+	currency := ""
+	prices := map[string]map[string]any{}
+	for _, item := range items {
+		quantity := item.Quantity
+		if quantity <= 0 {
+			quantity = 1
+		}
+		price, err := h.billing.GetPrice(ctx, item.PriceID)
+		if err != nil {
+			return 0, "", nil, err
+		}
+		total += price.UnitAmount * quantity
+		if currency == "" {
+			currency = price.Currency
+		}
+		prices[price.ID] = stripePrice(price)
+	}
+	return total, currency, prices, nil
+}
+
+func invoicePreviewProrationBehavior(p params) string {
+	behavior := p.first("subscription_details[proration_behavior]", "subscriptionDetails[prorationBehavior]", "proration_behavior")
+	switch behavior {
+	case "none", "create_prorations", "always_invoice":
+		return behavior
+	default:
+		return "create_prorations"
+	}
+}
+
+func invoicePreviewProrationDate(p params, fallback time.Time) time.Time {
+	raw := p.first("subscription_details[proration_date]", "subscriptionDetails[prorationDate]", "proration_date")
+	if raw == "" {
+		return fallback
+	}
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return time.Unix(seconds, 0).UTC()
+}
+
+func invoicePreviewLineItems(p params) []billing.LineItem {
+	var out []billing.LineItem
+	for i := 0; i < 100; i++ {
+		price := p.first(
+			fmt.Sprintf("subscription_details[items][%d][price]", i),
+			fmt.Sprintf("subscriptionDetails[items][%d][price]", i),
+			fmt.Sprintf("subscription_items[%d][price]", i),
+			fmt.Sprintf("items[%d][price]", i),
+		)
+		if price == "" && i == 0 {
+			price = p.string("price")
+		}
+		if price == "" {
+			continue
+		}
+		quantity := p.int64Default(fmt.Sprintf("subscription_details[items][%d][quantity]", i), 0)
+		if quantity == 0 {
+			quantity = p.int64Default(fmt.Sprintf("subscription_items[%d][quantity]", i), 0)
+		}
+		if quantity == 0 {
+			quantity = p.int64Default(fmt.Sprintf("items[%d][quantity]", i), 1)
+		}
+		out = append(out, billing.LineItem{PriceID: price, Quantity: quantity})
+	}
+	return out
 }
 
 func (h *Handler) handleInvoices(w http.ResponseWriter, r *http.Request) {
@@ -1945,6 +2143,7 @@ func (h *Handler) handleRefunds(w http.ResponseWriter, r *http.Request) {
 			Amount:          p.int64("amount"),
 			Currency:        p.string("currency"),
 			Reason:          p.string("reason"),
+			Status:          p.string("status"),
 			Metadata:        p.metadata(),
 		})
 		if err == nil {
@@ -1957,17 +2156,52 @@ func (h *Handler) handleRefunds(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleRefund(w http.ResponseWriter, r *http.Request) {
-	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/refunds/"), "/")
-	if id == "" || strings.Contains(id, "/") {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/refunds/"), "/")
+	if rest == "" {
 		h.notFound(w, r)
 		return
 	}
-	if r.Method != http.MethodGet {
-		h.methodNotAllowed(w, r, "GET")
+	id, action, hasAction := strings.Cut(rest, "/")
+	if hasAction && action == "cancel" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		refund, err := h.billing.UpdateRefundStatus(r.Context(), id, "canceled", time.Time{})
+		if err == nil {
+			h.emitGenericWebhook(r, "charge.refund.updated", refund.ID, stripeRefund(refund), webhooks.SourceAPI)
+		}
+		writeResult(w, stripeRefund(refund), err)
 		return
 	}
-	refund, err := h.billing.GetRefund(r.Context(), id)
-	writeResult(w, stripeRefund(refund), err)
+	if hasAction {
+		h.notFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		refund, err := h.billing.GetRefund(r.Context(), id)
+		writeResult(w, stripeRefund(refund), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateRefundUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		status := p.stringDefault("status", "succeeded")
+		refund, err := h.billing.UpdateRefundStatus(r.Context(), id, status, time.Time{})
+		if err == nil {
+			h.emitGenericWebhook(r, "charge.refund.updated", refund.ID, stripeRefund(refund), webhooks.SourceAPI)
+		}
+		writeResult(w, stripeRefund(refund), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+		return
+	}
 }
 
 func (h *Handler) handleCreditNotes(w http.ResponseWriter, r *http.Request) {
@@ -1999,6 +2233,7 @@ func (h *Handler) handleCreditNotes(w http.ResponseWriter, r *http.Request) {
 			Amount:     p.int64("amount"),
 			Currency:   p.string("currency"),
 			Reason:     p.string("reason"),
+			Status:     p.string("status"),
 			Metadata:   p.metadata(),
 		})
 		if err == nil {
@@ -2017,6 +2252,18 @@ func (h *Handler) handleCreditNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, action, hasAction := strings.Cut(rest, "/")
+	if hasAction && action == "void" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		note, err := h.billing.VoidCreditNote(r.Context(), id)
+		if err == nil {
+			h.emitGenericWebhook(r, "credit_note.voided", note.ID, stripeCreditNote(note), webhooks.SourceAPI)
+		}
+		writeResult(w, stripeCreditNote(note), err)
+		return
+	}
 	if hasAction && action != "" {
 		h.notFound(w, r)
 		return
@@ -2645,14 +2892,7 @@ func (h *Handler) handleTimeline(w http.ResponseWriter, r *http.Request) {
 		h.methodNotAllowed(w, r, "GET")
 		return
 	}
-	q := r.URL.Query()
-	entries, err := h.billing.Timeline(r.Context(), billing.TimelineFilter{
-		CustomerID:        q.Get("customerId"),
-		CheckoutSessionID: q.Get("checkoutSessionId"),
-		SubscriptionID:    q.Get("subscriptionId"),
-		InvoiceID:         q.Get("invoiceId"),
-		PaymentIntentID:   q.Get("paymentIntentId"),
-	})
+	entries, err := h.billing.Timeline(r.Context(), diagnosticTimelineFilter(r))
 	writeResult(w, map[string]any{"object": "list", "data": entries}, err)
 }
 
@@ -2781,8 +3021,111 @@ func (h *Handler) handleFixtureApply(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, result, err)
 		return
 	}
+	if disputes, err := h.applyFixtureDisputes(r, pack); err != nil {
+		writeResult(w, result, err)
+		return
+	} else if len(disputes) > 0 {
+		result.Disputes = disputes
+		result.Summary["disputes"] = len(disputes)
+	}
 	h.emitFixtureApplyWebhooks(r, result)
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (h *Handler) handleFixtureValidate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	body, err := readSafeFixtureBody(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	pack, err := fixtures.LoadPack(body, r.Header.Get("Content-Type"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: %v", billing.ErrInvalidInput, err))
+		return
+	}
+	if err := fixtures.NewService(h.billing).Validate(pack); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":     "fxval_" + strconv.FormatInt(time.Now().UTC().UnixNano(), 36),
+		"object": "fixture_validation",
+		"valid":  true,
+		"summary": map[string]int{
+			"customers":          len(pack.Customers),
+			"products":           len(pack.Products) + len(pack.Catalog.Products),
+			"prices":             len(pack.Prices) + len(pack.Catalog.Prices),
+			"connected_accounts": len(pack.ConnectedAccounts),
+			"test_clocks":        len(pack.TestClocks),
+			"subscriptions":      len(pack.Subscriptions),
+			"refunds":            len(pack.Refunds),
+			"credit_notes":       len(pack.CreditNotes),
+			"disputes":           len(pack.Disputes),
+		},
+	})
+}
+
+func (h *Handler) applyFixtureDisputes(r *http.Request, pack fixtures.Pack) ([]map[string]any, error) {
+	if len(pack.Disputes) == 0 {
+		return nil, nil
+	}
+	out := make([]map[string]any, 0, len(pack.Disputes))
+	for _, fixture := range pack.Disputes {
+		dispute := disputeFixturePayload(fixture)
+		h.local.mu.Lock()
+		h.local.disputes[fmt.Sprint(dispute["id"])] = dispute
+		h.local.mu.Unlock()
+		out = append(out, cloneEvidence(dispute))
+		h.emitGenericWebhook(r, "charge.dispute.created", fmt.Sprint(dispute["id"]), dispute, webhooks.SourceFixture)
+		if fmt.Sprint(dispute["status"]) != "needs_response" {
+			h.emitGenericWebhook(r, "charge.dispute.updated", fmt.Sprint(dispute["id"]), dispute, webhooks.SourceFixture)
+			h.emitGenericWebhook(r, "charge.dispute.funds_withdrawn", fmt.Sprint(dispute["id"]), dispute, webhooks.SourceFixture)
+		}
+		if status := fmt.Sprint(dispute["status"]); status == "won" || status == "lost" {
+			h.emitGenericWebhook(r, "charge.dispute.closed", fmt.Sprint(dispute["id"]), dispute, webhooks.SourceFixture)
+		}
+	}
+	return out, nil
+}
+
+func disputeFixturePayload(fixture fixtures.DisputeFixture) map[string]any {
+	now := time.Now().UTC()
+	id := strings.TrimSpace(fixture.ID)
+	if id == "" {
+		id = "dp_" + strconv.FormatInt(now.UnixNano(), 36)
+	}
+	amount := fixture.Amount
+	if amount <= 0 {
+		amount = 1000
+	}
+	currency := strings.ToLower(strings.TrimSpace(fixture.Currency))
+	if currency == "" {
+		currency = "usd"
+	}
+	status := strings.ToLower(strings.TrimSpace(fixture.Status))
+	if status == "" {
+		status = "needs_response"
+	}
+	return map[string]any{
+		"id":                   id,
+		"object":               "dispute",
+		"charge":               strings.TrimSpace(fixture.Charge),
+		"amount":               amount,
+		"currency":             currency,
+		"reason":               firstNonEmptyString(fixture.Reason, "general"),
+		"status":               status,
+		"evidence":             map[string]any{},
+		"evidence_details":     map[string]any{"has_evidence": false, "submission_count": 0, "past_due": false},
+		"balance_transactions": []map[string]any{},
+		"is_charge_refundable": true,
+		"metadata":             nonNilMap(fixture.Metadata),
+		"created":              now.Unix(),
+		"livemode":             false,
+	}
 }
 
 func (h *Handler) handleFixtureSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -2869,40 +3212,51 @@ func fixtureSnapshotFilter(r *http.Request) fixtures.SnapshotFilter {
 }
 
 func debugBundleTimelineFilter(p params) billing.TimelineFilter {
+	objectType := dashboardObjectType(p.first("objectType", "object_type", "targetType", "target_type", "type"))
+	objectID := p.first("objectId", "object_id", "targetId", "target_id", "id")
 	filter := billing.TimelineFilter{
 		CustomerID:        p.first("customerId", "customer_id"),
 		CheckoutSessionID: p.first("checkoutSessionId", "checkout_session_id"),
 		SubscriptionID:    p.first("subscriptionId", "subscription_id"),
 		InvoiceID:         p.first("invoiceId", "invoice_id"),
 		PaymentIntentID:   p.first("paymentIntentId", "payment_intent_id"),
+		ObjectType:        objectType,
 	}
 
-	objectID := p.first("objectId", "object_id", "targetId", "target_id", "id")
 	if objectID == "" {
 		return filter
 	}
-	switch dashboardObjectType(p.first("objectType", "object_type", "targetType", "target_type", "type")) {
+	switch objectType {
 	case "customer":
+		filter.ObjectType = ""
 		if filter.CustomerID == "" {
 			filter.CustomerID = objectID
 		}
 	case "checkout_session":
+		filter.ObjectType = ""
 		if filter.CheckoutSessionID == "" {
 			filter.CheckoutSessionID = objectID
 		}
 	case "subscription":
+		filter.ObjectType = ""
 		if filter.SubscriptionID == "" {
 			filter.SubscriptionID = objectID
 		}
 	case "invoice":
+		filter.ObjectType = ""
 		if filter.InvoiceID == "" {
 			filter.InvoiceID = objectID
 		}
 	case "payment_intent":
+		filter.ObjectType = ""
 		if filter.PaymentIntentID == "" {
 			filter.PaymentIntentID = objectID
 		}
 	default:
+		if objectType != "" {
+			filter.ObjectID = objectID
+			return filter
+		}
 		switch {
 		case strings.HasPrefix(objectID, "cus_") && filter.CustomerID == "":
 			filter.CustomerID = objectID
@@ -3029,6 +3383,8 @@ func timelineFilterMap(filter billing.TimelineFilter) map[string]string {
 		"subscription_id":     filter.SubscriptionID,
 		"invoice_id":          filter.InvoiceID,
 		"payment_intent_id":   filter.PaymentIntentID,
+		"object_type":         filter.ObjectType,
+		"object_id":           filter.ObjectID,
 	})
 }
 
@@ -3689,6 +4045,18 @@ func paymentIntentMetadata(p params) map[string]string {
 		p.first("billtap_outcome", "deferred_outcome", "payment_intent_outcome"),
 		metadataValue(metadata, "billtap_outcome"),
 	)
+	if actionType := p.first("billtap_next_action_type", "next_action_type"); actionType != "" {
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata["billtap_next_action_type"] = actionType
+	}
+	if returnURL := p.string("return_url"); returnURL != "" {
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata["billtap_return_url"] = returnURL
+	}
 	if outcome == "" {
 		return metadata
 	}
@@ -4516,6 +4884,16 @@ func paymentIntentNextAction(intent billing.PaymentIntent) any {
 	if intent.Status != "requires_action" {
 		return nil
 	}
+	if strings.TrimSpace(intent.Metadata["billtap_next_action_type"]) == "redirect_to_url" {
+		returnURL := firstNonEmptyString(intent.Metadata["billtap_return_url"], "http://127.0.0.1:18080/payment_intents/"+intent.ID+"/return")
+		return map[string]any{
+			"type": "redirect_to_url",
+			"redirect_to_url": map[string]any{
+				"url":        "/api/payment_intents/" + intent.ID + "/complete_action?return_url=" + url.QueryEscape(returnURL),
+				"return_url": returnURL,
+			},
+		}
+	}
 	return map[string]any{
 		"type": "use_stripe_sdk",
 		"use_stripe_sdk": map[string]any{
@@ -5269,6 +5647,9 @@ func (h *Handler) emitClockAdvanceWebhooks(r *http.Request, advance billing.Cloc
 	for _, subscription := range advance.Canceled {
 		emitted = append(emitted, h.emitSubscriptionWebhook(r, "customer.subscription.deleted", subscription, webhooks.SourceAPI)...)
 	}
+	for _, refund := range advance.SettledRefunds {
+		emitted = append(emitted, h.emitGenericWebhook(r, "charge.refund.updated", refund.ID, stripeRefund(refund), webhooks.SourceAPI)...)
+	}
 	return emitted
 }
 
@@ -5329,6 +5710,9 @@ func (h *Handler) emitFixtureApplyWebhooks(r *http.Request, result fixtures.Appl
 	}
 	for _, note := range result.CreditNotes {
 		emitted = append(emitted, h.emitGenericWebhook(r, "credit_note.created", note.ID, stripeCreditNote(note), webhooks.SourceAPI)...)
+		if note.Status == "void" {
+			emitted = append(emitted, h.emitGenericWebhook(r, "credit_note.voided", note.ID, stripeCreditNote(note), webhooks.SourceAPI)...)
+		}
 	}
 	return emitted
 }

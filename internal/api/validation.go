@@ -34,6 +34,7 @@ var (
 	couponAppliesToParamRE      = regexp.MustCompile(`^applies_to(\[[^\]]+\])+$`)
 	promotionRestrictionParamRE = regexp.MustCompile(`^restrictions(\[[^\]]+\])+$`)
 	schedulePhaseParamRE        = regexp.MustCompile(`^phases\[\d+\]\[(start_date|end_date|iterations|items|plans)\].*$`)
+	invoicePreviewItemParamRE   = regexp.MustCompile(`^((subscription_details|subscriptionDetails)\[items\]\[\d+\]\[(id|price|price_id|quantity)\]|(subscription_items|items)\[\d+\]\[(id|price|price_id|quantity)\])$`)
 )
 
 var stripePaymentMethodTypes = []string{
@@ -765,19 +766,23 @@ func validatePaymentIntentCreate(p params) error {
 			"deferred_outcome",
 			"payment_intent_outcome",
 			"description",
+			"return_url",
 			"receipt_email",
 			"setup_future_usage",
 			"off_session",
+			"use_stripe_sdk",
+			"billtap_next_action_type",
 			"automatic_payment_methods[enabled]",
 		},
 		AllowedRegex: []*regexp.Regexp{paymentMethodTypesRE, paymentMethodOptionsRE},
 		Required:     []string{"amount", "currency"},
 		Int64Params:  []string{"amount"},
 		Positive:     []string{"amount"},
-		BoolParams:   []string{"confirm", "off_session", "automatic_payment_methods[enabled]"},
+		BoolParams:   []string{"confirm", "off_session", "use_stripe_sdk", "automatic_payment_methods[enabled]"},
 		EnumParams: map[string][]string{
-			"capture_method":     {"automatic", "automatic_async", "manual"},
-			"setup_future_usage": {"on_session", "off_session"},
+			"capture_method":           {"automatic", "automatic_async", "manual"},
+			"setup_future_usage":       {"on_session", "off_session"},
+			"billtap_next_action_type": {"use_stripe_sdk", "redirect_to_url"},
 		},
 		AllowMetadata: true,
 	}); err != nil {
@@ -803,6 +808,33 @@ func validateInvoicePay(p params) error {
 	})
 }
 
+func validateInvoicePreview(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"customer",
+			"subscription",
+			"schedule",
+			"currency",
+			"price",
+			"proration_behavior",
+			"proration_date",
+			"subscription_details[proration_behavior]",
+			"subscription_details[proration_date]",
+			"subscriptionDetails[prorationBehavior]",
+			"subscriptionDetails[prorationDate]",
+			"preview_mode",
+		},
+		AllowedRegex: []*regexp.Regexp{invoicePreviewItemParamRE, expandParamRE},
+		Int64Params:  []string{"proration_date", "subscription_details[proration_date]", "subscriptionDetails[prorationDate]"},
+		EnumParams: map[string][]string{
+			"proration_behavior":                       {"always_invoice", "create_prorations", "none"},
+			"subscription_details[proration_behavior]": {"always_invoice", "create_prorations", "none"},
+			"subscriptionDetails[prorationBehavior]":   {"always_invoice", "create_prorations", "none"},
+			"preview_mode":                             {"next", "recurring"},
+		},
+	})
+}
+
 func validateRefundCreate(p params) error {
 	if err := p.validate(paramSpec{
 		Allowed: []string{
@@ -814,10 +846,14 @@ func validateRefundCreate(p params) error {
 			"amount",
 			"currency",
 			"reason",
+			"status",
 		},
-		RequiredAny:   [][]string{{"charge", "payment_intent", "invoice"}},
-		Int64Params:   []string{"amount"},
-		Positive:      []string{"amount"},
+		RequiredAny: [][]string{{"charge", "payment_intent", "invoice"}},
+		Int64Params: []string{"amount"},
+		Positive:    []string{"amount"},
+		EnumParams: map[string][]string{
+			"status": {"pending", "succeeded", "failed", "canceled"},
+		},
 		AllowMetadata: true,
 	}); err != nil {
 		return err
@@ -828,12 +864,28 @@ func validateRefundCreate(p params) error {
 	return nil
 }
 
+func validateRefundUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"metadata",
+			"status",
+		},
+		EnumParams: map[string][]string{
+			"status": {"pending", "succeeded", "failed", "canceled"},
+		},
+		AllowMetadata: true,
+	})
+}
+
 func validateCreditNoteCreate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:       []string{"id", "invoice", "customer", "amount", "currency", "reason"},
-		Required:      []string{"invoice", "amount"},
-		Int64Params:   []string{"amount"},
-		Positive:      []string{"amount"},
+		Allowed:     []string{"id", "invoice", "customer", "amount", "currency", "reason", "status"},
+		Required:    []string{"invoice", "amount"},
+		Int64Params: []string{"amount"},
+		Positive:    []string{"amount"},
+		EnumParams: map[string][]string{
+			"status": {"issued", "void"},
+		},
 		AllowMetadata: true,
 	})
 }
@@ -848,11 +900,13 @@ func validatePaymentIntentConfirm(p params) error {
 			"setup_future_usage",
 			"off_session",
 			"use_stripe_sdk",
+			"billtap_next_action_type",
 		},
 		AllowedRegex: []*regexp.Regexp{paymentMethodOptionsRE},
 		BoolParams:   []string{"off_session", "use_stripe_sdk"},
 		EnumParams: map[string][]string{
-			"setup_future_usage": {"on_session", "off_session"},
+			"setup_future_usage":       {"on_session", "off_session"},
+			"billtap_next_action_type": {"use_stripe_sdk", "redirect_to_url"},
 		},
 	})
 }

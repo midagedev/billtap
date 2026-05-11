@@ -247,6 +247,12 @@ func (s *SQLiteStore) UpdateAccount(ctx context.Context, id string, in billing.A
 	if in.Email != "" {
 		current.Email = in.Email
 	}
+	if in.Type != "" {
+		current.Type = in.Type
+	}
+	if in.Country != "" {
+		current.Country = strings.ToUpper(in.Country)
+	}
 	if in.BusinessType != "" {
 		current.BusinessType = in.BusinessType
 	}
@@ -1063,6 +1069,35 @@ func (s *SQLiteStore) ListRefundsFiltered(ctx context.Context, filter billing.Re
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) UpdateRefund(ctx context.Context, refund billing.Refund, timeline []billing.TimelineEntry) (billing.Refund, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.Refund{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE refunds
+		SET charge_id = ?, payment_intent_id = ?, invoice_id = ?, customer_id = ?, amount = ?, currency = ?, reason = ?, status = ?, metadata = ?
+		WHERE id = ?`,
+		refund.ChargeID, refund.PaymentIntentID, refund.InvoiceID, refund.CustomerID, refund.Amount, refund.Currency, refund.Reason, refund.Status, encodeMap(refund.Metadata), refund.ID)
+	if err != nil {
+		return billing.Refund{}, err
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return billing.Refund{}, err
+	} else if changed == 0 {
+		return billing.Refund{}, billing.ErrNotFound
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.Refund{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.Refund{}, err
+	}
+	return s.GetRefund(ctx, refund.ID)
+}
+
 func (s *SQLiteStore) CreateCreditNote(ctx context.Context, note billing.CreditNote, timeline []billing.TimelineEntry) (billing.CreditNote, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -1122,6 +1157,35 @@ func (s *SQLiteStore) ListCreditNotesFiltered(ctx context.Context, filter billin
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) UpdateCreditNote(ctx context.Context, note billing.CreditNote, timeline []billing.TimelineEntry) (billing.CreditNote, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.CreditNote{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE credit_notes
+		SET invoice_id = ?, customer_id = ?, amount = ?, currency = ?, reason = ?, status = ?, metadata = ?
+		WHERE id = ?`,
+		note.InvoiceID, note.CustomerID, note.Amount, note.Currency, note.Reason, note.Status, encodeMap(note.Metadata), note.ID)
+	if err != nil {
+		return billing.CreditNote{}, err
+	}
+	if changed, err := result.RowsAffected(); err != nil {
+		return billing.CreditNote{}, err
+	} else if changed == 0 {
+		return billing.CreditNote{}, billing.ErrNotFound
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.CreditNote{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.CreditNote{}, err
+	}
+	return s.GetCreditNote(ctx, note.ID)
+}
+
 func (s *SQLiteStore) Timeline(ctx context.Context, filter billing.TimelineFilter) ([]billing.TimelineEntry, error) {
 	clauses := []string{"1=1"}
 	args := []any{}
@@ -1144,6 +1208,14 @@ func (s *SQLiteStore) Timeline(ctx context.Context, filter billing.TimelineFilte
 	if filter.PaymentIntentID != "" {
 		clauses = append(clauses, "payment_intent_id = ?")
 		args = append(args, filter.PaymentIntentID)
+	}
+	if filter.ObjectType != "" {
+		clauses = append(clauses, "object_type = ?")
+		args = append(args, filter.ObjectType)
+	}
+	if filter.ObjectID != "" {
+		clauses = append(clauses, "object_id = ?")
+		args = append(args, filter.ObjectID)
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT id, action, message, object_type, object_id, customer_id, checkout_session_id, subscription_id, invoice_id, payment_intent_id, data, created_at
 		FROM timeline_entries WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at ASC, id ASC`, args...)

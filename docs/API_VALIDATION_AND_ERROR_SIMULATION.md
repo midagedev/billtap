@@ -162,6 +162,14 @@ Required behavior:
   parameter mismatch, and concurrent conflict.
 - Webhook simulations cover duplicate delivery, delayed delivery, out-of-order
   delivery, endpoint 4xx/5xx failure, timeout, and signature mismatch evidence.
+- Subscription renewal failures can be driven from subscription metadata
+  (`billtap_renewal_outcome`) or customer defaults
+  (`billtap_default_invoice_outcome`) and emit invoice/payment-intent failure
+  evidence with Stripe-style decline codes.
+- Direct PaymentIntent `requires_action` simulations can return either
+  `next_action.use_stripe_sdk` or a local `next_action.redirect_to_url` payload.
+- Refunds can be seeded as `pending` and settled through attached test-clock
+  advancement for pending-to-succeeded history assertions.
 
 Gate:
 
@@ -199,8 +207,10 @@ Current lane:
   OpenAPI-backed fallback validation, idempotency mismatch, deterministic
   checkout payment-error aliases, and direct PaymentIntent/SetupIntent state
   transitions, including capture, cancel, failure aliases, invalid
-  terminal-state transitions, invoice retry/payment mutation, and local
-  clock-driven subscription renewal.
+  terminal-state transitions, invoice retry/payment mutation, direct
+  PaymentIntent webhook emission, local clock-driven subscription renewal,
+  fixture validation, subscription-update proration preview, dispute evidence,
+  credit-note voiding, and pending-refund settlement.
 
 Gate:
 

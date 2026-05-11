@@ -547,6 +547,40 @@ func (h *Handler) handleDispute(w http.ResponseWriter, r *http.Request) {
 			h.methodNotAllowed(w, r, "GET, POST")
 			return
 		}
+		if r.Method == http.MethodPost {
+			p, err := parseParams(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			evidence := map[string]any{}
+			if current, ok := dispute["evidence"].(map[string]any); ok {
+				for key, value := range current {
+					evidence[key] = value
+				}
+			}
+			for key, value := range p.values {
+				if strings.HasPrefix(key, "evidence[") && strings.HasSuffix(key, "]") {
+					evidence[strings.TrimSuffix(strings.TrimPrefix(key, "evidence["), "]")] = value
+				}
+			}
+			if status := p.string("status"); status != "" {
+				dispute["status"] = status
+			}
+			if metadata := p.metadata(); metadata != nil {
+				dispute["metadata"] = nonNilMap(metadata)
+			}
+			dispute["evidence"] = evidence
+			dispute["evidence_details"] = map[string]any{
+				"has_evidence":     len(evidence) > 0,
+				"submission_count": 1,
+				"past_due":         false,
+			}
+			h.local.mu.Lock()
+			h.local.disputes[id] = dispute
+			h.local.mu.Unlock()
+			h.emitGenericWebhook(r, "charge.dispute.updated", id, dispute, webhooks.SourceAPI)
+		}
 		writeJSON(w, http.StatusOK, cloneEvidence(dispute))
 		return
 	}

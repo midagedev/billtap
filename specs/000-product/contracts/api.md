@@ -108,6 +108,8 @@ invoicing, and full schedule lifecycle parity are not modeled.
 - `GET /v1/invoices`
 - `POST /v1/invoices/{id}/pay`
 - `POST /v1/invoices/create_preview`
+- `GET /v1/invoices/upcoming`
+- `POST /v1/invoices/upcoming`
 
 Direct invoice `pay` is a local retry mutation for open invoices created by
 Billtap checkout and scenarios. It accepts deterministic sandbox
@@ -115,6 +117,15 @@ Billtap checkout and scenarios. It accepts deterministic sandbox
 `paid_out_of_band`, `forgive`, `off_session`, and `mandate`. Direct invoice
 create, finalize, send, void, line mutation, collection, and full dunning
 automation are not part of the current release-compatible subset.
+
+Preview endpoints accept Stripe SDK-style `subscription`,
+`subscription_details[items][0][price]`,
+`subscription_details[items][0][quantity]`,
+`subscription_details[proration_date]`, and
+`subscription_details[proration_behavior]`. Billtap calculates a local
+subscription-update proration line from the current period bounds and old/new
+price totals. Taxes, discounts, pending invoice items, and collection behavior
+are outside the modeled subset.
 
 ### Payment Intents
 
@@ -178,22 +189,28 @@ processing bank-transfer PaymentIntents for the customer.
 - `POST /v1/refunds`
 - `GET /v1/refunds/{id}`
 - `GET /v1/refunds`
+- `POST /v1/refunds/{id}`
+- `POST /v1/refunds/{id}/cancel`
 
 Refunds are local payment-history evidence. Creation accepts `charge`,
 `payment_intent`, or `invoice`, plus `amount`, optional `reason`, and metadata.
-It emits local `charge.refunded` and `charge.refund.updated` events, but does
-not model settlement, balance transactions, disputes, or failed refund
-processing.
+It emits local `charge.refunded` and `charge.refund.updated` events. A fixture
+or API call can keep a refund `pending`; when attached to a test clock with
+`settle_at`/`available_on`, clock advance marks it `succeeded` and emits
+`charge.refund.updated`. Balance transactions and processor settlement are
+outside the modeled subset.
 
 ### Credit Notes
 
 - `POST /v1/credit_notes`
 - `GET /v1/credit_notes/{id}`
 - `GET /v1/credit_notes`
+- `POST /v1/credit_notes/{id}/void`
 
 Credit notes are local invoice-history evidence. Creation accepts `invoice`,
-`amount`, optional `reason`, and metadata. It emits `credit_note.created`, but
-does not model line-level tax/discount accounting, PDF rendering, or voiding.
+`amount`, optional `reason`, and metadata. It emits `credit_note.created`; void
+emits `credit_note.voided`. Line-level tax/discount accounting, PDF rendering,
+and customer-balance math are outside the modeled subset.
 
 ### Disputes
 
@@ -205,9 +222,10 @@ does not model line-level tax/discount accounting, PDF rendering, or voiding.
 - `POST /v1/charges/{id}/dispute`
 
 Disputes are local chargeback-style evidence. Creating one emits
-`charge.dispute.created`; closing one emits `charge.dispute.closed`.
-Representment, evidence upload, deadlines, balance movement, and processor
-outcomes are not modeled.
+`charge.dispute.created`; updating evidence emits `charge.dispute.updated`;
+fixture statuses can also emit `charge.dispute.funds_withdrawn`; closing one
+emits `charge.dispute.closed`. Representment deadlines, balance movement, and
+processor outcomes are outside the modeled subset.
 
 ### Test Clocks
 
@@ -217,9 +235,10 @@ outcomes are not modeled.
 - `POST /v1/test_helpers/test_clocks/{id}/advance`
 
 Test clocks are persisted local clocks for deterministic lifecycle simulation.
-Customers and subscriptions can be attached through `test_clock`. Advancing a
-clock processes due trials, renewals, configured renewal failures, and
-period-end cancellations for attached objects.
+Customers, subscriptions, and pending refunds can be attached through
+`test_clock`. Advancing a clock processes due trials, renewals, configured
+renewal failures, period-end cancellations, and refund settlement for attached
+objects.
 
 ### Billing Portal Sessions
 
@@ -430,15 +449,23 @@ Create a debug bundle.
 
 Apply a developer-test fixture pack. Request body may be JSON or YAML.
 
+### `POST /api/fixtures/validate`
+
+Validate a fixture pack without mutating local billing state. Request body may
+be JSON or YAML. The response contains `valid: true` plus counts for supported
+sections when schema and local semantic checks pass.
+
 Supported fixture sections:
 
 - `customers`
+- `connected_accounts`
 - `catalog.products`
 - `catalog.prices`
 - `test_clocks`
 - `subscriptions`
 - `refunds`
 - `credit_notes`
+- `disputes`
 - `assertions`
 
 Customer fixtures can opt out of Billtap's default sandbox card projection with

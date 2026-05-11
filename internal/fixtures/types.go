@@ -14,18 +14,20 @@ const (
 )
 
 type Pack struct {
-	Name          string                `json:"name" yaml:"name"`
-	RunID         string                `json:"runId" yaml:"runId"`
-	Namespace     string                `json:"namespace" yaml:"namespace"`
-	Customers     []CustomerFixture     `json:"customers" yaml:"customers"`
-	Catalog       CatalogFixture        `json:"catalog" yaml:"catalog"`
-	Products      []ProductFixture      `json:"products" yaml:"products"`
-	Prices        []PriceFixture        `json:"prices" yaml:"prices"`
-	TestClocks    []TestClockFixture    `json:"test_clocks" yaml:"test_clocks"`
-	Subscriptions []SubscriptionFixture `json:"subscriptions" yaml:"subscriptions"`
-	Refunds       []RefundFixture       `json:"refunds" yaml:"refunds"`
-	CreditNotes   []CreditNoteFixture   `json:"credit_notes" yaml:"credit_notes"`
-	Assertions    []Expectation         `json:"assertions" yaml:"assertions"`
+	Name              string                `json:"name" yaml:"name"`
+	RunID             string                `json:"runId" yaml:"runId"`
+	Namespace         string                `json:"namespace" yaml:"namespace"`
+	Customers         []CustomerFixture     `json:"customers" yaml:"customers"`
+	Catalog           CatalogFixture        `json:"catalog" yaml:"catalog"`
+	Products          []ProductFixture      `json:"products" yaml:"products"`
+	Prices            []PriceFixture        `json:"prices" yaml:"prices"`
+	ConnectedAccounts []AccountFixture      `json:"connected_accounts" yaml:"connected_accounts"`
+	TestClocks        []TestClockFixture    `json:"test_clocks" yaml:"test_clocks"`
+	Subscriptions     []SubscriptionFixture `json:"subscriptions" yaml:"subscriptions"`
+	Refunds           []RefundFixture       `json:"refunds" yaml:"refunds"`
+	CreditNotes       []CreditNoteFixture   `json:"credit_notes" yaml:"credit_notes"`
+	Disputes          []DisputeFixture      `json:"disputes" yaml:"disputes"`
+	Assertions        []Expectation         `json:"assertions" yaml:"assertions"`
 }
 
 type CatalogFixture struct {
@@ -45,7 +47,25 @@ type CustomerFixture struct {
 	PaymentMethodsCamel         []PaymentMethodFixture `json:"paymentMethods" yaml:"paymentMethods"`
 	DefaultPaymentIntentOutcome string                 `json:"default_payment_intent_outcome" yaml:"default_payment_intent_outcome"`
 	DefaultPIOutcomeCamel       string                 `json:"defaultPaymentIntentOutcome" yaml:"defaultPaymentIntentOutcome"`
+	DefaultInvoiceOutcome       string                 `json:"default_invoice_outcome" yaml:"default_invoice_outcome"`
+	DefaultInvoiceOutcomeCamel  string                 `json:"defaultInvoiceOutcome" yaml:"defaultInvoiceOutcome"`
+	DefaultRenewalOutcome       string                 `json:"default_renewal_outcome" yaml:"default_renewal_outcome"`
+	DefaultRenewalOutcomeCamel  string                 `json:"defaultRenewalOutcome" yaml:"defaultRenewalOutcome"`
 	Metadata                    map[string]string      `json:"metadata" yaml:"metadata"`
+}
+
+type AccountFixture struct {
+	ID               string            `json:"id" yaml:"id"`
+	Type             string            `json:"type" yaml:"type"`
+	Country          string            `json:"country" yaml:"country"`
+	Email            string            `json:"email" yaml:"email"`
+	BusinessType     string            `json:"business_type" yaml:"business_type"`
+	DefaultCurrency  string            `json:"default_currency" yaml:"default_currency"`
+	ChargesEnabled   *bool             `json:"charges_enabled" yaml:"charges_enabled"`
+	PayoutsEnabled   *bool             `json:"payouts_enabled" yaml:"payouts_enabled"`
+	DetailsSubmitted *bool             `json:"details_submitted" yaml:"details_submitted"`
+	Capabilities     map[string]string `json:"capabilities" yaml:"capabilities"`
+	Metadata         map[string]string `json:"metadata" yaml:"metadata"`
 }
 
 type PaymentMethodFixture struct {
@@ -128,6 +148,10 @@ type RefundFixture struct {
 	Amount        int64             `json:"amount" yaml:"amount"`
 	Currency      string            `json:"currency" yaml:"currency"`
 	Reason        string            `json:"reason" yaml:"reason"`
+	Status        string            `json:"status" yaml:"status"`
+	TestClock     string            `json:"test_clock" yaml:"test_clock"`
+	SettleAt      string            `json:"settle_at" yaml:"settle_at"`
+	AvailableOn   string            `json:"available_on" yaml:"available_on"`
 	Metadata      map[string]string `json:"metadata" yaml:"metadata"`
 }
 
@@ -138,26 +162,39 @@ type CreditNoteFixture struct {
 	Amount   int64             `json:"amount" yaml:"amount"`
 	Currency string            `json:"currency" yaml:"currency"`
 	Reason   string            `json:"reason" yaml:"reason"`
+	Status   string            `json:"status" yaml:"status"`
+	Metadata map[string]string `json:"metadata" yaml:"metadata"`
+}
+
+type DisputeFixture struct {
+	ID       string            `json:"id" yaml:"id"`
+	Charge   string            `json:"charge" yaml:"charge"`
+	Amount   int64             `json:"amount" yaml:"amount"`
+	Currency string            `json:"currency" yaml:"currency"`
+	Reason   string            `json:"reason" yaml:"reason"`
+	Status   string            `json:"status" yaml:"status"`
 	Metadata map[string]string `json:"metadata" yaml:"metadata"`
 }
 
 type ApplyResult struct {
-	ID               string                    `json:"id"`
-	Object           string                    `json:"object"`
-	Name             string                    `json:"name"`
-	RunID            string                    `json:"runId,omitempty"`
-	Namespace        string                    `json:"namespace,omitempty"`
-	AppliedAt        time.Time                 `json:"appliedAt"`
-	Customers        []billing.Customer        `json:"customers,omitempty"`
-	Products         []billing.Product         `json:"products,omitempty"`
-	Prices           []billing.Price           `json:"prices,omitempty"`
-	CheckoutSessions []billing.CheckoutSession `json:"checkoutSessions,omitempty"`
-	Subscriptions    []billing.Subscription    `json:"subscriptions,omitempty"`
-	TestClocks       []billing.TestClock       `json:"testClocks,omitempty"`
-	Refunds          []billing.Refund          `json:"refunds,omitempty"`
-	CreditNotes      []billing.CreditNote      `json:"creditNotes,omitempty"`
-	Assertions       *AssertionReport          `json:"assertions,omitempty"`
-	Summary          map[string]int            `json:"summary"`
+	ID                string                    `json:"id"`
+	Object            string                    `json:"object"`
+	Name              string                    `json:"name"`
+	RunID             string                    `json:"runId,omitempty"`
+	Namespace         string                    `json:"namespace,omitempty"`
+	AppliedAt         time.Time                 `json:"appliedAt"`
+	Customers         []billing.Customer        `json:"customers,omitempty"`
+	Products          []billing.Product         `json:"products,omitempty"`
+	Prices            []billing.Price           `json:"prices,omitempty"`
+	ConnectedAccounts []billing.Account         `json:"connectedAccounts,omitempty"`
+	CheckoutSessions  []billing.CheckoutSession `json:"checkoutSessions,omitempty"`
+	Subscriptions     []billing.Subscription    `json:"subscriptions,omitempty"`
+	TestClocks        []billing.TestClock       `json:"testClocks,omitempty"`
+	Refunds           []billing.Refund          `json:"refunds,omitempty"`
+	CreditNotes       []billing.CreditNote      `json:"creditNotes,omitempty"`
+	Disputes          []map[string]any          `json:"disputes,omitempty"`
+	Assertions        *AssertionReport          `json:"assertions,omitempty"`
+	Summary           map[string]int            `json:"summary"`
 }
 
 type ResolveFilter struct {
