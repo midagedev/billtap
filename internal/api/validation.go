@@ -384,6 +384,114 @@ func validateAccountSessionCreate(p params) error {
 	return nil
 }
 
+func validateAccountCapabilityUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:    []string{"requested", "status"},
+		BoolParams: []string{"requested"},
+		EnumParams: map[string][]string{"status": {"active", "inactive", "pending"}},
+	})
+}
+
+func validateExternalAccountCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"external_account",
+			"token",
+			"country",
+			"currency",
+			"bank_name",
+			"routing_number",
+			"account_number",
+			"account_holder_name",
+			"account_holder_type",
+			"default_for_currency",
+		},
+		BoolParams:    []string{"default_for_currency"},
+		RequiredAny:   [][]string{{"external_account", "token", "account_number"}},
+		AllowMetadata: true,
+	})
+}
+
+func validateExternalAccountUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"bank_name", "account_holder_name", "account_holder_type", "default_for_currency"},
+		BoolParams:    []string{"default_for_currency"},
+		AllowMetadata: true,
+	})
+}
+
+func validateAccountReject(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{"reason"},
+		EnumParams: map[string][]string{
+			"reason": {"fraud", "terms_of_service", "other"},
+		},
+	})
+}
+
+func validateTransferCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"id", "amount", "currency", "destination", "source_transaction", "description", "transfer_group"},
+		Required:      []string{"amount", "currency", "destination"},
+		Int64Params:   []string{"amount"},
+		Positive:      []string{"amount"},
+		AllowMetadata: true,
+	})
+}
+
+func validateTransferUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"description"},
+		AllowMetadata: true,
+	})
+}
+
+func validateTransferReversalCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"id", "amount", "refund_application_fee"},
+		Int64Params:   []string{"amount"},
+		Positive:      []string{"amount"},
+		BoolParams:    []string{"refund_application_fee"},
+		AllowMetadata: true,
+	})
+}
+
+func validateTransferReversalUpdate(p params) error {
+	return p.validate(paramSpec{AllowMetadata: true})
+}
+
+func validatePayoutCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"id", "amount", "currency", "destination", "method", "description", "statement_descriptor"},
+		Required:      []string{"amount", "currency"},
+		Int64Params:   []string{"amount"},
+		Positive:      []string{"amount"},
+		EnumParams:    map[string][]string{"method": {"standard", "instant"}},
+		AllowMetadata: true,
+	})
+}
+
+func validatePayoutUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"description"},
+		AllowMetadata: true,
+	})
+}
+
+func validateApplicationFeeRefundCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"id", "amount", "charge"},
+		Int64Params:   []string{"amount"},
+		Positive:      []string{"amount"},
+		AllowMetadata: true,
+	})
+}
+
+func validateApplicationFeeRefundUpdate(p params) error {
+	return p.validate(paramSpec{AllowMetadata: true})
+}
+
 func validateCheckoutSessionCreate(p params) error {
 	if err := p.validate(paramSpec{
 		Allowed:      []string{"customer", "customer_id", "mode", "success_url", "cancel_url", "price", "allow_promotion_codes"},

@@ -3,21 +3,29 @@ package billing
 import "time"
 
 const (
-	ObjectCustomer        = "customer"
-	ObjectProduct         = "product"
-	ObjectPrice           = "price"
-	ObjectCheckoutSession = "checkout.session"
-	ObjectSubscription    = "subscription"
-	ObjectInvoice         = "invoice"
-	ObjectPaymentIntent   = "payment_intent"
-	ObjectSetupIntent     = "setup_intent"
-	ObjectTestClock       = "test_helpers.test_clock"
-	ObjectRefund          = "refund"
-	ObjectCreditNote      = "credit_note"
-	ObjectTimelineEntry   = "timeline_entry"
-	ObjectAccount         = "account"
-	ObjectAccountLink     = "account_link"
-	ObjectAccountSession  = "account_session"
+	ObjectCustomer         = "customer"
+	ObjectProduct          = "product"
+	ObjectPrice            = "price"
+	ObjectCheckoutSession  = "checkout.session"
+	ObjectSubscription     = "subscription"
+	ObjectInvoice          = "invoice"
+	ObjectPaymentIntent    = "payment_intent"
+	ObjectSetupIntent      = "setup_intent"
+	ObjectTestClock        = "test_helpers.test_clock"
+	ObjectRefund           = "refund"
+	ObjectCreditNote       = "credit_note"
+	ObjectTimelineEntry    = "timeline_entry"
+	ObjectAccount          = "account"
+	ObjectAccountLink      = "account_link"
+	ObjectAccountSession   = "account_session"
+	ObjectBankAccount      = "bank_account"
+	ObjectCard             = "card"
+	ObjectCapability       = "capability"
+	ObjectTransfer         = "transfer"
+	ObjectTransferReversal = "transfer_reversal"
+	ObjectPayout           = "payout"
+	ObjectApplicationFee   = "application_fee"
+	ObjectFeeRefund        = "fee_refund"
 )
 
 type Customer struct {
@@ -218,6 +226,37 @@ type Account struct {
 	Metadata         map[string]string `json:"metadata,omitempty"`
 	CreatedAt        time.Time         `json:"created_at"`
 	UpdatedAt        time.Time         `json:"updated_at"`
+}
+
+type ConnectResource struct {
+	ID                string            `json:"id"`
+	Object            string            `json:"object"`
+	AccountID         string            `json:"account,omitempty"`
+	ParentID          string            `json:"parent,omitempty"`
+	Amount            int64             `json:"amount,omitempty"`
+	Currency          string            `json:"currency,omitempty"`
+	Status            string            `json:"status,omitempty"`
+	Description       string            `json:"description,omitempty"`
+	Destination       string            `json:"destination,omitempty"`
+	SourceTransaction string            `json:"source_transaction,omitempty"`
+	Country           string            `json:"country,omitempty"`
+	BankName          string            `json:"bank_name,omitempty"`
+	Last4             string            `json:"last4,omitempty"`
+	RoutingNumber     string            `json:"routing_number,omitempty"`
+	ArrivalDate       time.Time         `json:"arrival_date,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	Data              map[string]string `json:"data,omitempty"`
+	Deleted           bool              `json:"deleted,omitempty"`
+	CreatedAt         time.Time         `json:"created_at"`
+	UpdatedAt         time.Time         `json:"updated_at"`
+}
+
+type ConnectResourceFilter struct {
+	Object      string
+	AccountID   string
+	ParentID    string
+	Destination string
+	Status      string
 }
 
 type TimelineEntry struct {

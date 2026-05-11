@@ -78,6 +78,12 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/accounts/", h.handleAccount)
 	h.mux.HandleFunc("/v1/account_links", h.handleAccountLinks)
 	h.mux.HandleFunc("/v1/account_sessions", h.handleAccountSessions)
+	h.mux.HandleFunc("/v1/application_fees", h.handleApplicationFees)
+	h.mux.HandleFunc("/v1/application_fees/", h.handleApplicationFee)
+	h.mux.HandleFunc("/v1/transfers", h.handleTransfers)
+	h.mux.HandleFunc("/v1/transfers/", h.handleTransfer)
+	h.mux.HandleFunc("/v1/payouts", h.handlePayouts)
+	h.mux.HandleFunc("/v1/payouts/", h.handlePayout)
 	h.mux.HandleFunc("/v1/checkout/sessions", h.handleCheckoutSessions)
 	h.mux.HandleFunc("/v1/checkout/sessions/", h.handleCheckoutSession)
 	h.mux.HandleFunc("/v1/billing_portal/sessions", h.handleBillingPortalSessions)
@@ -446,9 +452,15 @@ func (h *Handler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
-	if id == "" || strings.Contains(id, "/") {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/accounts/"), "/")
+	if rest == "" {
 		h.notFound(w, r)
+		return
+	}
+	parts := strings.Split(rest, "/")
+	id := parts[0]
+	if len(parts) > 1 {
+		h.handleAccountSubresource(w, r, id, parts[1:])
 		return
 	}
 	switch r.Method {
@@ -476,6 +488,237 @@ func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
+}
+
+func (h *Handler) handleAccountSubresource(w http.ResponseWriter, r *http.Request, accountID string, parts []string) {
+	if accountID == "" || len(parts) == 0 {
+		h.notFound(w, r)
+		return
+	}
+	switch parts[0] {
+	case "capabilities":
+		h.handleAccountCapabilities(w, r, accountID, parts[1:])
+	case "external_accounts", "bank_accounts":
+		h.handleAccountExternalAccounts(w, r, accountID, parts[0], parts[1:])
+	case "login_links":
+		h.handleAccountLoginLinks(w, r, accountID, parts[1:])
+	case "reject":
+		h.handleAccountReject(w, r, accountID, parts[1:])
+	default:
+		h.notFound(w, r)
+	}
+}
+
+func (h *Handler) handleAccountCapabilities(w http.ResponseWriter, r *http.Request, accountID string, parts []string) {
+	account, err := h.billing.GetAccount(r.Context(), accountID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if len(parts) == 0 {
+		if r.Method != http.MethodGet {
+			h.methodNotAllowed(w, r, "GET")
+			return
+		}
+		data := make([]map[string]any, 0, len(account.Capabilities))
+		for capability, status := range account.Capabilities {
+			data = append(data, stripeCapability(account.ID, capability, status))
+		}
+		writeJSON(w, http.StatusOK, stripeList(r.URL.Path, data))
+		return
+	}
+	if len(parts) != 1 {
+		h.notFound(w, r)
+		return
+	}
+	capability := parts[0]
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, stripeCapability(account.ID, capability, stringDefault(account.Capabilities[capability], "inactive")))
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateAccountCapabilityUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		status := p.string("status")
+		if status == "" {
+			if p.boolDefault("requested", true) {
+				status = "active"
+			} else {
+				status = "inactive"
+			}
+		}
+		updated, err := h.billing.UpdateAccount(r.Context(), account.ID, billing.Account{Capabilities: map[string]string{capability: status}})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, stripeCapability(updated.ID, capability, updated.Capabilities[capability]))
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleAccountExternalAccounts(w http.ResponseWriter, r *http.Request, accountID string, collection string, parts []string) {
+	if _, err := h.billing.GetAccount(r.Context(), accountID); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if len(parts) == 0 {
+		switch r.Method {
+		case http.MethodGet:
+			resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectBankAccount, AccountID: accountID})
+			writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+		case http.MethodPost:
+			p, err := parseParams(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := validateExternalAccountCreate(p); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			resource, err := h.billing.CreateConnectResource(r.Context(), billing.ConnectResource{
+				ID:            p.string("id"),
+				Object:        billing.ObjectBankAccount,
+				AccountID:     accountID,
+				Country:       p.stringDefault("country", "US"),
+				Currency:      p.stringDefault("currency", "usd"),
+				BankName:      p.stringDefault("bank_name", "Billtap Bank"),
+				Last4:         last4(p.first("account_number", "external_account", "token")),
+				RoutingNumber: p.string("routing_number"),
+				Status:        "new",
+				Metadata:      p.metadata(),
+				Data: map[string]string{
+					"default_for_currency": strconv.FormatBool(p.boolDefault("default_for_currency", false)),
+					"account_holder_name":  p.string("account_holder_name"),
+					"account_holder_type":  p.string("account_holder_type"),
+				},
+			})
+			writeResult(w, stripeExternalAccount(resource), err)
+		default:
+			h.methodNotAllowed(w, r, "GET, POST")
+		}
+		return
+	}
+	if len(parts) != 1 {
+		h.notFound(w, r)
+		return
+	}
+	id := parts[0]
+	switch r.Method {
+	case http.MethodGet:
+		resource, err := h.billing.GetConnectResource(r.Context(), billing.ObjectBankAccount, id)
+		if err == nil && resource.AccountID != accountID {
+			err = billing.ErrNotFound
+		}
+		writeResult(w, stripeExternalAccount(resource), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateExternalAccountUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		current, err := h.billing.GetConnectResource(r.Context(), billing.ObjectBankAccount, id)
+		if err == nil && current.AccountID != accountID {
+			err = billing.ErrNotFound
+		}
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		data := map[string]string{}
+		if p.has("default_for_currency") {
+			data["default_for_currency"] = strconv.FormatBool(p.boolDefault("default_for_currency", false))
+		}
+		if p.has("account_holder_name") {
+			data["account_holder_name"] = p.string("account_holder_name")
+		}
+		if p.has("account_holder_type") {
+			data["account_holder_type"] = p.string("account_holder_type")
+		}
+		resource, err := h.billing.UpdateConnectResource(r.Context(), billing.ObjectBankAccount, id, billing.ConnectResource{
+			BankName: p.string("bank_name"),
+			Metadata: p.metadata(),
+			Data:     data,
+		})
+		writeResult(w, stripeExternalAccount(resource), err)
+	case http.MethodDelete:
+		current, err := h.billing.GetConnectResource(r.Context(), billing.ObjectBankAccount, id)
+		if err == nil && current.AccountID != accountID {
+			err = billing.ErrNotFound
+		}
+		if err == nil {
+			_, err = h.billing.DeleteConnectResource(r.Context(), billing.ObjectBankAccount, id)
+		}
+		writeResult(w, stripeDeleted(id, billing.ObjectBankAccount), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
+	}
+	_ = collection
+}
+
+func (h *Handler) handleAccountLoginLinks(w http.ResponseWriter, r *http.Request, accountID string, parts []string) {
+	if len(parts) != 0 {
+		h.notFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	if _, err := h.billing.GetAccount(r.Context(), accountID); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	now := time.Now().UTC()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":       "ll_" + sanitizeID(accountID+"_"+now.Format(time.RFC3339Nano)),
+		"object":   "login_link",
+		"created":  now.Unix(),
+		"url":      h.absoluteURL(r, "/connect/accounts/"+accountID+"/login"),
+		"livemode": false,
+	})
+}
+
+func (h *Handler) handleAccountReject(w http.ResponseWriter, r *http.Request, accountID string, parts []string) {
+	if len(parts) != 0 {
+		h.notFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateAccountReject(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	account, err := h.billing.UpdateAccount(r.Context(), accountID, billing.Account{
+		Metadata: map[string]string{"rejected_reason": p.stringDefault("reason", "other")},
+	})
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	account.ChargesEnabled = false
+	account.PayoutsEnabled = false
+	writeJSON(w, http.StatusOK, stripeAccount(account))
 }
 
 func (h *Handler) handleAccountLinks(w http.ResponseWriter, r *http.Request) {
@@ -543,6 +786,432 @@ func (h *Handler) handleAccountSessions(w http.ResponseWriter, r *http.Request) 
 		"created":       time.Now().UTC().Unix(),
 		"expires_at":    expiresAt,
 		"livemode":      false,
+	})
+}
+
+func (h *Handler) handleTransfers(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{
+			Object:      billing.ObjectTransfer,
+			Destination: r.URL.Query().Get("destination"),
+		})
+		writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateTransferCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		resource, err := h.billing.CreateConnectResource(r.Context(), billing.ConnectResource{
+			ID:                p.string("id"),
+			Object:            billing.ObjectTransfer,
+			AccountID:         r.Header.Get("Stripe-Account"),
+			Amount:            p.int64("amount"),
+			Currency:          p.string("currency"),
+			Destination:       p.string("destination"),
+			SourceTransaction: p.string("source_transaction"),
+			Description:       p.string("description"),
+			Metadata:          p.metadata(),
+			Data: map[string]string{
+				"transfer_group": p.string("transfer_group"),
+			},
+		})
+		if err == nil {
+			h.emitGenericWebhook(r, "transfer.created", resource.ID, stripeTransfer(resource), webhooks.SourceAPI)
+		}
+		writeResult(w, stripeTransfer(resource), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleTransfer(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/transfers/"), "/")
+	if rest == "" {
+		h.notFound(w, r)
+		return
+	}
+	parts := strings.Split(rest, "/")
+	transferID := parts[0]
+	if len(parts) > 1 {
+		if parts[1] != "reversals" {
+			h.notFound(w, r)
+			return
+		}
+		h.handleTransferReversals(w, r, transferID, parts[2:])
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		resource, err := h.billing.GetConnectResource(r.Context(), billing.ObjectTransfer, transferID)
+		writeResult(w, stripeTransfer(resource), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateTransferUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		resource, err := h.billing.UpdateConnectResource(r.Context(), billing.ObjectTransfer, transferID, billing.ConnectResource{
+			Description: p.string("description"),
+			Metadata:    p.metadata(),
+		})
+		writeResult(w, stripeTransfer(resource), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleTransferReversals(w http.ResponseWriter, r *http.Request, transferID string, parts []string) {
+	transfer, err := h.billing.GetConnectResource(r.Context(), billing.ObjectTransfer, transferID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if len(parts) == 0 {
+		switch r.Method {
+		case http.MethodGet:
+			resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectTransferReversal, ParentID: transferID})
+			writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+		case http.MethodPost:
+			p, err := parseParams(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := validateTransferReversalCreate(p); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			amount := p.int64Default("amount", transfer.Amount)
+			resource, err := h.billing.CreateConnectResource(r.Context(), billing.ConnectResource{
+				ID:        p.string("id"),
+				Object:    billing.ObjectTransferReversal,
+				ParentID:  transferID,
+				AccountID: transfer.AccountID,
+				Amount:    amount,
+				Currency:  transfer.Currency,
+				Metadata:  p.metadata(),
+				Data: map[string]string{
+					"refund_application_fee": strconv.FormatBool(p.boolDefault("refund_application_fee", false)),
+				},
+			})
+			if err == nil {
+				_, _ = h.billing.UpdateConnectResource(r.Context(), billing.ObjectTransfer, transferID, billing.ConnectResource{
+					Status: "reversed",
+					Data:   map[string]string{"amount_reversed": strconv.FormatInt(amount, 10)},
+				})
+				h.emitGenericWebhook(r, "transfer.reversed", resource.ID, stripeTransferReversal(resource), webhooks.SourceAPI)
+			}
+			writeResult(w, stripeTransferReversal(resource), err)
+		default:
+			h.methodNotAllowed(w, r, "GET, POST")
+		}
+		return
+	}
+	if len(parts) != 1 {
+		h.notFound(w, r)
+		return
+	}
+	reversalID := parts[0]
+	switch r.Method {
+	case http.MethodGet:
+		resource, err := h.billing.GetConnectResource(r.Context(), billing.ObjectTransferReversal, reversalID)
+		if err == nil && resource.ParentID != transferID {
+			err = billing.ErrNotFound
+		}
+		writeResult(w, stripeTransferReversal(resource), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateTransferReversalUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		current, err := h.billing.GetConnectResource(r.Context(), billing.ObjectTransferReversal, reversalID)
+		if err == nil && current.ParentID != transferID {
+			err = billing.ErrNotFound
+		}
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		resource, err := h.billing.UpdateConnectResource(r.Context(), billing.ObjectTransferReversal, reversalID, billing.ConnectResource{Metadata: p.metadata()})
+		writeResult(w, stripeTransferReversal(resource), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handlePayouts(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{
+			Object: billing.ObjectPayout,
+			Status: r.URL.Query().Get("status"),
+		})
+		writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validatePayoutCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		arrival := time.Now().UTC().Add(24 * time.Hour)
+		resource, err := h.billing.CreateConnectResource(r.Context(), billing.ConnectResource{
+			ID:          p.string("id"),
+			Object:      billing.ObjectPayout,
+			AccountID:   r.Header.Get("Stripe-Account"),
+			Amount:      p.int64("amount"),
+			Currency:    p.string("currency"),
+			Destination: p.string("destination"),
+			Description: p.string("description"),
+			ArrivalDate: arrival,
+			Metadata:    p.metadata(),
+			Data: map[string]string{
+				"method":               p.stringDefault("method", "standard"),
+				"statement_descriptor": p.string("statement_descriptor"),
+			},
+		})
+		if err == nil {
+			h.emitGenericWebhook(r, "payout.created", resource.ID, stripePayout(resource), webhooks.SourceAPI)
+		}
+		writeResult(w, stripePayout(resource), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handlePayout(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/payouts/"), "/")
+	if rest == "" {
+		h.notFound(w, r)
+		return
+	}
+	parts := strings.Split(rest, "/")
+	id := parts[0]
+	if len(parts) == 2 {
+		h.handlePayoutAction(w, r, id, parts[1])
+		return
+	}
+	if len(parts) != 1 {
+		h.notFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		resource, err := h.billing.GetConnectResource(r.Context(), billing.ObjectPayout, id)
+		writeResult(w, stripePayout(resource), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validatePayoutUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		resource, err := h.billing.UpdateConnectResource(r.Context(), billing.ObjectPayout, id, billing.ConnectResource{
+			Description: p.string("description"),
+			Metadata:    p.metadata(),
+		})
+		writeResult(w, stripePayout(resource), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handlePayoutAction(w http.ResponseWriter, r *http.Request, id string, action string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	status := ""
+	eventType := ""
+	switch action {
+	case "cancel":
+		status = "canceled"
+		eventType = "payout.canceled"
+	case "reverse":
+		status = "reversed"
+		eventType = "payout.reversed"
+	default:
+		h.notFound(w, r)
+		return
+	}
+	resource, err := h.billing.UpdateConnectResource(r.Context(), billing.ObjectPayout, id, billing.ConnectResource{Status: status})
+	if err == nil {
+		h.emitGenericWebhook(r, eventType, resource.ID, stripePayout(resource), webhooks.SourceAPI)
+	}
+	writeResult(w, stripePayout(resource), err)
+}
+
+func (h *Handler) handleApplicationFees(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectApplicationFee})
+	writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+}
+
+func (h *Handler) handleApplicationFee(w http.ResponseWriter, r *http.Request) {
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/application_fees/"), "/")
+	if rest == "" {
+		h.notFound(w, r)
+		return
+	}
+	parts := strings.Split(rest, "/")
+	feeID := parts[0]
+	if len(parts) == 1 {
+		if r.Method != http.MethodGet {
+			h.methodNotAllowed(w, r, "GET")
+			return
+		}
+		fee, err := h.billing.GetConnectResource(r.Context(), billing.ObjectApplicationFee, feeID)
+		writeResult(w, stripeApplicationFee(fee, nil), err)
+		return
+	}
+	if parts[1] == "refund" && len(parts) == 2 {
+		h.handleApplicationFeeRefundCreate(w, r, feeID)
+		return
+	}
+	if parts[1] == "refunds" {
+		h.handleApplicationFeeRefunds(w, r, feeID, parts[2:])
+		return
+	}
+	h.notFound(w, r)
+}
+
+func (h *Handler) handleApplicationFeeRefunds(w http.ResponseWriter, r *http.Request, feeID string, parts []string) {
+	if len(parts) == 0 {
+		switch r.Method {
+		case http.MethodGet:
+			resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectFeeRefund, ParentID: feeID})
+			writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+		case http.MethodPost:
+			h.handleApplicationFeeRefundCreate(w, r, feeID)
+		default:
+			h.methodNotAllowed(w, r, "GET, POST")
+		}
+		return
+	}
+	if len(parts) != 1 {
+		h.notFound(w, r)
+		return
+	}
+	refundID := parts[0]
+	switch r.Method {
+	case http.MethodGet:
+		resource, err := h.billing.GetConnectResource(r.Context(), billing.ObjectFeeRefund, refundID)
+		if err == nil && resource.ParentID != feeID {
+			err = billing.ErrNotFound
+		}
+		writeResult(w, stripeApplicationFeeRefund(resource), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateApplicationFeeRefundUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		current, err := h.billing.GetConnectResource(r.Context(), billing.ObjectFeeRefund, refundID)
+		if err == nil && current.ParentID != feeID {
+			err = billing.ErrNotFound
+		}
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		resource, err := h.billing.UpdateConnectResource(r.Context(), billing.ObjectFeeRefund, refundID, billing.ConnectResource{Metadata: p.metadata()})
+		writeResult(w, stripeApplicationFeeRefund(resource), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleApplicationFeeRefundCreate(w http.ResponseWriter, r *http.Request, feeID string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateApplicationFeeRefundCreate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	fee, err := h.ensureApplicationFee(r, feeID, p)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	amount := p.int64Default("amount", fee.Amount)
+	resource, err := h.billing.CreateConnectResource(r.Context(), billing.ConnectResource{
+		ID:        p.string("id"),
+		Object:    billing.ObjectFeeRefund,
+		AccountID: fee.AccountID,
+		ParentID:  fee.ID,
+		Amount:    amount,
+		Currency:  fee.Currency,
+		Metadata:  p.metadata(),
+	})
+	if err == nil {
+		refunded := amount
+		if current := fee.Data["amount_refunded"]; current != "" {
+			refunded += parseInt64(current)
+		}
+		_, _ = h.billing.UpdateConnectResource(r.Context(), billing.ObjectApplicationFee, fee.ID, billing.ConnectResource{
+			Data: map[string]string{"amount_refunded": strconv.FormatInt(refunded, 10)},
+		})
+		h.emitGenericWebhook(r, "application_fee.refunded", resource.ID, stripeApplicationFeeRefund(resource), webhooks.SourceAPI)
+	}
+	writeResult(w, stripeApplicationFeeRefund(resource), err)
+}
+
+func (h *Handler) ensureApplicationFee(r *http.Request, feeID string, p params) (billing.ConnectResource, error) {
+	fee, err := h.billing.GetConnectResource(r.Context(), billing.ObjectApplicationFee, feeID)
+	if err == nil {
+		return fee, nil
+	}
+	if !errors.Is(err, billing.ErrNotFound) {
+		return billing.ConnectResource{}, err
+	}
+	amount := p.int64("amount")
+	if amount == 0 {
+		amount = 1
+	}
+	return h.billing.CreateConnectResource(r.Context(), billing.ConnectResource{
+		ID:        feeID,
+		Object:    billing.ObjectApplicationFee,
+		AccountID: r.Header.Get("Stripe-Account"),
+		Amount:    amount,
+		Currency:  "usd",
+		Data: map[string]string{
+			"charge": p.string("charge"),
+		},
 	})
 }
 
@@ -2510,6 +3179,22 @@ func queryInt(r *http.Request, key string) int {
 	return value
 }
 
+func parseInt64(value string) int64 {
+	out, _ := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+	return out
+}
+
+func last4(value string) string {
+	cleaned := sanitizeID(value)
+	if len(cleaned) <= 4 {
+		if cleaned == "" {
+			return "6789"
+		}
+		return cleaned
+	}
+	return cleaned[len(cleaned)-4:]
+}
+
 func stripeList(urlPath string, data any) map[string]any {
 	return map[string]any{
 		"object":   "list",
@@ -2665,6 +3350,181 @@ func accountRequirements(account billing.Account) map[string]any {
 		"current_deadline":     nil,
 		"errors":               []map[string]any{},
 	}
+}
+
+func stripeCapability(accountID string, capability string, status string) map[string]any {
+	if status == "" {
+		status = "inactive"
+	}
+	return map[string]any{
+		"id":        capability,
+		"object":    billing.ObjectCapability,
+		"account":   accountID,
+		"requested": status != "inactive",
+		"status":    status,
+		"livemode":  false,
+		"requirements": map[string]any{
+			"alternatives":         []map[string]any{},
+			"currently_due":        []string{},
+			"eventually_due":       []string{},
+			"past_due":             []string{},
+			"pending_verification": []string{},
+		},
+	}
+}
+
+func stripeConnectResources(resources []billing.ConnectResource) []map[string]any {
+	out := make([]map[string]any, 0, len(resources))
+	for _, resource := range resources {
+		out = append(out, stripeConnectResource(resource))
+	}
+	return out
+}
+
+func stripeConnectResource(resource billing.ConnectResource) map[string]any {
+	switch resource.Object {
+	case billing.ObjectBankAccount, billing.ObjectCard:
+		return stripeExternalAccount(resource)
+	case billing.ObjectTransfer:
+		return stripeTransfer(resource)
+	case billing.ObjectTransferReversal:
+		return stripeTransferReversal(resource)
+	case billing.ObjectPayout:
+		return stripePayout(resource)
+	case billing.ObjectApplicationFee:
+		return stripeApplicationFee(resource, nil)
+	case billing.ObjectFeeRefund:
+		return stripeApplicationFeeRefund(resource)
+	default:
+		return map[string]any{
+			"id":       resource.ID,
+			"object":   resource.Object,
+			"metadata": nonNilMap(resource.Metadata),
+			"livemode": false,
+		}
+	}
+}
+
+func stripeExternalAccount(resource billing.ConnectResource) map[string]any {
+	return map[string]any{
+		"id":                   resource.ID,
+		"object":               stringDefault(resource.Object, billing.ObjectBankAccount),
+		"account":              resource.AccountID,
+		"account_holder_name":  emptyToNil(resource.Data["account_holder_name"]),
+		"account_holder_type":  emptyToNil(resource.Data["account_holder_type"]),
+		"bank_name":            stringDefault(resource.BankName, "Billtap Bank"),
+		"country":              strings.ToUpper(stringDefault(resource.Country, "US")),
+		"currency":             strings.ToLower(stringDefault(resource.Currency, "usd")),
+		"default_for_currency": resource.Data["default_for_currency"] == "true",
+		"fingerprint":          "bt_" + sanitizeID(resource.ID),
+		"last4":                stringDefault(resource.Last4, "6789"),
+		"metadata":             nonNilMap(resource.Metadata),
+		"routing_number":       emptyToNil(resource.RoutingNumber),
+		"status":               stringDefault(resource.Status, "new"),
+		"created":              unix(resource.CreatedAt),
+		"livemode":             false,
+	}
+}
+
+func stripeTransfer(resource billing.ConnectResource) map[string]any {
+	amountReversed := parseInt64(resource.Data["amount_reversed"])
+	return map[string]any{
+		"id":                  resource.ID,
+		"object":              billing.ObjectTransfer,
+		"amount":              resource.Amount,
+		"amount_reversed":     amountReversed,
+		"balance_transaction": "txn_" + resource.ID,
+		"created":             unix(resource.CreatedAt),
+		"currency":            strings.ToLower(resource.Currency),
+		"description":         emptyToNil(resource.Description),
+		"destination":         resource.Destination,
+		"destination_payment": "py_" + resource.ID,
+		"livemode":            false,
+		"metadata":            nonNilMap(resource.Metadata),
+		"reversed":            resource.Status == "reversed" || amountReversed >= resource.Amount,
+		"source_transaction":  emptyToNil(resource.SourceTransaction),
+		"source_type":         "card",
+		"transfer_group":      emptyToNil(resource.Data["transfer_group"]),
+	}
+}
+
+func stripeTransferReversal(resource billing.ConnectResource) map[string]any {
+	return map[string]any{
+		"id":                         resource.ID,
+		"object":                     billing.ObjectTransferReversal,
+		"amount":                     resource.Amount,
+		"balance_transaction":        "txn_" + resource.ID,
+		"created":                    unix(resource.CreatedAt),
+		"currency":                   strings.ToLower(resource.Currency),
+		"destination_payment_refund": nil,
+		"metadata":                   nonNilMap(resource.Metadata),
+		"source_refund":              nil,
+		"transfer":                   resource.ParentID,
+	}
+}
+
+func stripePayout(resource billing.ConnectResource) map[string]any {
+	return map[string]any{
+		"id":                          resource.ID,
+		"object":                      billing.ObjectPayout,
+		"amount":                      resource.Amount,
+		"arrival_date":                unix(resource.ArrivalDate),
+		"automatic":                   false,
+		"balance_transaction":         "txn_" + resource.ID,
+		"created":                     unix(resource.CreatedAt),
+		"currency":                    strings.ToLower(resource.Currency),
+		"description":                 emptyToNil(resource.Description),
+		"destination":                 emptyToNil(resource.Destination),
+		"failure_balance_transaction": nil,
+		"failure_code":                nil,
+		"failure_message":             nil,
+		"livemode":                    false,
+		"metadata":                    nonNilMap(resource.Metadata),
+		"method":                      stringDefault(resource.Data["method"], "standard"),
+		"reconciliation_status":       "not_applicable",
+		"source_type":                 "card",
+		"statement_descriptor":        emptyToNil(resource.Data["statement_descriptor"]),
+		"status":                      stringDefault(resource.Status, "paid"),
+		"type":                        "bank_account",
+	}
+}
+
+func stripeApplicationFee(resource billing.ConnectResource, refunds []billing.ConnectResource) map[string]any {
+	refundData := stripeConnectResources(refunds)
+	amountRefunded := parseInt64(resource.Data["amount_refunded"])
+	return map[string]any{
+		"id":                      resource.ID,
+		"object":                  billing.ObjectApplicationFee,
+		"account":                 emptyToNil(resource.AccountID),
+		"amount":                  resource.Amount,
+		"amount_refunded":         amountRefunded,
+		"application":             "ca_billtap",
+		"balance_transaction":     "txn_" + resource.ID,
+		"charge":                  emptyToNil(resource.Data["charge"]),
+		"created":                 unix(resource.CreatedAt),
+		"currency":                strings.ToLower(stringDefault(resource.Currency, "usd")),
+		"livemode":                false,
+		"originating_transaction": emptyToNil(resource.ParentID),
+		"refunded":                amountRefunded >= resource.Amount && resource.Amount > 0,
+		"refunds":                 stripeList("/v1/application_fees/"+resource.ID+"/refunds", refundData),
+	}
+}
+
+func stripeApplicationFeeRefund(resource billing.ConnectResource) map[string]any {
+	return map[string]any{
+		"id":                  resource.ID,
+		"object":              billing.ObjectFeeRefund,
+		"amount":              resource.Amount,
+		"balance_transaction": "txn_" + resource.ID,
+		"created":             unix(resource.CreatedAt),
+		"currency":            strings.ToLower(stringDefault(resource.Currency, "usd")),
+		"fee":                 resource.ParentID,
+		"metadata":            nonNilMap(resource.Metadata),
+	}
+}
+
+func stripeDeleted(id string, object string) map[string]any {
+	return map[string]any{"id": id, "object": object, "deleted": true}
 }
 
 func stripeCheckoutSession(session billing.CheckoutSession) map[string]any {

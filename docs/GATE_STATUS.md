@@ -18,7 +18,7 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G11 Assertion Ergonomics      | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots                                                                                        |
 | G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 49 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
 | G13 Stripe API Expansion      | In progress    | Roadmap defines compatibility levels and endpoint-family priorities; OpenAPI inventory generator and optional workflow write JSON/Markdown coverage artifacts  |
-| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 63/587 baseline, family thresholds, and chunk plan                              |
+| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 98/587 baseline, family thresholds, and chunk plan                              |
 
 ## Current Public Claim
 
@@ -35,19 +35,19 @@ under Apache-2.0.
 - Coverage focus: request validation, protocol parameter acceptance,
   idempotency mismatch, deterministic checkout payment-error aliases,
   direct intent state machines, and billing lifecycle retry/renewal mutations
-- OpenAPI operation baseline: `63 / 587`, `10.7%`
+- OpenAPI operation baseline: `98 / 587`, `16.7%`
 - Long-running OpenAPI operation target: at least `529 / 587`, `90.0%`, at
   `L1+` with deeper P0/P1 behavior gates
 
 ## Last Local Code Verification
 
-Verified on 2026-05-11 from branch `codex/connect-account-smoke-compat`:
+Verified on 2026-05-11 from branch `codex/connect-platform-fixtures`:
 
 - `go test ./... -count=1`
-- `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compat-scorecard-connect-smoke`
+- `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compat-scorecard-connect-platform`
   - result: `imported=49 skipped=1 unsupported=1 mismatch=0 error=0`
-- `go run ./cmd/billtap compatibility inventory --openapi /tmp/stripe-openapi-spec3.json --output-dir /tmp/billtap-inventory-connect-smoke --source stripe-openapi-master`
-  - result: `operations=587 implemented=63 inventory_only=524 schema_validated=587 implemented_percent=10.7`
+- `go run ./cmd/billtap compatibility inventory --openapi /tmp/stripe-openapi-spec3.json --output-dir /tmp/billtap-inventory-connect-platform --source stripe-openapi-master`
+  - result: `operations=587 implemented=98 inventory_only=489 schema_validated=587 implemented_percent=16.7`
 - `npm run build`
 
 Release verification should still be rerun on the final release branch or tag.

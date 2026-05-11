@@ -1006,7 +1006,7 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 		t.Fatalf("v2 trace = %#v, want unsupported v2 endpoint evidence", v2Traces.Data[0])
 	}
 
-	connectSubrouteReq := httptest.NewRequest(http.MethodGet, "/v1/accounts/acct_123/external_accounts?limit=1", nil)
+	connectSubrouteReq := httptest.NewRequest(http.MethodGet, "/v1/accounts/acct_123/people?limit=1", nil)
 	connectSubrouteReq.Header.Set("Request-Id", "req_known_connect_subroute_unsupported")
 	connectSubrouteRec := httptest.NewRecorder()
 	handler.ServeHTTP(connectSubrouteRec, connectSubrouteReq)
@@ -1021,7 +1021,7 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 	if connectSubrouteTraces.Object != "list" || len(connectSubrouteTraces.Data) != 1 {
 		t.Fatalf("connect subroute traces = %#v, want unsupported request trace", connectSubrouteTraces)
 	}
-	if connectSubrouteTraces.Data[0].Path != "/v1/accounts/acct_123/external_accounts" || connectSubrouteTraces.Data[0].ErrorCode != "unsupported_endpoint" {
+	if connectSubrouteTraces.Data[0].Path != "/v1/accounts/acct_123/people" || connectSubrouteTraces.Data[0].ErrorCode != "unsupported_endpoint" {
 		t.Fatalf("connect subroute trace = %#v, want unsupported endpoint evidence", connectSubrouteTraces.Data[0])
 	}
 }
@@ -1150,6 +1150,173 @@ func TestConnectAccountSmokeCompatibility(t *testing.T) {
 	}](t, handler, "/api/request-traces?requestId=req_connect_account_create")
 	if len(traces.Data) != 1 || traces.Data[0].RequestHeaders["Stripe-Account"] != "acct_platform_trace" || traces.Data[0].ResponseObject != "account" || traces.Data[0].ResponseObjectID != account.ID {
 		t.Fatalf("connect trace = %#v, want Stripe-Account routing evidence", traces.Data)
+	}
+}
+
+func TestConnectPlatformResourceCompatibility(t *testing.T) {
+	handler := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
+
+	account := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/accounts", url.Values{
+		"type":    {"express"},
+		"country": {"US"},
+		"email":   {"platform-resource@example.test"},
+	})
+
+	capability := postForm[struct {
+		ID        string `json:"id"`
+		Object    string `json:"object"`
+		Account   string `json:"account"`
+		Requested bool   `json:"requested"`
+		Status    string `json:"status"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/capabilities/transfers", url.Values{
+		"requested": {"false"},
+	})
+	if capability.ID != "transfers" || capability.Object != "capability" || capability.Account != account.ID || capability.Requested || capability.Status != "inactive" {
+		t.Fatalf("capability = %#v, want inactive transfers capability", capability)
+	}
+
+	external := postForm[struct {
+		ID                 string            `json:"id"`
+		Object             string            `json:"object"`
+		Account            string            `json:"account"`
+		Country            string            `json:"country"`
+		Currency           string            `json:"currency"`
+		Last4              string            `json:"last4"`
+		DefaultForCurrency bool              `json:"default_for_currency"`
+		Metadata           map[string]string `json:"metadata"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/external_accounts", url.Values{
+		"account_number":       {"000123456789"},
+		"routing_number":       {"110000000"},
+		"country":              {"US"},
+		"currency":             {"usd"},
+		"default_for_currency": {"true"},
+		"metadata[purpose]":    {"payouts"},
+	})
+	if !strings.HasPrefix(external.ID, "ba_") || external.Object != "bank_account" || external.Account != account.ID || external.Country != "US" || external.Currency != "usd" || external.Last4 != "6789" || !external.DefaultForCurrency || external.Metadata["purpose"] != "payouts" {
+		t.Fatalf("external account = %#v, want local bank account evidence", external)
+	}
+	externalList := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/external_accounts")
+	if len(externalList.Data) != 1 || externalList.Data[0].ID != external.ID {
+		t.Fatalf("external account list = %#v, want created account", externalList)
+	}
+
+	transfer := postForm[struct {
+		ID          string            `json:"id"`
+		Object      string            `json:"object"`
+		Amount      int64             `json:"amount"`
+		Currency    string            `json:"currency"`
+		Destination string            `json:"destination"`
+		Metadata    map[string]string `json:"metadata"`
+	}](t, handler, "/v1/transfers", url.Values{
+		"amount":            {"2500"},
+		"currency":          {"usd"},
+		"destination":       {account.ID},
+		"description":       {"Local platform transfer"},
+		"transfer_group":    {"group-platform-smoke"},
+		"metadata[orderId]": {"order_123"},
+	})
+	if !strings.HasPrefix(transfer.ID, "tr_") || transfer.Object != "transfer" || transfer.Amount != 2500 || transfer.Currency != "usd" || transfer.Destination != account.ID || transfer.Metadata["orderId"] != "order_123" {
+		t.Fatalf("transfer = %#v, want local transfer", transfer)
+	}
+
+	reversal := postForm[struct {
+		ID       string `json:"id"`
+		Object   string `json:"object"`
+		Amount   int64  `json:"amount"`
+		Transfer string `json:"transfer"`
+	}](t, handler, "/v1/transfers/"+transfer.ID+"/reversals", url.Values{
+		"amount":                 {"500"},
+		"refund_application_fee": {"true"},
+	})
+	if !strings.HasPrefix(reversal.ID, "trr_") || reversal.Object != "transfer_reversal" || reversal.Amount != 500 || reversal.Transfer != transfer.ID {
+		t.Fatalf("transfer reversal = %#v, want reversal evidence", reversal)
+	}
+
+	payout := postForm[struct {
+		ID          string `json:"id"`
+		Object      string `json:"object"`
+		Amount      int64  `json:"amount"`
+		Currency    string `json:"currency"`
+		Destination string `json:"destination"`
+		Status      string `json:"status"`
+	}](t, handler, "/v1/payouts", url.Values{
+		"amount":      {"1800"},
+		"currency":    {"usd"},
+		"destination": {external.ID},
+		"method":      {"standard"},
+	})
+	if !strings.HasPrefix(payout.ID, "po_") || payout.Object != "payout" || payout.Amount != 1800 || payout.Currency != "usd" || payout.Destination != external.ID || payout.Status != "paid" {
+		t.Fatalf("payout = %#v, want payout evidence", payout)
+	}
+	canceledPayout := postForm[struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}](t, handler, "/v1/payouts/"+payout.ID+"/cancel", url.Values{})
+	if canceledPayout.ID != payout.ID || canceledPayout.Status != "canceled" {
+		t.Fatalf("canceled payout = %#v, want canceled payout", canceledPayout)
+	}
+
+	feeRefund := postForm[struct {
+		ID       string `json:"id"`
+		Object   string `json:"object"`
+		Amount   int64  `json:"amount"`
+		Currency string `json:"currency"`
+		Fee      string `json:"fee"`
+	}](t, handler, "/v1/application_fees/fee_platform_smoke/refunds", url.Values{
+		"amount": {"300"},
+	})
+	if !strings.HasPrefix(feeRefund.ID, "fr_") || feeRefund.Object != "fee_refund" || feeRefund.Amount != 300 || feeRefund.Currency != "usd" || feeRefund.Fee != "fee_platform_smoke" {
+		t.Fatalf("fee refund = %#v, want application fee refund evidence", feeRefund)
+	}
+	fee := getJSON[struct {
+		ID             string `json:"id"`
+		Object         string `json:"object"`
+		Amount         int64  `json:"amount"`
+		AmountRefunded int64  `json:"amount_refunded"`
+	}](t, handler, "/v1/application_fees/fee_platform_smoke")
+	if fee.ID != "fee_platform_smoke" || fee.Object != "application_fee" || fee.Amount != 300 || fee.AmountRefunded != 300 {
+		t.Fatalf("application fee = %#v, want auto-materialized fee evidence", fee)
+	}
+
+	rejected := postForm[struct {
+		ID               string `json:"id"`
+		ChargesEnabled   bool   `json:"charges_enabled"`
+		PayoutsEnabled   bool   `json:"payouts_enabled"`
+		DetailsSubmitted bool   `json:"details_submitted"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/reject", url.Values{
+		"reason": {"fraud"},
+	})
+	if rejected.ID != account.ID || rejected.ChargesEnabled || rejected.PayoutsEnabled || rejected.DetailsSubmitted {
+		t.Fatalf("rejected account = %#v, want disabled account evidence", rejected)
+	}
+	storedRejected := getJSON[struct {
+		ID             string `json:"id"`
+		ChargesEnabled bool   `json:"charges_enabled"`
+		PayoutsEnabled bool   `json:"payouts_enabled"`
+	}](t, handler, "/v1/accounts/"+account.ID)
+	if storedRejected.ID != account.ID || storedRejected.ChargesEnabled || storedRejected.PayoutsEnabled {
+		t.Fatalf("stored rejected account = %#v, want disabled state persisted", storedRejected)
+	}
+
+	events := getJSON[struct {
+		Data []struct {
+			Type string `json:"type"`
+		} `json:"data"`
+	}](t, handler, "/v1/events")
+	seen := map[string]bool{}
+	for _, event := range events.Data {
+		seen[event.Type] = true
+	}
+	for _, eventType := range []string{"transfer.created", "transfer.reversed", "payout.created", "payout.canceled", "application_fee.refunded"} {
+		if !seen[eventType] {
+			t.Fatalf("events missing %s: %#v", eventType, events.Data)
+		}
 	}
 }
 
