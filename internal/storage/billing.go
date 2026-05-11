@@ -198,6 +198,86 @@ func (s *SQLiteStore) UpdatePrice(ctx context.Context, id string, in billing.Pri
 	return s.GetPrice(ctx, id)
 }
 
+func (s *SQLiteStore) CreateAccount(ctx context.Context, account billing.Account) (billing.Account, error) {
+	if account.CreatedAt.IsZero() {
+		account.CreatedAt = time.Now().UTC()
+	}
+	if account.UpdatedAt.IsZero() {
+		account.UpdatedAt = account.CreatedAt
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO connect_accounts (id, type, country, email, business_type, default_currency, charges_enabled, payouts_enabled, details_submitted, capabilities, metadata, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		account.ID, account.Type, strings.ToUpper(account.Country), account.Email, account.BusinessType, strings.ToLower(account.DefaultCurrency), boolInt(account.ChargesEnabled), boolInt(account.PayoutsEnabled), boolInt(account.DetailsSubmitted), encodeMap(account.Capabilities), encodeMap(account.Metadata), encodeTime(account.CreatedAt), encodeTime(account.UpdatedAt)); err != nil {
+		return billing.Account{}, err
+	}
+	return s.GetAccount(ctx, account.ID)
+}
+
+func (s *SQLiteStore) GetAccount(ctx context.Context, id string) (billing.Account, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, type, country, email, business_type, default_currency, charges_enabled, payouts_enabled, details_submitted, capabilities, metadata, created_at, updated_at FROM connect_accounts WHERE id = ?`, id)
+	account, err := scanAccount(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return billing.Account{}, billing.ErrNotFound
+	}
+	return account, err
+}
+
+func (s *SQLiteStore) ListAccounts(ctx context.Context) ([]billing.Account, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, type, country, email, business_type, default_currency, charges_enabled, payouts_enabled, details_submitted, capabilities, metadata, created_at, updated_at FROM connect_accounts ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []billing.Account
+	for rows.Next() {
+		account, err := scanAccount(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, account)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateAccount(ctx context.Context, id string, in billing.Account) (billing.Account, error) {
+	current, err := s.GetAccount(ctx, id)
+	if err != nil {
+		return billing.Account{}, err
+	}
+	if in.Email != "" {
+		current.Email = in.Email
+	}
+	if in.BusinessType != "" {
+		current.BusinessType = in.BusinessType
+	}
+	if in.DefaultCurrency != "" {
+		current.DefaultCurrency = strings.ToLower(in.DefaultCurrency)
+	}
+	if in.Capabilities != nil {
+		current.Capabilities = mergeStringMap(current.Capabilities, in.Capabilities)
+	}
+	if in.Metadata != nil {
+		current.Metadata = mergeStringMap(current.Metadata, in.Metadata)
+	}
+	current.UpdatedAt = time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `UPDATE connect_accounts SET email = ?, business_type = ?, default_currency = ?, capabilities = ?, metadata = ?, updated_at = ? WHERE id = ?`,
+		current.Email, current.BusinessType, current.DefaultCurrency, encodeMap(current.Capabilities), encodeMap(current.Metadata), encodeTime(current.UpdatedAt), id); err != nil {
+		return billing.Account{}, err
+	}
+	return s.GetAccount(ctx, id)
+}
+
+func mergeStringMap(current map[string]string, patch map[string]string) map[string]string {
+	merged := map[string]string{}
+	for key, value := range current {
+		merged[key] = value
+	}
+	for key, value := range patch {
+		merged[key] = value
+	}
+	return merged
+}
+
 func (s *SQLiteStore) CreateCheckoutSession(ctx context.Context, cs billing.CheckoutSession) (billing.CheckoutSession, error) {
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO checkout_sessions (id, customer_id, mode, line_items, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, cs.ID, cs.CustomerID, cs.Mode, encodeLineItems(cs.LineItems), cs.SuccessURL, cs.CancelURL, cs.Status, cs.PaymentStatus, boolInt(cs.AllowPromotionCodes), cs.TrialPeriodDays, encodeTime(cs.CreatedAt)); err != nil {
@@ -988,6 +1068,24 @@ func scanPrice(row scanner) (billing.Price, error) {
 	p.Metadata = decodeMap(metadata)
 	p.CreatedAt = decodeTime(createdAt)
 	return p, nil
+}
+
+func scanAccount(row scanner) (billing.Account, error) {
+	var account billing.Account
+	var chargesEnabled, payoutsEnabled, detailsSubmitted int
+	var capabilities, metadata, createdAt, updatedAt string
+	if err := row.Scan(&account.ID, &account.Type, &account.Country, &account.Email, &account.BusinessType, &account.DefaultCurrency, &chargesEnabled, &payoutsEnabled, &detailsSubmitted, &capabilities, &metadata, &createdAt, &updatedAt); err != nil {
+		return account, err
+	}
+	account.Object = billing.ObjectAccount
+	account.ChargesEnabled = chargesEnabled != 0
+	account.PayoutsEnabled = payoutsEnabled != 0
+	account.DetailsSubmitted = detailsSubmitted != 0
+	account.Capabilities = decodeMap(capabilities)
+	account.Metadata = decodeMap(metadata)
+	account.CreatedAt = decodeTime(createdAt)
+	account.UpdatedAt = decodeTime(updatedAt)
+	return account, nil
 }
 
 func scanCheckoutSession(row scanner) (billing.CheckoutSession, error) {

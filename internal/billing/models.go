@@ -15,6 +15,9 @@ const (
 	ObjectRefund          = "refund"
 	ObjectCreditNote      = "credit_note"
 	ObjectTimelineEntry   = "timeline_entry"
+	ObjectAccount         = "account"
+	ObjectAccountLink     = "account_link"
+	ObjectAccountSession  = "account_session"
 )
 
 type Customer struct {
@@ -198,6 +201,23 @@ type CreditNote struct {
 	Status     string            `json:"status"`
 	Metadata   map[string]string `json:"metadata,omitempty"`
 	CreatedAt  time.Time         `json:"created_at"`
+}
+
+type Account struct {
+	ID               string            `json:"id"`
+	Object           string            `json:"object"`
+	Type             string            `json:"type"`
+	Country          string            `json:"country"`
+	Email            string            `json:"email,omitempty"`
+	BusinessType     string            `json:"business_type,omitempty"`
+	DefaultCurrency  string            `json:"default_currency"`
+	ChargesEnabled   bool              `json:"charges_enabled"`
+	PayoutsEnabled   bool              `json:"payouts_enabled"`
+	DetailsSubmitted bool              `json:"details_submitted"`
+	Capabilities     map[string]string `json:"capabilities,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
+	CreatedAt        time.Time         `json:"created_at"`
+	UpdatedAt        time.Time         `json:"updated_at"`
 }
 
 type TimelineEntry struct {

@@ -145,6 +145,23 @@ period-end cancellations for attached objects.
 
 Returns a Billtap hosted portal URL for a known customer.
 
+### Connect Smoke
+
+- `POST /v1/accounts`
+- `GET /v1/accounts/{id}`
+- `GET /v1/accounts`
+- `POST /v1/accounts/{id}`
+- `POST /v1/account_links`
+- `POST /v1/account_sessions`
+
+Connect APIs are local smoke-test fixtures for platform-style routing. Account
+create/list/retrieve/update persist connected-account profiles with metadata and
+basic capability status. Account links and account sessions return local hosted
+URLs/client secrets for onboarding or embedded-component tests. Billtap records
+`Stripe-Account` request headers in redacted request traces, but it does not
+perform real onboarding, KYC, external-account verification, payouts, transfers,
+or settlement.
+
 ### Webhook Endpoints
 
 - `POST /v1/webhook_endpoints`

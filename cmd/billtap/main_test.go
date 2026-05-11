@@ -99,7 +99,7 @@ func TestRunCompatibilityWritesInventory(t *testing.T) {
 	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"inventory_version": "stripe-api-inventory-v2"`) {
 		t.Fatalf("JSON inventory missing version")
 	}
-	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"implemented_operations": 9`) {
+	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"implemented_operations": 10`) {
 		t.Fatalf("JSON inventory missing implemented operation count")
 	}
 	if !fileContains(t, filepath.Join(dir, "stripe-api-inventory.json"), `"schema_validated_operations": 0`) {

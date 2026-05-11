@@ -74,6 +74,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/products/", h.handleProduct)
 	h.mux.HandleFunc("/v1/prices", h.handlePrices)
 	h.mux.HandleFunc("/v1/prices/", h.handlePrice)
+	h.mux.HandleFunc("/v1/accounts", h.handleAccounts)
+	h.mux.HandleFunc("/v1/accounts/", h.handleAccount)
+	h.mux.HandleFunc("/v1/account_links", h.handleAccountLinks)
+	h.mux.HandleFunc("/v1/account_sessions", h.handleAccountSessions)
 	h.mux.HandleFunc("/v1/checkout/sessions", h.handleCheckoutSessions)
 	h.mux.HandleFunc("/v1/checkout/sessions/", h.handleCheckoutSession)
 	h.mux.HandleFunc("/v1/billing_portal/sessions", h.handleBillingPortalSessions)
@@ -405,6 +409,141 @@ func (h *Handler) handlePrice(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
+}
+
+func (h *Handler) handleAccounts(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateAccountCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		account, err := h.billing.CreateAccount(r.Context(), billing.Account{
+			ID:               p.string("id"),
+			Type:             p.stringDefault("type", "express"),
+			Country:          strings.ToUpper(p.stringDefault("country", "US")),
+			Email:            p.string("email"),
+			BusinessType:     p.string("business_type"),
+			DefaultCurrency:  p.stringDefault("default_currency", "usd"),
+			ChargesEnabled:   true,
+			PayoutsEnabled:   true,
+			DetailsSubmitted: p.boolDefault("details_submitted", true),
+			Capabilities:     accountCapabilities(p),
+			Metadata:         p.metadata(),
+		})
+		writeResult(w, stripeAccount(account), err)
+	case http.MethodGet:
+		accounts, err := h.billing.ListAccounts(r.Context())
+		writeResult(w, stripeList(r.URL.Path, stripeAccounts(filterAccounts(accounts, r))), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimPrefix(r.URL.Path, "/v1/accounts/")
+	if id == "" || strings.Contains(id, "/") {
+		h.notFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		account, err := h.billing.GetAccount(r.Context(), id)
+		writeResult(w, stripeAccount(account), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateAccountUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		account, err := h.billing.UpdateAccount(r.Context(), id, billing.Account{
+			Email:           p.string("email"),
+			BusinessType:    p.string("business_type"),
+			DefaultCurrency: p.string("default_currency"),
+			Capabilities:    accountCapabilities(p),
+			Metadata:        p.metadata(),
+		})
+		writeResult(w, stripeAccount(account), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleAccountLinks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateAccountLinkCreate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	accountID := p.string("account")
+	if _, err := h.billing.GetAccount(r.Context(), accountID); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	linkType := p.stringDefault("type", "account_onboarding")
+	link := map[string]any{
+		"id":          "link_" + sanitizeID(accountID+"_"+linkType+"_"+time.Now().UTC().Format(time.RFC3339Nano)),
+		"object":      billing.ObjectAccountLink,
+		"created":     time.Now().UTC().Unix(),
+		"expires_at":  time.Now().UTC().Add(30 * time.Minute).Unix(),
+		"url":         h.absoluteURL(r, "/connect/accounts/"+accountID+"/"+linkType),
+		"account":     accountID,
+		"type":        linkType,
+		"livemode":    false,
+		"refresh_url": emptyToNil(p.string("refresh_url")),
+		"return_url":  emptyToNil(p.string("return_url")),
+	}
+	writeJSON(w, http.StatusOK, link)
+}
+
+func (h *Handler) handleAccountSessions(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateAccountSessionCreate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	accountID := p.string("account")
+	if _, err := h.billing.GetAccount(r.Context(), accountID); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	sessionID := "accsess_" + sanitizeID(accountID+"_"+time.Now().UTC().Format(time.RFC3339Nano))
+	expiresAt := time.Now().UTC().Add(30 * time.Minute).Unix()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":            sessionID,
+		"object":        billing.ObjectAccountSession,
+		"account":       accountID,
+		"client_secret": sessionID + "_secret_billtap",
+		"components":    accountSessionComponents(p),
+		"created":       time.Now().UTC().Unix(),
+		"expires_at":    expiresAt,
+		"livemode":      false,
+	})
 }
 
 func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request) {
@@ -2304,6 +2443,50 @@ func (p params) list(key string) []string {
 	return out
 }
 
+var capabilityParamPattern = regexp.MustCompile(`^capabilities\[([^\]]+)\]\[(requested|status)\]$`)
+
+func accountCapabilities(p params) map[string]string {
+	out := map[string]string{}
+	for key, value := range p.values {
+		matches := capabilityParamPattern.FindStringSubmatch(key)
+		if len(matches) != 3 {
+			continue
+		}
+		capability := matches[1]
+		switch matches[2] {
+		case "requested":
+			if value == "true" || value == "1" {
+				out[capability] = "active"
+			} else {
+				out[capability] = "inactive"
+			}
+		case "status":
+			out[capability] = value
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+var accountSessionComponentPattern = regexp.MustCompile(`^components\[([^\]]+)\]\[enabled\]$`)
+
+func accountSessionComponents(p params) map[string]any {
+	out := map[string]any{}
+	for key, value := range p.values {
+		matches := accountSessionComponentPattern.FindStringSubmatch(key)
+		if len(matches) != 2 {
+			continue
+		}
+		out[matches[1]] = map[string]any{"enabled": value == "true" || value == "1"}
+	}
+	if len(out) == 0 {
+		return map[string]any{"account_onboarding": map[string]any{"enabled": true}}
+	}
+	return out
+}
+
 func (p params) lineItems() []billing.LineItem {
 	var out []billing.LineItem
 	for i := 0; i < 100; i++ {
@@ -2432,6 +2615,56 @@ func stripePrices(prices []billing.Price) []map[string]any {
 		out = append(out, stripePrice(price))
 	}
 	return out
+}
+
+func stripeAccount(account billing.Account) map[string]any {
+	return map[string]any{
+		"id":                  account.ID,
+		"object":              billing.ObjectAccount,
+		"type":                account.Type,
+		"country":             strings.ToUpper(account.Country),
+		"email":               emptyToNil(account.Email),
+		"business_type":       emptyToNil(account.BusinessType),
+		"charges_enabled":     account.ChargesEnabled,
+		"payouts_enabled":     account.PayoutsEnabled,
+		"details_submitted":   account.DetailsSubmitted,
+		"default_currency":    strings.ToLower(account.DefaultCurrency),
+		"capabilities":        nonNilMap(account.Capabilities),
+		"metadata":            nonNilMap(account.Metadata),
+		"requirements":        accountRequirements(account),
+		"future_requirements": accountRequirements(account),
+		"settings": map[string]any{
+			"dashboard": map[string]any{"display_name": nil, "timezone": "Etc/UTC"},
+			"payouts":   map[string]any{"schedule": map[string]any{"interval": "manual"}},
+		},
+		"created":  unix(account.CreatedAt),
+		"livemode": false,
+	}
+}
+
+func stripeAccounts(accounts []billing.Account) []map[string]any {
+	out := make([]map[string]any, 0, len(accounts))
+	for _, account := range accounts {
+		out = append(out, stripeAccount(account))
+	}
+	return out
+}
+
+func accountRequirements(account billing.Account) map[string]any {
+	currentlyDue := []string{}
+	if !account.DetailsSubmitted {
+		currentlyDue = append(currentlyDue, "business_profile.url", "external_account")
+	}
+	return map[string]any{
+		"alternatives":         []map[string]any{},
+		"currently_due":        currentlyDue,
+		"eventually_due":       currentlyDue,
+		"past_due":             []string{},
+		"pending_verification": []string{},
+		"disabled_reason":      nil,
+		"current_deadline":     nil,
+		"errors":               []map[string]any{},
+	}
 }
 
 func stripeCheckoutSession(session billing.CheckoutSession) map[string]any {
@@ -2710,6 +2943,25 @@ func filterPrices(prices []billing.Price, r *http.Request) []billing.Price {
 			continue
 		}
 		out = append(out, price)
+	}
+	return out
+}
+
+func filterAccounts(accounts []billing.Account, r *http.Request) []billing.Account {
+	query := r.URL.Query()
+	metadataFilters := queryMetadataFilters(query)
+	out := make([]billing.Account, 0, len(accounts))
+	for _, account := range accounts {
+		if country := query.Get("country"); country != "" && !strings.EqualFold(account.Country, country) {
+			continue
+		}
+		if accountType := query.Get("type"); accountType != "" && account.Type != accountType {
+			continue
+		}
+		if !metadataMatches(account.Metadata, metadataFilters) {
+			continue
+		}
+		out = append(out, account)
 	}
 	return out
 }

@@ -543,7 +543,7 @@ func nextMilestoneForFamily(family string) string {
 	case "payment_history":
 		return "Add charge, refund, balance transaction, dispute, and payment history evidence."
 	case "connect":
-		return "Add account retrieve/list fixtures, Stripe-Account tracing, and connected-account webhook smoke."
+		return "Add application fee, transfer, payout, and external-account fixtures plus connected-account webhook smoke."
 	default:
 		return "Keep inventory visible and add schema/fixture smoke only when adoption requires it."
 	}

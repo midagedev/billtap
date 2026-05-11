@@ -28,6 +28,7 @@ var (
 	paymentMethodTypesRE       = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
 	automaticPaymentMethodsRE  = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
 	paymentMethodOptionsRE     = regexp.MustCompile(`^payment_method_options\[.+\]$`)
+	accountNestedParamRE       = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
 )
 
 type validationError struct {
@@ -305,6 +306,82 @@ func validatePriceUpdate(p params) error {
 		},
 		AllowMetadata: true,
 	})
+}
+
+func validateAccountCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed:       []string{"id", "type", "country", "email", "business_type", "default_currency", "details_submitted", "account_token", "external_account"},
+		AllowedRegex:  []*regexp.Regexp{capabilityParamPattern, accountNestedParamRE},
+		BoolParams:    []string{"details_submitted"},
+		EnumParams:    map[string][]string{"type": {"standard", "express", "custom"}, "business_type": {"individual", "company", "non_profit", "government_entity"}},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	return validateCapabilityParams(p)
+}
+
+func validateAccountUpdate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed:       []string{"email", "business_type", "default_currency", "account_token", "external_account"},
+		AllowedRegex:  []*regexp.Regexp{capabilityParamPattern, accountNestedParamRE},
+		EnumParams:    map[string][]string{"business_type": {"individual", "company", "non_profit", "government_entity"}},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	return validateCapabilityParams(p)
+}
+
+func validateCapabilityParams(p params) error {
+	for key := range p.values {
+		matches := capabilityParamPattern.FindStringSubmatch(key)
+		if len(matches) != 3 {
+			continue
+		}
+		switch matches[2] {
+		case "requested":
+			if err := p.validateBool(key); err != nil {
+				return err
+			}
+		case "status":
+			if err := p.validateEnum(key, []string{"active", "inactive", "pending"}); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func validateAccountLinkCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:    []string{"account", "refresh_url", "return_url", "type", "collection_options[fields]"},
+		Required:   []string{"account", "refresh_url", "return_url", "type"},
+		EnumParams: map[string][]string{"type": {"account_onboarding", "account_update"}},
+	})
+}
+
+func validateAccountSessionCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed:      []string{"account"},
+		AllowedRegex: []*regexp.Regexp{accountSessionComponentPattern},
+		Required:     []string{"account"},
+	}); err != nil {
+		return err
+	}
+	hasComponent := false
+	for key := range p.values {
+		if accountSessionComponentPattern.MatchString(key) {
+			hasComponent = true
+			if err := p.validateBool(key); err != nil {
+				return err
+			}
+		}
+	}
+	if !hasComponent {
+		return missingParam("components")
+	}
+	return nil
 }
 
 func validateCheckoutSessionCreate(p params) error {
