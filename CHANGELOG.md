@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Hardened Stripe-like shape and validation for billing portal sessions and
+  customer payment-method lists, including portal flow enum checks,
+  PaymentMethod SDK fields, non-card filtering, and Stripe-style validation
+  error envelopes.
+- Added `GET /v1/prices/search` for the measured Stripe Search Query Language
+  subset used by one-time price lookup paths: `active`, `type`, `lookup_key`,
+  and metadata equality clauses joined by `AND`.
 - Added customer fixture controls for empty or explicit payment-method lists so
   no-card local billing scenarios can remain deterministic until portal save.
 - Expanded the Stripe-like simulation surface with hosted billing portal

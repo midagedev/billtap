@@ -36,6 +36,112 @@ var (
 	schedulePhaseParamRE        = regexp.MustCompile(`^phases\[\d+\]\[(start_date|end_date|iterations|items|plans)\].*$`)
 )
 
+var stripePaymentMethodTypes = []string{
+	"acss_debit",
+	"affirm",
+	"afterpay_clearpay",
+	"alipay",
+	"alma",
+	"amazon_pay",
+	"au_becs_debit",
+	"bacs_debit",
+	"bancontact",
+	"billie",
+	"blik",
+	"boleto",
+	"card",
+	"cashapp",
+	"crypto",
+	"custom",
+	"customer_balance",
+	"eps",
+	"fpx",
+	"giropay",
+	"grabpay",
+	"ideal",
+	"kakao_pay",
+	"klarna",
+	"konbini",
+	"kr_card",
+	"link",
+	"mb_way",
+	"mobilepay",
+	"multibanco",
+	"naver_pay",
+	"nz_bank_account",
+	"oxxo",
+	"p24",
+	"pay_by_bank",
+	"payco",
+	"paynow",
+	"paypal",
+	"payto",
+	"pix",
+	"promptpay",
+	"revolut_pay",
+	"samsung_pay",
+	"satispay",
+	"sepa_debit",
+	"sofort",
+	"sunbit",
+	"swish",
+	"twint",
+	"upi",
+	"us_bank_account",
+	"wechat_pay",
+	"zip",
+}
+
+var stripePortalLocales = []string{
+	"auto",
+	"bg",
+	"cs",
+	"da",
+	"de",
+	"el",
+	"en",
+	"en-AU",
+	"en-CA",
+	"en-GB",
+	"en-IE",
+	"en-IN",
+	"en-NZ",
+	"en-SG",
+	"es",
+	"es-419",
+	"et",
+	"fi",
+	"fil",
+	"fr",
+	"fr-CA",
+	"hr",
+	"hu",
+	"id",
+	"it",
+	"ja",
+	"ko",
+	"lt",
+	"lv",
+	"ms",
+	"mt",
+	"nb",
+	"nl",
+	"pl",
+	"pt",
+	"pt-BR",
+	"ro",
+	"ru",
+	"sk",
+	"sl",
+	"sv",
+	"th",
+	"tr",
+	"vi",
+	"zh",
+	"zh-HK",
+	"zh-TW",
+}
+
 type validationError struct {
 	Param   string
 	Code    string
@@ -311,6 +417,19 @@ func validatePriceUpdate(p params) error {
 		},
 		AllowMetadata: true,
 	})
+}
+
+func validatePriceSearch(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed:     []string{"query", "limit", "page"},
+		Required:    []string{"query"},
+		Int64Params: []string{"limit"},
+		Positive:    []string{"limit"},
+	}); err != nil {
+		return err
+	}
+	_, err := parsePriceSearchQuery(p.string("query"))
+	return err
 }
 
 func validateAccountCreate(p params) error {
@@ -815,10 +934,60 @@ func validateTestClockAdvance(p params) error {
 }
 
 func validateBillingPortalSessionCreate(p params) error {
-	return p.validate(paramSpec{
-		Allowed:      []string{"customer", "customer_id", "return_url", "configuration"},
+	if err := p.validate(paramSpec{
+		Allowed:      []string{"customer", "customer_id", "customer_account", "return_url", "configuration", "locale", "on_behalf_of"},
 		AllowedRegex: []*regexp.Regexp{portalFlowDataParamRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
+		EnumParams: map[string][]string{
+			"flow_data[type]":                   {"payment_method_update", "subscription_cancel", "subscription_update", "subscription_update_confirm"},
+			"flow_data[after_completion][type]": {"hosted_confirmation", "portal_homepage", "redirect"},
+			"locale":                            stripePortalLocales,
+		},
+	}); err != nil {
+		return err
+	}
+	flowDataPresent := false
+	for key := range p.values {
+		if strings.HasPrefix(key, "flow_data[") {
+			flowDataPresent = true
+			break
+		}
+	}
+	if flowDataPresent && !p.has("flow_data[type]") {
+		return missingParam("flow_data[type]")
+	}
+	switch p.string("flow_data[type]") {
+	case "subscription_cancel":
+		if !p.has("flow_data[subscription_cancel][subscription]") {
+			return missingParam("flow_data[subscription_cancel][subscription]")
+		}
+	case "subscription_update":
+		if !p.has("flow_data[subscription_update][subscription]") {
+			return missingParam("flow_data[subscription_update][subscription]")
+		}
+	case "subscription_update_confirm":
+		if !p.has("flow_data[subscription_update_confirm][subscription]") {
+			return missingParam("flow_data[subscription_update_confirm][subscription]")
+		}
+		if !p.has("flow_data[subscription_update_confirm][items]") && !p.has("flow_data[subscription_update_confirm][items][0][price]") {
+			return missingParam("flow_data[subscription_update_confirm][items]")
+		}
+	}
+	if p.string("flow_data[after_completion][type]") == "redirect" && !p.has("flow_data[after_completion][redirect][return_url]") {
+		return missingParam("flow_data[after_completion][redirect][return_url]")
+	}
+	return nil
+}
+
+func validatePaymentMethodList(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"allow_redisplay", "customer", "customer_account", "ending_before", "limit", "starting_after", "type"},
+		Int64Params: []string{"limit"},
+		Positive:    []string{"limit"},
+		EnumParams: map[string][]string{
+			"allow_redisplay": {"always", "limited", "unspecified"},
+			"type":            stripePaymentMethodTypes,
+		},
 	})
 }
 

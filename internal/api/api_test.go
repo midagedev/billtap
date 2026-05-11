@@ -1638,6 +1638,44 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("price search missing query", func(t *testing.T) {
+		status, body := getStatus(t, handler, "/v1/prices/search")
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "query" {
+			t.Fatalf("error=%#v, want missing query", errBody.Error)
+		}
+	})
+
+	t.Run("price search unsupported clause", func(t *testing.T) {
+		status, body := getStatus(t, handler, "/v1/prices/search?"+url.Values{
+			"query": {"currency:'usd'"},
+		}.Encode())
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "query" {
+			t.Fatalf("error=%#v, want invalid query", errBody.Error)
+		}
+	})
+
+	t.Run("price search invalid limit", func(t *testing.T) {
+		status, body := getStatus(t, handler, "/v1/prices/search?"+url.Values{
+			"query": {"active:'true'"},
+			"limit": {"zero"},
+		}.Encode())
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest {
+			t.Fatalf("status=%d body=%s, want 400", status, body)
+		}
+		if errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "limit" {
+			t.Fatalf("error=%#v, want invalid limit", errBody.Error)
+		}
+	})
+
 	t.Run("checkout invalid mode", func(t *testing.T) {
 		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
 			"customer":             {"cus_missing"},
@@ -2478,6 +2516,85 @@ func TestBillingPortalSessionActionsEmitWebhooks(t *testing.T) {
 	}
 }
 
+func TestBillingPortalSessionStripeLikeShapeAndValidation(t *testing.T) {
+	handler := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"portal-shape@example.test"},
+	})
+
+	session := postForm[map[string]any](t, handler, "/v1/billing_portal/sessions", url.Values{
+		"customer":     {customer.ID},
+		"return_url":   {"https://app.example.test/account"},
+		"locale":       {"auto"},
+		"on_behalf_of": {"acct_connected"},
+	})
+	if session["object"] != "billing_portal.session" || session["customer"] != customer.ID || session["livemode"] != false {
+		t.Fatalf("portal session = %#v, want Stripe-like object/customer/livemode fields", session)
+	}
+	if _, ok := session["flow"]; !ok || session["flow"] != nil {
+		t.Fatalf("portal session flow = %#v, want explicit null flow field", session["flow"])
+	}
+	if session["locale"] != "auto" || session["on_behalf_of"] != "acct_connected" || session["return_url"] != "https://app.example.test/account" {
+		t.Fatalf("portal session locale/on_behalf_of/return_url = %#v", session)
+	}
+	if urlValue, _ := session["url"].(string); !strings.HasPrefix(urlValue, "http://127.0.0.1:18080/portal?") {
+		t.Fatalf("portal URL = %q, want hosted Billtap portal URL", urlValue)
+	}
+
+	tests := []struct {
+		name       string
+		values     url.Values
+		wantParam  string
+		wantCode   string
+		wantStatus int
+	}{
+		{
+			name:       "missing customer",
+			values:     url.Values{"return_url": {"https://app.example.test/account"}},
+			wantParam:  "customer",
+			wantCode:   "parameter_missing",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid flow type",
+			values:     url.Values{"customer": {customer.ID}, "flow_data[type]": {"not_a_flow"}},
+			wantParam:  "flow_data[type]",
+			wantCode:   "parameter_invalid",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "missing subscription for cancel flow",
+			values:     url.Values{"customer": {customer.ID}, "flow_data[type]": {"subscription_cancel"}},
+			wantParam:  "flow_data[subscription_cancel][subscription]",
+			wantCode:   "parameter_missing",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "invalid locale",
+			values:     url.Values{"customer": {customer.ID}, "locale": {"pirate"}},
+			wantParam:  "locale",
+			wantCode:   "parameter_invalid",
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name:       "unknown parameter",
+			values:     url.Values{"customer": {customer.ID}, "made_up": {"true"}},
+			wantParam:  "made_up",
+			wantCode:   "parameter_unknown",
+			wantStatus: http.StatusBadRequest,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, body := postFormStatus(t, handler, "/v1/billing_portal/sessions", tt.values)
+			errBody := decodeErrorBody(t, body)
+			if status != tt.wantStatus || errBody.Error.Param != tt.wantParam || errBody.Error.Code != tt.wantCode || errBody.Error.Type != "invalid_request_error" {
+				t.Fatalf("status=%d error=%#v, want status=%d param=%s code=%s", status, errBody.Error, tt.wantStatus, tt.wantParam, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestFixtureCustomerPaymentMethodsCanBeEmptyUntilPortalSave(t *testing.T) {
 	handler := newTestHandler(t)
 	pack := map[string]any{
@@ -2580,6 +2697,180 @@ func TestFixtureCustomerPaymentMethodsCanBeEmptyUntilPortalSave(t *testing.T) {
 		t.Fatalf("reapply summary = %#v, want four customers", reapplied.Summary)
 	}
 	assertPaymentMethodIDs("cus_fixture_no_payment_methods")
+}
+
+func TestPaymentMethodsStripeLikeShapeFilteringAndValidation(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"payment-method-shape@example.test"},
+	})
+
+	methods := getJSON[struct {
+		Object  string `json:"object"`
+		URL     string `json:"url"`
+		HasMore bool   `json:"has_more"`
+		Data    []struct {
+			ID             string         `json:"id"`
+			Object         string         `json:"object"`
+			AllowRedisplay string         `json:"allow_redisplay"`
+			BillingDetails map[string]any `json:"billing_details"`
+			Card           map[string]any `json:"card"`
+			Customer       string         `json:"customer"`
+			Livemode       bool           `json:"livemode"`
+			Metadata       map[string]any `json:"metadata"`
+			Redaction      any            `json:"redaction"`
+			Type           string         `json:"type"`
+		} `json:"data"`
+	}](t, handler, "/v1/payment_methods?customer="+customer.ID+"&type=card&limit=3")
+	if methods.Object != "list" || methods.URL != "/v1/payment_methods" || methods.HasMore || len(methods.Data) != 1 {
+		t.Fatalf("payment methods list = %#v, want one Stripe-like list item", methods)
+	}
+	method := methods.Data[0]
+	if method.Object != "payment_method" || method.Type != "card" || method.Customer != customer.ID || method.Livemode || method.AllowRedisplay != "unspecified" {
+		t.Fatalf("payment method top-level fields = %#v", method)
+	}
+	if method.BillingDetails["address"] == nil || method.BillingDetails["email"] != nil || method.Metadata == nil || method.Redaction != nil {
+		t.Fatalf("payment method billing/metadata/redaction = %#v/%#v/%#v", method.BillingDetails, method.Metadata, method.Redaction)
+	}
+	checks, _ := method.Card["checks"].(map[string]any)
+	networks, _ := method.Card["networks"].(map[string]any)
+	threeDSecure, _ := method.Card["three_d_secure_usage"].(map[string]any)
+	if method.Card["brand"] != "visa" || method.Card["country"] != "US" || method.Card["funding"] != "credit" || method.Card["last4"] != "4242" || method.Card["fingerprint"] == "" {
+		t.Fatalf("payment method card fields = %#v", method.Card)
+	}
+	if checks["cvc_check"] != "pass" || networks["preferred"] != nil || threeDSecure["supported"] != true {
+		t.Fatalf("payment method nested card fields checks=%#v networks=%#v threeDS=%#v", checks, networks, threeDSecure)
+	}
+
+	nested := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/payment_methods?type=card")
+	if len(nested.Data) != 1 || nested.Data[0].ID != method.ID {
+		t.Fatalf("nested payment methods = %#v, want same fixture method", nested.Data)
+	}
+
+	nonCard := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/payment_methods?customer="+customer.ID+"&type=us_bank_account")
+	if len(nonCard.Data) != 0 {
+		t.Fatalf("non-card payment methods = %#v, want empty list for unsupported local type", nonCard.Data)
+	}
+
+	tests := []struct {
+		name      string
+		path      string
+		wantParam string
+		wantCode  string
+	}{
+		{
+			name:      "invalid type",
+			path:      "/v1/payment_methods?customer=" + customer.ID + "&type=not_a_type",
+			wantParam: "type",
+			wantCode:  "parameter_invalid",
+		},
+		{
+			name:      "invalid redisplay enum",
+			path:      "/v1/customers/" + customer.ID + "/payment_methods?allow_redisplay=forever",
+			wantParam: "allow_redisplay",
+			wantCode:  "parameter_invalid",
+		},
+		{
+			name:      "unknown query parameter",
+			path:      "/v1/payment_methods?customer=" + customer.ID + "&made_up=true",
+			wantParam: "made_up",
+			wantCode:  "parameter_unknown",
+		},
+		{
+			name:      "invalid limit",
+			path:      "/v1/payment_methods?customer=" + customer.ID + "&limit=zero",
+			wantParam: "limit",
+			wantCode:  "parameter_invalid",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			status, body := getStatus(t, handler, tt.path)
+			errBody := decodeErrorBody(t, body)
+			if status != http.StatusBadRequest || errBody.Error.Param != tt.wantParam || errBody.Error.Code != tt.wantCode || errBody.Error.Type != "invalid_request_error" {
+				t.Fatalf("status=%d error=%#v, want param=%s code=%s", status, errBody.Error, tt.wantParam, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestPriceSearchSupportsOneTimeLookupKey(t *testing.T) {
+	handler := newTestHandler(t)
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"id":              {"prod_extra_export"},
+		"name":            {"Extra Export"},
+		"metadata[scope]": {"exports"},
+	})
+	oneTime := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"id":                    {"price_extra_export_single_charge"},
+		"product":               {product.ID},
+		"currency":              {"usd"},
+		"unit_amount":           {"1200"},
+		"lookup_key":            {"extra_export_single_charge"},
+		"metadata[scope]":       {"exports"},
+		"metadata[environment]": {"e2e"},
+	})
+	recurring := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"id":                    {"price_extra_export_monthly"},
+		"product":               {product.ID},
+		"currency":              {"usd"},
+		"unit_amount":           {"9900"},
+		"lookup_key":            {"extra_export_single_charge"},
+		"recurring[interval]":   {"month"},
+		"metadata[scope]":       {"exports"},
+		"metadata[environment]": {"e2e"},
+	})
+	if oneTime.ID == "" || recurring.ID == "" {
+		t.Fatalf("seeded prices oneTime=%#v recurring=%#v", oneTime, recurring)
+	}
+
+	query := "active:'true' AND type:'one_time' AND lookup_key:'extra_export_single_charge'"
+	search := getJSON[struct {
+		Object   string  `json:"object"`
+		URL      string  `json:"url"`
+		HasMore  bool    `json:"has_more"`
+		NextPage *string `json:"next_page"`
+		Data     []struct {
+			ID        string            `json:"id"`
+			Object    string            `json:"object"`
+			Active    bool              `json:"active"`
+			LookupKey string            `json:"lookup_key"`
+			Metadata  map[string]string `json:"metadata"`
+			Type      string            `json:"type"`
+		} `json:"data"`
+	}](t, handler, "/v1/prices/search?"+url.Values{"query": {query}}.Encode())
+	if search.Object != "search_result" || search.URL != "/v1/prices/search?query="+query || search.HasMore || search.NextPage != nil {
+		t.Fatalf("price search envelope = %#v, want Stripe-like search result", search)
+	}
+	if len(search.Data) != 1 || search.Data[0].ID != oneTime.ID || search.Data[0].Object != "price" || !search.Data[0].Active || search.Data[0].Type != "one_time" || search.Data[0].LookupKey != "extra_export_single_charge" {
+		t.Fatalf("price search data = %#v, want one matching one-time price", search.Data)
+	}
+
+	metadataSearch := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/prices/search?"+url.Values{
+		"query": {"active:'true' AND type:'one_time' AND metadata['scope']:'exports' AND metadata['environment']:'e2e'"},
+	}.Encode())
+	if len(metadataSearch.Data) != 1 || metadataSearch.Data[0].ID != oneTime.ID {
+		t.Fatalf("metadata price search = %#v, want one-time price", metadataSearch.Data)
+	}
+
+	empty := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/prices/search?"+url.Values{
+		"query": {"active:'true' AND type:'one_time' AND lookup_key:'missing'"},
+	}.Encode())
+	if len(empty.Data) != 0 {
+		t.Fatalf("empty price search = %#v, want no matches", empty.Data)
+	}
 }
 
 func TestExpandedStripeSurfaceSimulations(t *testing.T) {
@@ -4037,6 +4328,14 @@ func postFormStatusWithResponseHeaders(t *testing.T, handler http.Handler, path 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String(), rec.Header()
+}
+
+func getStatus(t *testing.T, handler http.Handler, path string) (int, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String()
 }
 
 func patchForm[T any](t *testing.T, handler http.Handler, path string, values url.Values) T {
