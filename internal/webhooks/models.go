@@ -145,26 +145,35 @@ type EventInput struct {
 }
 
 type DeliveryOptions struct {
-	Duplicate         int
-	Delay             time.Duration
-	OutOfOrder        bool
-	Replay            bool
-	ResponseStatus    int
-	ResponseBody      string
-	SimulatedError    string
-	SimulatedTimeout  bool
-	SignatureMismatch bool
+	Duplicate          int
+	Delay              time.Duration
+	OutOfOrder         bool
+	Replay             bool
+	ResponseStatus     int
+	ResponseBody       string
+	SimulatedError     string
+	SimulatedTimeout   bool
+	SignatureMismatch  bool
+	SimulateAppFailure *SimulatedAppFailure
+	NoRetrySchedule    bool
 }
 
 type ReplayOptions struct {
-	Duplicate         int
-	Delay             time.Duration
-	OutOfOrder        bool
-	ResponseStatus    int
-	ResponseBody      string
-	SimulatedError    string
-	SimulatedTimeout  bool
-	SignatureMismatch bool
+	Duplicate          int
+	Delay              time.Duration
+	OutOfOrder         bool
+	ResponseStatus     int
+	ResponseBody       string
+	SimulatedError     string
+	SimulatedTimeout   bool
+	SignatureMismatch  bool
+	SimulateAppFailure *SimulatedAppFailure
+}
+
+type SimulatedAppFailure struct {
+	Status             int    `json:"status"`
+	FailFirstNAttempts int    `json:"fail_first_n_attempts"`
+	Body               string `json:"body,omitempty"`
 }
 
 type ServiceOptions struct {

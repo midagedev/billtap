@@ -1,6 +1,6 @@
 # Compatibility Tracking
 
-Status date: 2026-05-10
+Status date: 2026-05-11
 
 This document defines how Billtap tracks Stripe API compatibility as a
 measurable, long-running body of work. The public claim is the generated
@@ -84,9 +84,9 @@ The long-running expansion goal is at least 90% OpenAPI operation coverage at
 The concrete target and chunk plan live in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`. In short:
 
-- current baseline: `47 / 619`, `7.6%`
-- target: at least `558 / 619`, `90.0%`
-- maximum remaining `L0`: `61 / 619`
+- current baseline: `57 / 587`, `9.7%`
+- target: at least `529 / 587`, `90.0%`
+- maximum remaining `L0`: `58 / 587`
 - P0/P1 billing-lab flows still need deeper `L3-L6` evidence, not just broad
   schema or fixture smoke
 
@@ -95,12 +95,12 @@ The concrete target and chunk plan live in
 | Priority | Family | First measurable chunk |
 | --- | --- | --- |
 | P0 | webhooks | Thin/snapshot event shape audit, connected-account routing evidence, replay diagnostics. |
-| P0 | billing | Trial-end depth, proration preview, subscription schedules, invoice finalization/voiding, and discount/credit scenarios. |
+| P0 | billing | Proration preview, subscription schedules, invoice finalization/voiding, and discount/credit scenario depth. |
 | P0 | checkout | Close subscription checkout optional-param gaps and SDK smoke. |
 | P0 | billing_portal | Portal configuration fixtures, payment-method update, cancellation reason coverage. |
 | P1 | connect | `GET /v1/accounts/{id}`, account list fixture, `Stripe-Account` tracing, connected webhook smoke. |
 | P1 | payments | PaymentMethod attach/detach/update breadth, remaining PaymentIntent adjunct routes, and setup verification gaps. |
-| P1 | payment_history | Charges, refunds, balance transactions, disputes, and debug-bundle reconciliation. |
+| P1 | payment_history | Charges, refund depth, balance transactions, disputes, and debug-bundle reconciliation. |
 | P1 | catalog/customers | OpenAPI-backed validation and low-state fixture response breadth. |
 
 Connect is tracked as `P1` because platform-style SaaS integrations commonly

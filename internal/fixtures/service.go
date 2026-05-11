@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -64,6 +65,13 @@ func (s *Service) Apply(ctx context.Context, pack Pack) (ApplyResult, error) {
 		}
 		result.Prices = append(result.Prices, price)
 	}
+	for _, fixture := range pack.TestClocks {
+		clock, err := s.upsertTestClock(ctx, fixture)
+		if err != nil {
+			return result, err
+		}
+		result.TestClocks = append(result.TestClocks, clock)
+	}
 	for _, fixture := range pack.Subscriptions {
 		session, subscription, err := s.upsertSubscription(ctx, pack, fixture)
 		if err != nil {
@@ -74,13 +82,30 @@ func (s *Service) Apply(ctx context.Context, pack Pack) (ApplyResult, error) {
 		}
 		result.Subscriptions = append(result.Subscriptions, subscription)
 	}
+	for _, fixture := range pack.Refunds {
+		refund, err := s.createRefund(ctx, pack, fixture)
+		if err != nil {
+			return result, err
+		}
+		result.Refunds = append(result.Refunds, refund)
+	}
+	for _, fixture := range pack.CreditNotes {
+		note, err := s.createCreditNote(ctx, pack, fixture)
+		if err != nil {
+			return result, err
+		}
+		result.CreditNotes = append(result.CreditNotes, note)
+	}
 
 	result.Summary = map[string]int{
 		"customers":         len(result.Customers),
 		"products":          len(result.Products),
 		"prices":            len(result.Prices),
+		"test_clocks":       len(result.TestClocks),
 		"checkout_sessions": len(result.CheckoutSessions),
 		"subscriptions":     len(result.Subscriptions),
+		"refunds":           len(result.Refunds),
+		"credit_notes":      len(result.CreditNotes),
 	}
 
 	if len(pack.Assertions) > 0 {
@@ -200,8 +225,93 @@ func (s *Service) Assert(ctx context.Context, req AssertionRequest) (AssertionRe
 	return report, nil
 }
 
+func (s *Service) Resolve(ctx context.Context, filter ResolveFilter) (ResolveResult, error) {
+	ref := strings.TrimSpace(filter.Ref)
+	if ref == "" {
+		return ResolveResult{}, fmt.Errorf("%w: ref is required", ErrInvalidFixture)
+	}
+	snapshot, err := s.Snapshot(ctx, SnapshotFilter{
+		RunID:       filter.RunID,
+		FixtureName: filter.FixtureName,
+		Namespace:   filter.Namespace,
+		TenantID:    filter.TenantID,
+	})
+	if err != nil {
+		return ResolveResult{}, err
+	}
+	result := ResolveResult{Object: "fixture_resolve", Ref: ref}
+	for _, subscription := range snapshot.Subscriptions {
+		if subscription.ID != ref && subscription.Metadata[MetadataFixtureRef] != ref {
+			continue
+		}
+		result.SubscriptionID = subscription.ID
+		result.CustomerID = subscription.CustomerID
+		result.InvoiceID = subscription.LatestInvoiceID
+		result.Metadata = subscription.Metadata
+		if len(subscription.Items) > 0 {
+			result.PriceID = subscription.Items[0].PriceID
+		}
+		break
+	}
+	for _, session := range snapshot.CheckoutSessions {
+		if result.SubscriptionID != "" && session.SubscriptionID == result.SubscriptionID {
+			result.CheckoutSessionID = session.ID
+			break
+		}
+		if session.ID == ref {
+			result.CheckoutSessionID = session.ID
+			result.CustomerID = session.CustomerID
+			result.SubscriptionID = session.SubscriptionID
+			result.InvoiceID = session.InvoiceID
+			result.PaymentIntentID = session.PaymentIntentID
+			break
+		}
+	}
+	if result.InvoiceID != "" {
+		for _, invoice := range snapshot.Invoices {
+			if invoice.ID == result.InvoiceID {
+				result.PaymentIntentID = invoice.PaymentIntentID
+				result.CustomerID = firstFixtureNonEmpty(result.CustomerID, invoice.CustomerID)
+				break
+			}
+		}
+	}
+	for _, customer := range snapshot.Customers {
+		if customer.ID == ref || customer.Metadata[MetadataFixtureRef] == ref {
+			result.CustomerID = customer.ID
+			result.Metadata = customer.Metadata
+			break
+		}
+	}
+	for _, price := range snapshot.Prices {
+		if price.ID == ref || price.LookupKey == ref || price.Metadata[MetadataFixtureRef] == ref {
+			result.PriceID = price.ID
+			result.ProductID = price.ProductID
+			result.Metadata = price.Metadata
+			break
+		}
+	}
+	for _, product := range snapshot.Products {
+		if product.ID == ref || product.Metadata[MetadataFixtureRef] == ref {
+			result.ProductID = product.ID
+			result.Metadata = product.Metadata
+			break
+		}
+	}
+	if result.CustomerID == "" && result.SubscriptionID == "" && result.InvoiceID == "" && result.PaymentIntentID == "" && result.CheckoutSessionID == "" && result.PriceID == "" && result.ProductID == "" {
+		return ResolveResult{}, billing.ErrNotFound
+	}
+	return result, nil
+}
+
 func (s *Service) upsertCustomer(ctx context.Context, pack Pack, fixture CustomerFixture) (billing.Customer, error) {
-	metadata := fixtureMetadata(fixture.Metadata, pack, fixture.ID)
+	metadata := fixtureMetadata(fixture.Metadata, pack, firstFixtureNonEmpty(fixture.Ref, fixture.ID))
+	if strings.TrimSpace(fixture.TestClock) != "" {
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata["test_clock"] = strings.TrimSpace(fixture.TestClock)
+	}
 	if fixture.ID != "" {
 		current, err := s.billing.GetCustomer(ctx, fixture.ID)
 		if err == nil {
@@ -267,10 +377,10 @@ func (s *Service) upsertPrice(ctx context.Context, pack Pack, fixture PriceFixtu
 			return s.billing.UpdatePrice(ctx, fixture.ID, billing.Price{
 				ProductID:              fixture.Product,
 				Currency:               fixture.Currency,
-				UnitAmount:             fixture.UnitAmount,
-				LookupKey:              fixture.LookupKey,
+				UnitAmount:             fixtureUnitAmount(fixture),
+				LookupKey:              fixtureLookupKey(fixture),
 				RecurringInterval:      fixture.Interval,
-				RecurringIntervalCount: fixture.IntervalCount,
+				RecurringIntervalCount: fixtureIntervalCount(fixture),
 				Active:                 active,
 				Metadata:               metadata,
 			})
@@ -283,12 +393,45 @@ func (s *Service) upsertPrice(ctx context.Context, pack Pack, fixture PriceFixtu
 		ID:                     fixture.ID,
 		ProductID:              fixture.Product,
 		Currency:               fixture.Currency,
-		UnitAmount:             fixture.UnitAmount,
-		LookupKey:              fixture.LookupKey,
+		UnitAmount:             fixtureUnitAmount(fixture),
+		LookupKey:              fixtureLookupKey(fixture),
 		RecurringInterval:      fixture.Interval,
-		RecurringIntervalCount: fixture.IntervalCount,
+		RecurringIntervalCount: fixtureIntervalCount(fixture),
 		Active:                 active,
 		Metadata:               metadata,
+	})
+}
+
+func (s *Service) upsertTestClock(ctx context.Context, fixture TestClockFixture) (billing.TestClock, error) {
+	frozenTime, err := parseFixtureTime(firstFixtureNonEmpty(fixture.FrozenTime, time.Now().UTC().Format(time.RFC3339Nano)))
+	if err != nil {
+		return billing.TestClock{}, err
+	}
+	if strings.TrimSpace(fixture.ID) != "" {
+		current, err := s.billing.GetTestClock(ctx, fixture.ID)
+		if err == nil {
+			changed := false
+			if !frozenTime.Equal(current.FrozenTime) {
+				current.FrozenTime = frozenTime
+				changed = true
+			}
+			if strings.TrimSpace(fixture.Name) != "" {
+				current.Name = strings.TrimSpace(fixture.Name)
+				changed = true
+			}
+			if changed {
+				return s.billing.UpdateTestClock(ctx, current)
+			}
+			return current, nil
+		}
+		if !errors.Is(err, billing.ErrNotFound) {
+			return billing.TestClock{}, err
+		}
+	}
+	return s.billing.CreateTestClock(ctx, billing.TestClock{
+		ID:         strings.TrimSpace(fixture.ID),
+		Name:       strings.TrimSpace(fixture.Name),
+		FrozenTime: frozenTime,
 	})
 }
 
@@ -300,30 +443,55 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 		return billing.CheckoutSession{}, billing.Subscription{}, err
 	}
 	metadata := fixtureMetadata(fixture.Metadata, pack, ref)
+	if strings.TrimSpace(fixture.TestClock) != "" {
+		metadata = ensureStringMap(metadata)
+		metadata["test_clock"] = strings.TrimSpace(fixture.TestClock)
+	}
+	if strings.TrimSpace(fixture.RenewalOutcome) != "" {
+		metadata = ensureStringMap(metadata)
+		metadata["billtap_renewal_outcome"] = strings.TrimSpace(fixture.RenewalOutcome)
+	}
+	if strings.TrimSpace(fixture.TrialStart) != "" {
+		metadata = ensureStringMap(metadata)
+		metadata["trial_start"] = strings.TrimSpace(fixture.TrialStart)
+	}
+	if strings.TrimSpace(fixture.TrialEnd) != "" {
+		metadata = ensureStringMap(metadata)
+		metadata["trial_end"] = strings.TrimSpace(fixture.TrialEnd)
+	}
 	if found {
-		patch := billing.SubscriptionPatch{
-			Items:             items,
-			ReplaceItems:      true,
-			Metadata:          metadata,
-			CancelAtPeriodEnd: fixture.CancelAtPeriodEnd,
+		patch, err := subscriptionStatePatch(fixture, metadata, items)
+		if err != nil {
+			return billing.CheckoutSession{}, billing.Subscription{}, err
+		}
+		patch.Items = items
+		patch.ReplaceItems = true
+		if patch.CancelAtPeriodEnd == nil {
+			patch.CancelAtPeriodEnd = fixtureCancelAtPeriodEnd(fixture)
 		}
 		subscription, err := s.billing.PatchSubscription(ctx, existing.ID, patch)
 		return billing.CheckoutSession{}, subscription, err
 	}
 
+	trialDays, completionAt, err := fixtureTrialCompletionTiming(fixture)
+	if err != nil {
+		return billing.CheckoutSession{}, billing.Subscription{}, err
+	}
 	session, err := s.billing.CreateCheckoutSession(ctx, billing.CheckoutSession{
-		ID:         strings.TrimSpace(fixture.CheckoutSessionID),
-		CustomerID: fixture.Customer,
-		Mode:       "subscription",
-		LineItems:  items,
+		ID:              strings.TrimSpace(fixtureCheckoutSessionID(fixture)),
+		CustomerID:      fixture.Customer,
+		Mode:            "subscription",
+		LineItems:       items,
+		TrialPeriodDays: trialDays,
 	})
 	if err != nil {
 		return billing.CheckoutSession{}, billing.Subscription{}, err
 	}
-	completed, err := s.billing.CompleteCheckoutWithOptions(ctx, session.ID, fixture.Outcome, billing.CheckoutCompletionOptions{
+	completed, err := s.billing.CompleteCheckoutWithOptions(ctx, session.ID, fixtureOutcome(fixture), billing.CheckoutCompletionOptions{
 		SubscriptionID:  strings.TrimSpace(fixture.ID),
 		InvoiceID:       strings.TrimSpace(fixture.InvoiceID),
-		PaymentIntentID: strings.TrimSpace(fixture.PaymentIntentID),
+		PaymentIntentID: strings.TrimSpace(fixturePaymentIntentID(fixture)),
+		At:              completionAt,
 	})
 	if err != nil {
 		return billing.CheckoutSession{}, billing.Subscription{}, err
@@ -332,10 +500,14 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 	if err != nil {
 		return completed, billing.Subscription{}, err
 	}
-	subscription, err = s.billing.PatchSubscription(ctx, subscription.ID, billing.SubscriptionPatch{
-		Metadata:          metadata,
-		CancelAtPeriodEnd: fixture.CancelAtPeriodEnd,
-	})
+	patch, err := subscriptionStatePatch(fixture, metadata, nil)
+	if err != nil {
+		return billing.CheckoutSession{}, billing.Subscription{}, err
+	}
+	if patch.CancelAtPeriodEnd == nil {
+		patch.CancelAtPeriodEnd = fixtureCancelAtPeriodEnd(fixture)
+	}
+	subscription, err = s.billing.PatchSubscription(ctx, subscription.ID, patch)
 	return completed, subscription, err
 }
 
@@ -363,6 +535,52 @@ func (s *Service) findSubscription(ctx context.Context, pack Pack, fixture Subsc
 		}
 	}
 	return billing.Subscription{}, false, nil
+}
+
+func (s *Service) createRefund(ctx context.Context, pack Pack, fixture RefundFixture) (billing.Refund, error) {
+	if strings.TrimSpace(fixture.ID) != "" {
+		current, err := s.billing.GetRefund(ctx, fixture.ID)
+		if err == nil {
+			return current, nil
+		}
+		if !errors.Is(err, billing.ErrNotFound) {
+			return billing.Refund{}, err
+		}
+	}
+	metadata := fixtureMetadata(fixture.Metadata, pack, firstFixtureNonEmpty(fixture.ID, fixture.Charge, fixture.PaymentIntent, fixture.Invoice))
+	return s.billing.CreateRefund(ctx, billing.Refund{
+		ID:              strings.TrimSpace(fixture.ID),
+		ChargeID:        strings.TrimSpace(fixture.Charge),
+		PaymentIntentID: strings.TrimSpace(fixture.PaymentIntent),
+		InvoiceID:       strings.TrimSpace(fixture.Invoice),
+		CustomerID:      strings.TrimSpace(fixture.Customer),
+		Amount:          fixture.Amount,
+		Currency:        strings.TrimSpace(fixture.Currency),
+		Reason:          strings.TrimSpace(fixture.Reason),
+		Metadata:        metadata,
+	})
+}
+
+func (s *Service) createCreditNote(ctx context.Context, pack Pack, fixture CreditNoteFixture) (billing.CreditNote, error) {
+	if strings.TrimSpace(fixture.ID) != "" {
+		current, err := s.billing.GetCreditNote(ctx, fixture.ID)
+		if err == nil {
+			return current, nil
+		}
+		if !errors.Is(err, billing.ErrNotFound) {
+			return billing.CreditNote{}, err
+		}
+	}
+	metadata := fixtureMetadata(fixture.Metadata, pack, firstFixtureNonEmpty(fixture.ID, fixture.Invoice))
+	return s.billing.CreateCreditNote(ctx, billing.CreditNote{
+		ID:         strings.TrimSpace(fixture.ID),
+		InvoiceID:  strings.TrimSpace(fixture.Invoice),
+		CustomerID: strings.TrimSpace(fixture.Customer),
+		Amount:     fixture.Amount,
+		Currency:   strings.TrimSpace(fixture.Currency),
+		Reason:     strings.TrimSpace(fixture.Reason),
+		Metadata:   metadata,
+	})
 }
 
 func (s *Service) filteredTimeline(ctx context.Context, filter SnapshotFilter, customerIDs, checkoutIDs, subscriptionIDs, invoiceIDs, paymentIntentIDs map[string]bool) ([]billing.TimelineEntry, error) {
@@ -452,8 +670,18 @@ func validatePack(pack Pack) error {
 		if strings.TrimSpace(price.Currency) == "" {
 			problems = append(problems, fmt.Sprintf("prices[%d].currency is required", idx))
 		}
-		if price.UnitAmount < 0 {
+		if fixtureUnitAmount(price) < 0 {
 			problems = append(problems, fmt.Sprintf("prices[%d].unitAmount must be non-negative", idx))
+		}
+	}
+	for idx, clock := range pack.TestClocks {
+		if strings.TrimSpace(clock.ID) == "" {
+			problems = append(problems, fmt.Sprintf("test_clocks[%d].id is required", idx))
+		}
+		if strings.TrimSpace(clock.FrozenTime) == "" {
+			problems = append(problems, fmt.Sprintf("test_clocks[%d].frozen_time is required", idx))
+		} else if _, err := parseFixtureTime(clock.FrozenTime); err != nil {
+			problems = append(problems, fmt.Sprintf("test_clocks[%d].frozen_time is invalid", idx))
 		}
 	}
 	for idx, subscription := range pack.Subscriptions {
@@ -467,6 +695,22 @@ func validatePack(pack Pack) error {
 			if strings.TrimSpace(item.Price) == "" {
 				problems = append(problems, fmt.Sprintf("subscriptions[%d].items[%d].price is required", idx, itemIdx))
 			}
+		}
+	}
+	for idx, refund := range pack.Refunds {
+		if strings.TrimSpace(refund.Charge) == "" && strings.TrimSpace(refund.PaymentIntent) == "" && strings.TrimSpace(refund.Invoice) == "" {
+			problems = append(problems, fmt.Sprintf("refunds[%d].charge, payment_intent, or invoice is required", idx))
+		}
+		if refund.Amount <= 0 {
+			problems = append(problems, fmt.Sprintf("refunds[%d].amount must be positive", idx))
+		}
+	}
+	for idx, note := range pack.CreditNotes {
+		if strings.TrimSpace(note.Invoice) == "" {
+			problems = append(problems, fmt.Sprintf("credit_notes[%d].invoice is required", idx))
+		}
+		if note.Amount <= 0 {
+			problems = append(problems, fmt.Sprintf("credit_notes[%d].amount must be positive", idx))
 		}
 	}
 	if len(problems) > 0 {
@@ -597,6 +841,9 @@ func filterPaymentIntents(items []billing.PaymentIntent, filter SnapshotFilter, 
 
 func fixtureMetadata(base map[string]string, pack Pack, ref string) map[string]string {
 	out := mergeStringMap(nil, base)
+	if out == nil {
+		out = map[string]string{}
+	}
 	if pack.Name != "" {
 		out[MetadataFixtureName] = pack.Name
 	}
@@ -608,6 +855,9 @@ func fixtureMetadata(base map[string]string, pack Pack, ref string) map[string]s
 	}
 	if ref != "" {
 		out[MetadataFixtureRef] = ref
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }
@@ -671,6 +921,203 @@ func subscriptionLineItems(fixture SubscriptionFixture) []billing.LineItem {
 		})
 	}
 	return out
+}
+
+func subscriptionStatePatch(fixture SubscriptionFixture, metadata map[string]string, items []billing.LineItem) (billing.SubscriptionPatch, error) {
+	patch := billing.SubscriptionPatch{
+		Metadata:        metadata,
+		TimelineSource:  "fixture",
+		TimelineMessage: "Fixture subscription state applied",
+	}
+	if len(items) > 0 {
+		patch.Items = items
+		patch.ReplaceItems = true
+	}
+	status := strings.ToLower(strings.TrimSpace(fixture.Status))
+	if status != "" {
+		switch status {
+		case "active", "trialing", "past_due", "unpaid", "incomplete", "incomplete_expired", "canceled":
+			patch.Status = &status
+		default:
+			return patch, fmt.Errorf("%w: unsupported subscription status %q", ErrInvalidFixture, fixture.Status)
+		}
+	}
+	if value := firstFixtureNonEmpty(fixture.CurrentPeriodStart, fixture.TrialStart); value != "" {
+		parsed, err := parseFixtureTime(value)
+		if err != nil {
+			return patch, err
+		}
+		patch.CurrentPeriodStart = &parsed
+	}
+	if value := firstFixtureNonEmpty(fixture.CurrentPeriodEnd, fixture.TrialEnd, fixture.CancelAt); value != "" {
+		parsed, err := parseFixtureTime(value)
+		if err != nil {
+			return patch, err
+		}
+		patch.CurrentPeriodEnd = &parsed
+	}
+	if value := strings.TrimSpace(fixture.TrialStart); value != "" {
+		if _, err := parseFixtureTime(value); err != nil {
+			return patch, err
+		}
+		metadata = ensureStringMap(metadata)
+		metadata["trial_start"] = value
+		patch.Metadata = metadata
+	}
+	if value := strings.TrimSpace(fixture.TrialEnd); value != "" {
+		if _, err := parseFixtureTime(value); err != nil {
+			return patch, err
+		}
+		metadata = ensureStringMap(metadata)
+		metadata["trial_end"] = value
+		patch.Metadata = metadata
+	}
+	if value := strings.TrimSpace(fixture.CancelAt); value != "" {
+		if _, err := parseFixtureTime(value); err != nil {
+			return patch, err
+		}
+		metadata = ensureStringMap(metadata)
+		metadata["cancel_at"] = value
+		patch.Metadata = metadata
+		trueValue := true
+		patch.CancelAtPeriodEnd = &trueValue
+	}
+	if value := strings.TrimSpace(fixture.CanceledAt); value != "" {
+		parsed, err := parseFixtureTime(value)
+		if err != nil {
+			return patch, err
+		}
+		patch.CanceledAt = &parsed
+	}
+	if value := strings.TrimSpace(fixture.EndedAt); value != "" {
+		if _, err := parseFixtureTime(value); err != nil {
+			return patch, err
+		}
+		metadata = ensureStringMap(metadata)
+		metadata["ended_at"] = value
+		patch.Metadata = metadata
+		if patch.CanceledAt == nil {
+			parsed, _ := parseFixtureTime(value)
+			patch.CanceledAt = &parsed
+		}
+	}
+	if status == "canceled" && patch.CanceledAt == nil {
+		canceledAt := time.Now().UTC()
+		patch.CanceledAt = &canceledAt
+		falseValue := false
+		patch.CancelAtPeriodEnd = &falseValue
+	}
+	if strings.TrimSpace(fixture.LatestInvoiceStatus) != "" {
+		metadata = ensureStringMap(metadata)
+		metadata["latest_invoice_status"] = strings.TrimSpace(fixture.LatestInvoiceStatus)
+		patch.Metadata = metadata
+	}
+	return patch, nil
+}
+
+func fixtureTrialCompletionTiming(fixture SubscriptionFixture) (int64, time.Time, error) {
+	status := strings.ToLower(strings.TrimSpace(fixture.Status))
+	if status != "trialing" && strings.TrimSpace(fixture.TrialEnd) == "" {
+		return 0, time.Time{}, nil
+	}
+	trialStartRaw := firstFixtureNonEmpty(fixture.TrialStart, fixture.CurrentPeriodStart)
+	trialEndRaw := firstFixtureNonEmpty(fixture.TrialEnd, fixture.CurrentPeriodEnd)
+	if trialStartRaw == "" || trialEndRaw == "" {
+		return 0, time.Time{}, nil
+	}
+	trialStart, err := parseFixtureTime(trialStartRaw)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	trialEnd, err := parseFixtureTime(trialEndRaw)
+	if err != nil {
+		return 0, time.Time{}, err
+	}
+	if !trialEnd.After(trialStart) {
+		return 0, time.Time{}, fmt.Errorf("%w: trial_end must be after trial_start", ErrInvalidFixture)
+	}
+	days := int64(trialEnd.Sub(trialStart).Hours() / 24)
+	if days <= 0 {
+		days = 1
+	}
+	return days, trialStart, nil
+}
+
+func fixtureOutcome(fixture SubscriptionFixture) string {
+	if strings.TrimSpace(fixture.Outcome) != "" {
+		return strings.TrimSpace(fixture.Outcome)
+	}
+	switch strings.ToLower(strings.TrimSpace(fixture.Status)) {
+	case "past_due", "unpaid", "incomplete":
+		return "card_declined"
+	case "incomplete_expired":
+		return "canceled"
+	default:
+		return "payment_succeeded"
+	}
+}
+
+func fixtureCancelAtPeriodEnd(fixture SubscriptionFixture) *bool {
+	if fixture.CancelAtPeriodEnd != nil {
+		return fixture.CancelAtPeriodEnd
+	}
+	return fixture.CancelAtPeriodEndSnake
+}
+
+func fixtureCheckoutSessionID(fixture SubscriptionFixture) string {
+	return firstFixtureNonEmpty(fixture.CheckoutSessionID, fixture.CheckoutSessionIDSnake)
+}
+
+func fixturePaymentIntentID(fixture SubscriptionFixture) string {
+	return firstFixtureNonEmpty(fixture.PaymentIntentID, fixture.PaymentIntentIDSnake)
+}
+
+func fixtureUnitAmount(fixture PriceFixture) int64 {
+	if fixture.UnitAmount != 0 {
+		return fixture.UnitAmount
+	}
+	return fixture.UnitAmountSnake
+}
+
+func fixtureLookupKey(fixture PriceFixture) string {
+	return firstFixtureNonEmpty(fixture.LookupKey, fixture.LookupKeySnake)
+}
+
+func fixtureIntervalCount(fixture PriceFixture) int {
+	if fixture.IntervalCount > 0 {
+		return fixture.IntervalCount
+	}
+	return fixture.IntervalCountSnake
+}
+
+func parseFixtureTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	if unix, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return unix.UTC(), nil
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return time.Unix(seconds, 0).UTC(), nil
+	}
+	return time.Time{}, fmt.Errorf("%w: invalid fixture timestamp %q", ErrInvalidFixture, value)
+}
+
+func firstFixtureNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func ensureStringMap(in map[string]string) map[string]string {
+	if in != nil {
+		return in
+	}
+	return map[string]string{}
 }
 
 func lineItemHasPrice(items []billing.LineItem, priceIDs map[string]bool) bool {

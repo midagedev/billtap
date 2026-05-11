@@ -726,6 +726,182 @@ func (s *SQLiteStore) ListSetupIntents(ctx context.Context) ([]billing.SetupInte
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) CreateTestClock(ctx context.Context, clock billing.TestClock) (billing.TestClock, error) {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO test_clocks (id, name, status, frozen_time, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?)`, clock.ID, clock.Name, clock.Status, encodeTime(clock.FrozenTime), encodeTime(clock.CreatedAt), encodeTime(clock.UpdatedAt)); err != nil {
+		return billing.TestClock{}, err
+	}
+	return s.GetTestClock(ctx, clock.ID)
+}
+
+func (s *SQLiteStore) GetTestClock(ctx context.Context, id string) (billing.TestClock, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, name, status, frozen_time, created_at, updated_at FROM test_clocks WHERE id = ?`, id)
+	clock, err := scanTestClock(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return billing.TestClock{}, billing.ErrNotFound
+	}
+	return clock, err
+}
+
+func (s *SQLiteStore) ListTestClocks(ctx context.Context) ([]billing.TestClock, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, status, frozen_time, created_at, updated_at FROM test_clocks ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []billing.TestClock
+	for rows.Next() {
+		clock, err := scanTestClock(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, clock)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateTestClock(ctx context.Context, clock billing.TestClock) (billing.TestClock, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE test_clocks SET name = ?, status = ?, frozen_time = ?, updated_at = ? WHERE id = ?`,
+		clock.Name, clock.Status, encodeTime(clock.FrozenTime), encodeTime(clock.UpdatedAt), clock.ID)
+	if err != nil {
+		return billing.TestClock{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return billing.TestClock{}, err
+	}
+	if changed == 0 {
+		return billing.TestClock{}, billing.ErrNotFound
+	}
+	return s.GetTestClock(ctx, clock.ID)
+}
+
+func (s *SQLiteStore) CreateRefund(ctx context.Context, refund billing.Refund, timeline []billing.TimelineEntry) (billing.Refund, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.Refund{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO refunds (id, charge_id, payment_intent_id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		refund.ID, refund.ChargeID, refund.PaymentIntentID, refund.InvoiceID, refund.CustomerID, refund.Amount, refund.Currency, refund.Reason, refund.Status, encodeMap(refund.Metadata), encodeTime(refund.CreatedAt)); err != nil {
+		return billing.Refund{}, err
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.Refund{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.Refund{}, err
+	}
+	return s.GetRefund(ctx, refund.ID)
+}
+
+func (s *SQLiteStore) GetRefund(ctx context.Context, id string) (billing.Refund, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, charge_id, payment_intent_id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at FROM refunds WHERE id = ?`, id)
+	refund, err := scanRefund(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return billing.Refund{}, billing.ErrNotFound
+	}
+	return refund, err
+}
+
+func (s *SQLiteStore) ListRefundsFiltered(ctx context.Context, filter billing.RefundFilter) ([]billing.Refund, error) {
+	clauses := []string{"1=1"}
+	args := []any{}
+	if filter.ChargeID != "" {
+		clauses = append(clauses, "charge_id = ?")
+		args = append(args, filter.ChargeID)
+	}
+	if filter.PaymentIntentID != "" {
+		clauses = append(clauses, "payment_intent_id = ?")
+		args = append(args, filter.PaymentIntentID)
+	}
+	if filter.InvoiceID != "" {
+		clauses = append(clauses, "invoice_id = ?")
+		args = append(args, filter.InvoiceID)
+	}
+	if filter.CustomerID != "" {
+		clauses = append(clauses, "customer_id = ?")
+		args = append(args, filter.CustomerID)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, charge_id, payment_intent_id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at
+		FROM refunds WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at DESC, id DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []billing.Refund
+	for rows.Next() {
+		refund, err := scanRefund(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, refund)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) CreateCreditNote(ctx context.Context, note billing.CreditNote, timeline []billing.TimelineEntry) (billing.CreditNote, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.CreditNote{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `INSERT INTO credit_notes (id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		note.ID, note.InvoiceID, note.CustomerID, note.Amount, note.Currency, note.Reason, note.Status, encodeMap(note.Metadata), encodeTime(note.CreatedAt)); err != nil {
+		return billing.CreditNote{}, err
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.CreditNote{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.CreditNote{}, err
+	}
+	return s.GetCreditNote(ctx, note.ID)
+}
+
+func (s *SQLiteStore) GetCreditNote(ctx context.Context, id string) (billing.CreditNote, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at FROM credit_notes WHERE id = ?`, id)
+	note, err := scanCreditNote(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return billing.CreditNote{}, billing.ErrNotFound
+	}
+	return note, err
+}
+
+func (s *SQLiteStore) ListCreditNotesFiltered(ctx context.Context, filter billing.CreditNoteFilter) ([]billing.CreditNote, error) {
+	clauses := []string{"1=1"}
+	args := []any{}
+	if filter.InvoiceID != "" {
+		clauses = append(clauses, "invoice_id = ?")
+		args = append(args, filter.InvoiceID)
+	}
+	if filter.CustomerID != "" {
+		clauses = append(clauses, "customer_id = ?")
+		args = append(args, filter.CustomerID)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at
+		FROM credit_notes WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at DESC, id DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []billing.CreditNote
+	for rows.Next() {
+		note, err := scanCreditNote(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, note)
+	}
+	return out, rows.Err()
+}
+
 func (s *SQLiteStore) Timeline(ctx context.Context, filter billing.TimelineFilter) ([]billing.TimelineEntry, error) {
 	clauses := []string{"1=1"}
 	args := []any{}
@@ -899,6 +1075,43 @@ func scanSetupIntent(row scanner) (billing.SetupIntent, error) {
 	intent.CustomerID = customerID.String
 	intent.CreatedAt = decodeTime(createdAt)
 	return intent, nil
+}
+
+func scanTestClock(row scanner) (billing.TestClock, error) {
+	var clock billing.TestClock
+	var frozenTime, createdAt, updatedAt string
+	if err := row.Scan(&clock.ID, &clock.Name, &clock.Status, &frozenTime, &createdAt, &updatedAt); err != nil {
+		return clock, err
+	}
+	clock.Object = billing.ObjectTestClock
+	clock.FrozenTime = decodeTime(frozenTime)
+	clock.CreatedAt = decodeTime(createdAt)
+	clock.UpdatedAt = decodeTime(updatedAt)
+	return clock, nil
+}
+
+func scanRefund(row scanner) (billing.Refund, error) {
+	var refund billing.Refund
+	var metadata, createdAt string
+	if err := row.Scan(&refund.ID, &refund.ChargeID, &refund.PaymentIntentID, &refund.InvoiceID, &refund.CustomerID, &refund.Amount, &refund.Currency, &refund.Reason, &refund.Status, &metadata, &createdAt); err != nil {
+		return refund, err
+	}
+	refund.Object = billing.ObjectRefund
+	refund.Metadata = decodeMap(metadata)
+	refund.CreatedAt = decodeTime(createdAt)
+	return refund, nil
+}
+
+func scanCreditNote(row scanner) (billing.CreditNote, error) {
+	var note billing.CreditNote
+	var metadata, createdAt string
+	if err := row.Scan(&note.ID, &note.InvoiceID, &note.CustomerID, &note.Amount, &note.Currency, &note.Reason, &note.Status, &metadata, &createdAt); err != nil {
+		return note, err
+	}
+	note.Object = billing.ObjectCreditNote
+	note.Metadata = decodeMap(metadata)
+	note.CreatedAt = decodeTime(createdAt)
+	return note, nil
 }
 
 func scanTimelineEntry(row scanner) (billing.TimelineEntry, error) {

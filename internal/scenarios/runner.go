@@ -324,11 +324,12 @@ func (r *Runner) createCheckout(ctx context.Context, step Step, params map[strin
 		lineItems = []billing.LineItem{{PriceID: priceID, Quantity: int64ValueDefault(params, "quantity", 1)}}
 	}
 	session, err := r.Billing.CreateCheckoutSession(ctx, billing.CheckoutSession{
-		CustomerID: customerID,
-		Mode:       stringDefault(params, "mode", "subscription"),
-		LineItems:  lineItems,
-		SuccessURL: stringValue(params, "successUrl"),
-		CancelURL:  stringValue(params, "cancelUrl"),
+		CustomerID:      customerID,
+		Mode:            stringDefault(params, "mode", "subscription"),
+		LineItems:       lineItems,
+		SuccessURL:      stringValue(params, "successUrl"),
+		CancelURL:       stringValue(params, "cancelUrl"),
+		TrialPeriodDays: int64ValueDefault(params, "trialPeriodDays", int64Value(params, "trial_period_days")),
 	})
 	if err != nil {
 		return nil, err
@@ -748,6 +749,13 @@ func (r *Runner) emitClockAdvanceWebhooks(ctx context.Context, scenario Scenario
 		return nil, nil
 	}
 	var events []webhooks.Event
+	for _, subscription := range advance.Activated {
+		emitted, err := r.emitSubscriptionWebhook(ctx, scenario, "customer.subscription.updated", subscription, state)
+		if err != nil {
+			return events, err
+		}
+		events = append(events, emitted...)
+	}
 	for _, renewal := range advance.Renewals {
 		emitted, err := r.emitRenewalWebhooks(ctx, scenario, renewal, state)
 		if err != nil {
@@ -831,15 +839,40 @@ func replayOptions(params map[string]any) webhooks.ReplayOptions {
 	if delay == 0 {
 		delay = time.Duration(int64Value(params, "delay_seconds")) * time.Second
 	}
+	responseStatus := int64ValueDefault(params, "responseStatus", int64Value(params, "response_status"))
+	if responseStatus == 0 {
+		responseStatus = int64Value(params, "force_response_status")
+	}
 	return webhooks.ReplayOptions{
-		Duplicate:         int(int64ValueDefault(params, "duplicate", 1)),
-		Delay:             delay,
-		OutOfOrder:        boolValue(params, "outOfOrder", boolValue(params, "out_of_order", false)),
-		ResponseStatus:    int(int64ValueDefault(params, "responseStatus", int64Value(params, "response_status"))),
-		ResponseBody:      firstString(params, "responseBody", "response_body", "body"),
-		SimulatedError:    firstString(params, "error", "simulatedError", "simulated_error"),
-		SimulatedTimeout:  boolValue(params, "timeout", false),
-		SignatureMismatch: boolValue(params, "signatureMismatch", boolValue(params, "signature_mismatch", false)),
+		Duplicate:          int(int64ValueDefault(params, "duplicate", 1)),
+		Delay:              delay,
+		OutOfOrder:         boolValue(params, "outOfOrder", boolValue(params, "out_of_order", false)),
+		ResponseStatus:     int(responseStatus),
+		ResponseBody:       firstString(params, "responseBody", "response_body", "body"),
+		SimulatedError:     firstString(params, "error", "simulatedError", "simulated_error"),
+		SimulatedTimeout:   boolValue(params, "timeout", false),
+		SignatureMismatch:  boolValue(params, "signatureMismatch", boolValue(params, "signature_mismatch", false)),
+		SimulateAppFailure: simulatedAppFailure(params),
+	}
+}
+
+func simulatedAppFailure(params map[string]any) *webhooks.SimulatedAppFailure {
+	failure := mapValue(params, "simulateAppFailure")
+	if failure == nil {
+		failure = mapValue(params, "simulate_app_failure")
+	}
+	if failure == nil {
+		return nil
+	}
+	status := int64Value(failure, "status")
+	if status == 0 {
+		return nil
+	}
+	failFirst := int64ValueDefault(failure, "failFirstNAttempts", int64ValueDefault(failure, "fail_first_n_attempts", 1))
+	return &webhooks.SimulatedAppFailure{
+		Status:             int(status),
+		FailFirstNAttempts: int(failFirst),
+		Body:               firstString(failure, "body", "responseBody", "response_body"),
 	}
 }
 

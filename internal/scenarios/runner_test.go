@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/hckim/billtap/internal/billing"
@@ -319,6 +320,66 @@ steps:
 	}
 	if result.Canceled[0].CanceledAt == nil || !result.Canceled[0].CanceledAt.Equal(boundary) {
 		t.Fatalf("cancel advance canceled_at = %v, want boundary %v", result.Canceled[0].CanceledAt, boundary)
+	}
+}
+
+func TestRunnerClockAdvanceActivatesTrialAndEmitsWebhook(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	report, err := NewRunner(billing.NewService(store), webhooks.NewService(store)).Run(ctx, mustLoad(t, `
+name: clock-trial-activation
+clock:
+  start: "2026-05-08T00:00:00Z"
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: trial@example.test
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+      trialPeriodDays: 14
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_succeeded
+  - id: advance-trial
+    action: clock.advance
+    params:
+      duration: 14d
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+	advance := report.Steps[3].Output["billing"].(billing.ClockAdvanceResult)
+	if advance.ActivatedCount != 1 || len(advance.Activated) != 1 || advance.Activated[0].Status != "active" {
+		t.Fatalf("advance = %#v, want one activated trial subscription", advance)
+	}
+	events, ok := report.Steps[3].Output["events"].([]webhooks.Event)
+	if !ok || len(events) != 1 || events[0].Type != "customer.subscription.updated" {
+		t.Fatalf("trial activation events = %#v, want customer.subscription.updated", report.Steps[3].Output["events"])
 	}
 }
 
@@ -647,6 +708,87 @@ steps:
 		if attempt.Status != webhooks.StatusFailed || attempt.ResponseStatus != 500 || attempt.Metadata["signature_mismatch"] != "true" {
 			t.Fatalf("attempt = %#v, want failed 500 signature mismatch evidence", attempt)
 		}
+	}
+}
+
+func TestRunnerWebhookReplaySimulateAppFailureThenDeliver(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	var calls atomic.Int64
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+
+	webhookService := webhooks.NewService(store)
+	if _, err := webhookService.CreateEndpoint(ctx, webhooks.Endpoint{
+		URL:           receiver.URL,
+		EnabledEvents: []string{"checkout.session.completed"},
+	}); err != nil {
+		t.Fatalf("CreateEndpoint: %v", err)
+	}
+
+	report, err := NewRunner(billing.NewService(store), webhookService).Run(ctx, mustLoad(t, `
+name: webhook-replay-simulate-app-failure
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: user@example.test
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_succeeded
+  - id: replay-webhook
+    action: webhook.replay
+    params:
+      eventRef: complete-checkout.events.0.id
+      simulate_app_failure:
+        status: 502
+        fail_first_n_attempts: 1
+        body: Upstream timeout
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+	attempts, ok := report.Steps[3].Output["delivery_attempts"].([]webhooks.DeliveryAttempt)
+	if !ok || len(attempts) != 2 {
+		t.Fatalf("replay output = %#v, want two delivery attempts", report.Steps[3].Output)
+	}
+	if attempts[0].Status != webhooks.StatusFailed || attempts[0].ResponseStatus != 502 || attempts[0].Metadata["simulated_attempt"] != "true" {
+		t.Fatalf("first replay attempt = %#v, want simulated 502 failure", attempts[0])
+	}
+	if attempts[1].Status != webhooks.StatusSucceeded || attempts[1].Metadata["simulated_attempt"] == "true" {
+		t.Fatalf("second replay attempt = %#v, want real successful delivery", attempts[1])
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("receiver calls = %d, want initial delivery plus one real replay delivery", got)
 	}
 }
 

@@ -128,7 +128,12 @@ Numeric path segments address list entries, for example
 
 `webhook.replay` schedules delivery attempts for an existing event id. It can
 use `duplicate`, `delay` or `delay_seconds`, `outOfOrder`, `responseStatus`,
-`responseBody`, `timeout`, `error`, and `signatureMismatch` parameters.
+`force_response_status`, `responseBody`, `timeout`, `error`,
+`signatureMismatch`, and `simulateAppFailure`/`simulate_app_failure`
+parameters. `simulate_app_failure` accepts `status`,
+`fail_first_n_attempts`, and optional `body`; injected failures are recorded as
+failed attempts without calling the application endpoint, then normal delivery
+runs after the configured failures are exhausted.
 `webhook.deliver_duplicate` and `webhook.deliver_out_of_order` are convenience
 actions over the same replay path when they reference a generic Billtap event.
 They keep their SaaS profile evidence behavior when they reference a SaaS
@@ -160,11 +165,14 @@ runs without a billing service, or profile evidence steps without a billing
 invoice, keep the older deterministic evidence-only behavior.
 
 `clock.advance` advances scenario time and then asks the billing service to
-process due local subscription periods. Active or trialing subscriptions renew
-with a paid invoice/payment intent when their period end is reached.
+process due local subscription periods. Trialing subscriptions activate when
+their trial end is reached. Active subscriptions renew with paid invoice/payment
+intent evidence unless fixture metadata configures a failed renewal outcome,
+which leaves the subscription `past_due` or `unpaid` and emits failure evidence.
 Subscriptions scheduled with `cancel_at_period_end` are canceled at the period
-boundary without creating a renewal invoice. This is Billtap's local clock
-subset, not full Stripe Test Clock API parity.
+boundary without creating a renewal invoice. Stripe-like
+`/v1/test_helpers/test_clocks` endpoints expose the same bounded local clock
+engine for fixture-backed integration tests.
 
 ## SaaS Profile Actions
 

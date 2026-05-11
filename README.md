@@ -18,7 +18,7 @@ sandbox as the high-fidelity fallback lane.
 
 | Surface | What it is for |
 | --- | --- |
-| Stripe-like API | Local customers, products, prices, checkout sessions, subscriptions, invoices, payment intents, webhook endpoints, and events for supported billing flows. |
+| Stripe-like API | Local customers, products, prices, checkout sessions, subscriptions, invoices, payment intents, refunds, credit notes, test clocks, webhook endpoints, and events for supported billing flows. |
 | Hosted checkout | Browser-visible sandbox checkout for exercising app integration and deterministic payment outcomes. |
 | Billing portal | Local customer portal for plan changes, seats, cancellation, resume, and payment-method update flows. |
 | Developer dashboard | Billing objects, timeline, webhook delivery attempts, app responses, and debug bundle export in one place. |
@@ -132,11 +132,15 @@ Images are published for `linux/amd64` and `linux/arm64`.
 
 Billtap includes local integration-test helpers:
 
-- `POST /api/fixtures/apply`: apply JSON/YAML customers, catalog, subscriptions, and assertions
+- `POST /api/fixtures/apply`: apply JSON/YAML customers, catalog, test clocks, subscriptions, refunds, credit notes, and assertions
+- `GET /api/fixtures/resolve`: resolve a fixture `ref`, explicit ID, or lookup key to the local customer, subscription, invoice, payment intent, checkout session, product, and price IDs
 - `GET /api/fixtures/snapshot`: read a filtered fixture-scoped billing snapshot
 - `POST /api/fixtures/assert`: assert expected customer, product, price, subscription, invoice, payment intent, and timeline state
 
 Fixture-applied subscriptions use the normal checkout-completion path so invoices, payment intents, checkout sessions, and timeline evidence stay consistent.
+Fixture-provided object IDs are preserved where the fixture supplies them, and
+every created object is tagged with `billtap_fixture_ref` metadata so local E2E
+tests can find the seeded graph without relying on random IDs.
 
 ## Diagnostic APIs
 
@@ -168,7 +172,7 @@ curl -fsS "http://localhost:8080/api/diagnostics?limit=100" \
 | --- | --- | --- |
 | Runtime | Go server with SQLite local default | In-memory storage exists for tests |
 | Frontend | React checkout, portal, and dashboard apps | Built with Vite into `dist/app` |
-| Stripe-like API | Practical local subset | Customers, products, prices, checkout sessions, subscriptions, invoices, payment intents, webhook endpoints, events, search/list projections used by tests |
+| Stripe-like API | Practical local subset | Customers, products, prices, checkout sessions, subscriptions, invoices, payment intents, refunds, credit notes, test clocks, webhook endpoints, events, search/list projections used by tests |
 | Webhooks | Signed delivery with reliability controls | Retry, duplicate, delay, out-of-order, replay, delivery evidence, redaction |
 | Scenarios | YAML runner | Local clock, app assertions, JSON/Markdown reports, exit-code policy |
 | Fixtures | Apply/snapshot/assert APIs | JSON/YAML input, fixture metadata isolation, structured pass/fail reports |

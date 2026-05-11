@@ -95,13 +95,16 @@ Base path: `/v1`
 | Checkout sessions       | `POST /v1/checkout/sessions`, `GET /v1/checkout/sessions`, `GET /v1/checkout/sessions/{id}`                                                                         | Supported        | Creates subscription-mode sandbox checkout sessions from request line items and hosted Billtap URLs. The Stripe-style session response leaves `line_items` unexpanded. Accepts Stripe SDK form params `allow_promotion_codes` and `subscription_data[trial_period_days]`; trial checkout creates local `trialing` subscription evidence. Hosted URLs use the request host by default, or `BILLTAP_PUBLIC_BASE_URL` when configured for container-to-host browser flows. |
 | Checkout completion     | `POST /v1/checkout/sessions/{id}/complete`, `POST /api/checkout/sessions/{id}/complete`                                                                             | Billtap-specific | Completes a sandbox checkout and creates subscription, invoice, payment intent, timeline, and checkout webhook evidence. Supports success plus deterministic failure aliases such as `card_declined`, `insufficient_funds`, `expired_card`, `incorrect_cvc`, `processing_error`, `authentication_required`, `payment_pending`, `canceled`, and documented Stripe test PaymentMethod IDs such as `pm_card_visa_chargeDeclined`.                                      |
 | Billing portal sessions | `POST /v1/billing_portal/sessions`                                                                                                                                  | Partial          | Returns a Billtap portal URL for a known customer. Portal configuration and full Stripe-hosted portal behavior are not modeled, but the hosted portal includes Stripe-like selectors for common local Page Object flows.                                                                                                                                                                                                                                                |
-| Subscriptions           | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}`                     | Partial          | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, and `cancel_at_period_end`. Delete performs immediate sandbox cancellation. Scenario `clock.advance` can renew active/trialing subscriptions and cancel period-end subscriptions in the local billing graph. This is not full Stripe Test Clock parity.                                                                                  |
+| Subscriptions           | `POST /v1/subscriptions`, `GET /v1/subscriptions`, `GET /v1/subscriptions/{id}`, `POST /v1/subscriptions/{id}`, `DELETE /v1/subscriptions/{id}`                     | Partial          | Create/list/retrieve subscriptions through the local checkout-completion state path. Update supports item replacement, metadata merge, `test_clock`, and `cancel_at_period_end`. List supports arbitrary metadata equality filters such as `metadata[billtap_fixture_ref]`. Delete performs immediate sandbox cancellation. Test-clock and scenario clock advances can activate due trials, renew active periods, fail configured renewals, and cancel period-end subscriptions in the local billing graph. This is not full Stripe subscription parity. |
 | Subscription items      | `POST /v1/subscription_items`, `DELETE /v1/subscription_items/{id}`                                                                                                 | Partial          | Add or remove local subscription items for integration smoke paths. Billing proration and invoice recalculation are not modeled.                                                                                                                                                                                                                                                                                                                                        |
 | Invoices                | `GET /v1/invoices`, `GET /v1/invoices/{id}`, `POST /v1/invoices/{id}/pay`, `POST /v1/invoices/create_preview`                                                       | Partial          | List/retrieve invoices created by checkout. `pay` retries open local invoices with deterministic sandbox `payment_method` or `source` aliases, mutating invoice, subscription, payment-intent, timeline, and webhook evidence. Preview returns a zero-value local smoke-test invoice. Invoice create, finalize, send, void, collection, and dunning automation are not modeled.                                                                                                                                           |
 | Payment intents         | `POST /v1/payment_intents`, `GET /v1/payment_intents`, `GET /v1/payment_intents/{id}`, `POST /v1/payment_intents/{id}/confirm`, `POST /v1/payment_intents/{id}/capture`, `POST /v1/payment_intents/{id}/cancel` | Partial          | Create/list/retrieve and mutate local payment intents. `confirm` supports deterministic sandbox PaymentMethod aliases such as `pm_card_visa`, `pm_card_visa_chargeDeclined`, and `pm_card_threeDSecure2Required`; manual capture moves through `requires_capture` before `capture` succeeds. This is a local state machine, not card processing or full PaymentIntent parameter parity.                                                                                 |
 | Setup intents           | `POST /v1/setup_intents`, `GET /v1/setup_intents`, `GET /v1/setup_intents/{id}`, `POST /v1/setup_intents/{id}/confirm`, `POST /v1/setup_intents/{id}/cancel`        | Partial          | Create/list/retrieve and mutate local setup intents with deterministic success, decline, and authentication-required aliases. Mandates, bank-account verification, and full SCA behavior are not modeled.                                                                                                                                                                                                                                                               |
 | Payment methods         | `GET /v1/payment_methods?customer={id}&type=card`                                                                                                                   | Partial          | Returns a deterministic sandbox card projection for a known customer. Create, attach, detach, and update are not supported.                                                                                                                                                                                                                                                                                                                                             |
-| Webhook endpoints       | `POST /v1/webhook_endpoints`, `GET /v1/webhook_endpoints`, `GET /v1/webhook_endpoints/{id}`, `POST /v1/webhook_endpoints/{id}`, `DELETE /v1/webhook_endpoints/{id}` | Supported        | Manage local webhook endpoints. Secrets are generated when omitted and masked in API responses. `enabled_events` supports exact event names, `*`, and prefix wildcards such as `invoice.*`.                                                                                                                                                                                                                                                                             |
+| Refunds                 | `POST /v1/refunds`, `GET /v1/refunds`, `GET /v1/refunds/{id}`                                                                                                      | Partial          | Create/list/retrieve local refund evidence against an invoice, payment intent, or charge-like ID. Creation emits `charge.refunded` and `charge.refund.updated` webhook evidence. Balance transactions, dispute linkage, failed refunds, and processor accounting are not modeled.                                                                                                                                                                                       |
+| Credit notes            | `POST /v1/credit_notes`, `GET /v1/credit_notes`, `GET /v1/credit_notes/{id}`                                                                                       | Partial          | Create/list/retrieve local credit note evidence for an invoice and emit `credit_note.created`. Line-level tax/discount accounting, PDF rendering, voiding, and preview semantics are not modeled.                                                                                                                                                                                                                                                                       |
+| Test clocks             | `POST /v1/test_helpers/test_clocks`, `GET /v1/test_helpers/test_clocks`, `GET /v1/test_helpers/test_clocks/{id}`, `POST /v1/test_helpers/test_clocks/{id}/advance` | Partial          | Create/retrieve/list/advance persisted local clocks. Customers and subscriptions can be attached with `test_clock`; advancing a clock processes attached trial activation, renewals, configured renewal failures, and period-end cancellation. This is a practical local subset, not full Stripe Test Clock object parity.                                                                                                                                               |
+| Webhook endpoints       | `POST /v1/webhook_endpoints`, `GET /v1/webhook_endpoints`, `GET /v1/webhook_endpoints/{id}`, `POST /v1/webhook_endpoints/{id}`, `PATCH /v1/webhook_endpoints/{id}`, `DELETE /v1/webhook_endpoints/{id}` | Supported        | Manage local webhook endpoints. Secrets are generated when omitted and masked in API responses. `enabled_events` supports exact event names, `*`, and prefix wildcards such as `invoice.*`. `PATCH` accepts the same local mutable fields as `POST`, including the `enabled` alias for `active`.                                                                                                                                                                       |
 | Events                  | `GET /v1/events`, `GET /v1/events/{id}`                                                                                                                             | Supported        | List and retrieve Billtap-created events. Filters include `type` and `scenarioRunId`.                                                                                                                                                                                                                                                                                                                                                                                   |
 
 ## Billtap APIs
@@ -113,8 +116,8 @@ Base path: `/api`
 | Checkout           | `POST /api/checkout/sessions/{id}/complete`                                                                                                                                                                                                                                                             | Billtap-only checkout completion endpoint used by the hosted checkout UI and local tests.                                                    |
 | Portal             | `GET /api/portal`, `GET /api/portal/customers/{id}`, `POST /api/portal/subscriptions/{id}/plan-change`, `POST /api/portal/subscriptions/{id}/seat-change`, `POST /api/portal/subscriptions/{id}/cancel`, `POST /api/portal/subscriptions/{id}/resume`, `POST /api/portal/customers/{id}/payment-method` | Sandbox portal state and actions. These update local billing state and timeline evidence; they do not claim Stripe Billing Portal parity.    |
 | Dashboard evidence | `GET /api/objects`, `GET /api/timeline`, `GET /api/delivery-attempts`, `POST /api/debug-bundles`                                                                                                                                                                                                        | Object lists, timelines, delivery evidence, and debug bundle data for local investigation.                                                   |
-| Webhook operations | `POST /api/events/{id}/replay`                                                                                                                                                                                                                                                                          | Replays an existing event and can schedule duplicate, delayed, and out-of-order attempts.                                                    |
-| Fixtures           | `POST /api/fixtures/apply`, `GET /api/fixtures/snapshot`, `POST /api/fixtures/assert`                                                                                                                                                                                                                   | Data-driven setup and assertion APIs for customers, products, prices, subscription graphs, invoices, payment intents, and timeline evidence. |
+| Webhook operations | `POST /api/events/{id}/replay`                                                                                                                                                                                                                                                                          | Replays an existing event and can schedule duplicate, delayed, out-of-order, signature-mismatch, simulated endpoint response, and fail-first-then-deliver attempts. |
+| Fixtures           | `POST /api/fixtures/apply`, `GET /api/fixtures/resolve`, `GET /api/fixtures/snapshot`, `POST /api/fixtures/assert`                                                                                                                                                                                      | Data-driven setup and assertion APIs for customers, products, prices, test clocks, subscription graphs, invoices, payment intents, refunds, credit notes, and timeline evidence. |
 | Scenarios          | `POST /api/scenarios/run`                                                                                                                                                                                                                                                                               | Runs a scenario JSON object or YAML payload and returns the scenario report.                                                                 |
 | Boundary controls  | `GET /api/audit-log`, `POST /api/retention/apply`                                                                                                                                                                                                                                                       | Audit and retention controls for replay, delivery overrides, and raw evidence redaction.                                                     |
 
@@ -145,6 +148,9 @@ Supported generic event types:
 - `payment_intent.payment_failed`
 - `payment_intent.requires_action`
 - `payment_intent.amount_capturable_updated`
+- `charge.refunded`
+- `charge.refund.updated`
+- `credit_note.created`
 - `setup_intent.created`
 - `setup_intent.succeeded`
 - `setup_intent.canceled`
@@ -166,6 +172,13 @@ Current event boundaries:
   `customer.subscription.deleted` when the subscription changes. Portal payment
   method simulation remains Billtap evidence and does not claim Stripe Billing
   Portal parity.
+- Test-clock advance emits the local subscription, invoice, payment-intent,
+  refund, or credit-note event evidence created by the processed mutation. It
+  does not model Stripe's asynchronous clock advancement lifecycle beyond
+  `ready`/`advancing` evidence.
+- Refund and credit-note APIs emit local payment-history events for application
+  webhook and history screens. They do not imply balance transaction,
+  settlement, dispute, or ledger parity.
 - Replay keeps the original event ID and payload, then creates new delivery
   attempts with replay metadata.
 - Duplicate delivery reuses the event ID and payload.
@@ -238,14 +251,15 @@ Current scenario boundaries:
   update the subscription to `past_due`. SaaS profile-only scenarios that run
   without a billing invoice still record deterministic evidence only.
 - `clock.advance` advances scenario time and asks the local billing service to
-  process due active/trialing subscriptions. It creates paid renewal
-  invoice/payment-intent evidence or cancels subscriptions scheduled with
-  `cancel_at_period_end`. This is a Billtap local clock subset, not Stripe Test
-  Clock API parity.
+  process due active/trialing subscriptions. It activates due trials, creates
+  paid renewal invoice/payment-intent evidence, creates configured failed
+  renewal evidence, or cancels subscriptions scheduled with
+  `cancel_at_period_end`. Stripe-like test-clock APIs expose the same bounded
+  local clock engine for fixture-backed integration tests.
 - Generic webhook replay is available through `POST /api/events/{id}/replay`
   and the `webhook.replay` scenario action. Replay can schedule duplicate,
   delayed, out-of-order, simulated endpoint status, timeout, generic transport
-  error, and signature-mismatch delivery attempts.
+  error, signature-mismatch, and fail-first-then-deliver attempts.
 - `webhook.deliver_duplicate` and `webhook.deliver_out_of_order` use generic
   replay delivery when they reference a Billtap event and a webhook service is
   configured. They still update SaaS profile webhook evidence when they
@@ -261,12 +275,19 @@ Fixture packs support repeatable local setup and assertions for:
 - customers
 - catalog products
 - catalog prices
+- test clocks
 - subscription graphs created through the normal checkout-completion path
+- explicit subscription status/time fields for local lifecycle setup
+- local refund and credit-note evidence
 - optional stable checkout session, subscription, invoice, and payment intent
   IDs for provider-replacement tests that need exact fixture IDs
+- fixture `ref` resolution through `GET /api/fixtures/resolve`
+- seeded webhook events for fixture-created checkout, subscription, invoice,
+  payment-intent, refund, and credit-note evidence
 - fixture-scoped snapshots
 - assertion reports for customers, products, prices, checkout sessions,
-  subscriptions, invoices, payment intents, and timeline entries
+  subscriptions, invoices, payment intents, refunds, credit notes, and timeline
+  entries
 
 Fixture metadata is written to created objects:
 
@@ -297,10 +318,13 @@ Billtap does not support or claim:
 - Full Stripe request idempotency-key semantics across all endpoints. Billtap
   only caches same-process `POST` responses for supported API simulation and
   rejects same-key parameter mismatches.
-- Direct charges, refunds, disputes, payouts, transfers, balance transactions,
-  accounts, Connect onboarding, mandates, tax, coupons,
+- Direct charges, disputes, payouts, transfers, balance transactions, accounts,
+  Connect onboarding, mandates, tax, coupons,
   promotion-code redemption, discounts, subscriptions schedules, quotes, or
   usage-based metering.
+- Full refund and credit-note ledger behavior, including balance transactions,
+  settlement, failed refund processing, line tax allocation, PDF rendering, and
+  provider accounting side effects.
 - PaymentIntent customer-balance application, incremental authorization, bank
   microdeposit verification, and full payment-method option parity.
 - Stripe-hosted Checkout or Billing Portal parity.

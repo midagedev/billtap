@@ -1,6 +1,6 @@
 # Stripe API Compatibility Roadmap
 
-Status date: 2026-05-10
+Status date: 2026-05-11
 
 This roadmap extends Billtap beyond one SaaS adoption path. The goal is not to
 be a real payment processor or a complete Stripe clone. The goal is to make
@@ -64,7 +64,7 @@ The concrete expansion target is defined in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
 
 - reach at least `90.0%` OpenAPI operation coverage at `L1+`
-- move from the current `47 / 619` baseline to at least `558 / 619`
+- move from the current `57 / 587` baseline to at least `529 / 587`
 - keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
   matters
 - use broad `L1-L2` validation/fixture coverage for safe low-state and
@@ -270,25 +270,25 @@ questions quickly.
   "name": "Billtap Stripe API compatibility inventory",
   "inventory_version": "stripe-api-inventory-v2",
   "openapi_version": "3.0.0",
-  "stripe_api_version": "2025-12-15.clover",
-  "source": "stripe/openapi latest",
-  "generated_at": "2026-05-10T00:00:00Z",
+  "stripe_api_version": "2026-04-22.dahlia",
+  "source": "stripe/openapi master",
+  "generated_at": "2026-05-11T00:00:00Z",
   "summary": {
-    "total_operations": 619,
-    "implemented_operations": 37,
-    "inventory_only_operations": 582,
-    "implemented_percent": 6.0,
+    "total_operations": 587,
+    "implemented_operations": 57,
+    "inventory_only_operations": 530,
+    "implemented_percent": 9.7,
     "families": [
       {
         "family": "connect",
         "priority": "P1",
         "target_level": "L2-L5",
-        "total_operations": 65,
+        "total_operations": 53,
         "implemented_operations": 0,
-        "inventory_only_operations": 65,
+        "inventory_only_operations": 53,
         "implemented_percent": 0.0,
         "by_level": {
-          "L0": 65
+          "L0": 53
         },
         "next_milestone": "Add account retrieve/list fixtures, Stripe-Account tracing, and connected-account webhook smoke."
       }
@@ -350,7 +350,7 @@ Each chunk should use the PR -> review -> fix -> merge workflow.
 | S1-B  | Error/idempotency         | Error catalog hardening, request-id, idempotency trace expansion                 | API tests and scorecard cases                     |
 | S2-A  | Generated validation P0   | OpenAPI-derived validators for catalog, customers, checkout, subscriptions       | Scorecard plus stripe-mock optional oracle        |
 | S2-B  | Fixture response harness  | Low-state fixture response engine for inventory-only endpoints                   | Fixture-shape scorecard                           |
-| S3-A  | Renewal/test clock        | Invoice retry mutation, local clock renewal, and period-end cancellation landed; trial-end and full Test Clock API parity remain future work | Scenario reports, scorecard cases, and webhook tests |
+| S3-A  | Renewal/test clock        | Invoice retry mutation, local clock renewal, trial activation, period-end cancellation, and a bounded Stripe-like Test Clock API landed; full Stripe Test Clock parity remains future work | Scenario reports, scorecard cases, and webhook tests |
 | S3-B  | Discounts/credits/meters  | Coupons, promotion codes, discounts, credit notes, usage/meter events            | Scenario and billing engine tests                 |
 | S4-A  | Direct payment intents    | Create/confirm/capture/cancel state machine and failure aliases                  | API tests landed; SDK smoke remains               |
 | S4-B  | Setup/payment methods     | SetupIntent state machine landed; PaymentMethod attach/detach/update lifecycle   | SDK smoke and no-card-data boundary tests         |
@@ -375,9 +375,10 @@ Before a family moves beyond inventory:
 
 ## Near-Term Recommendation
 
-Start with S0 and S1 before adding many endpoints. Without an inventory and
-protocol baseline, broad compatibility will become a pile of ad hoc routes.
-After S0/S1, the highest-value implementation order is:
+Keep the broad Stripe surface as the long-term direction, but promote endpoints
+only when they have a measured compatibility level and a documented boundary.
+After the current inventory/protocol baseline, the highest-value implementation
+order is:
 
 1. Coupons, discounts, credit notes, refunds, and payment history.
 2. Connect smoke fixtures and connected-account webhook routing.
