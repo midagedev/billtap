@@ -64,7 +64,7 @@ The concrete expansion target is defined in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
 
 - reach at least `90.0%` OpenAPI operation coverage at `L1+`
-- move from the current `98 / 587` baseline to at least `529 / 587`
+- move from the current `110 / 587` baseline to at least `529 / 587`
 - keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
   matters
 - use broad `L1-L2` validation/fixture coverage for safe low-state and
@@ -221,13 +221,13 @@ Gate:
 
 Output:
 
-- Account, account link/session, account capability, external account,
-  transfer/reversal, application fee/refund, payout, and connected-account
-  event fixtures.
+- Account, platform account, account deletion marker, account link/session,
+  account capability, people/persons, external account, transfer/reversal,
+  application fee/refund, payout, and connected-account event fixtures.
 - Connected-account webhook destination routing and signature evidence.
 - Safe stubs for onboarding/KYC without modeling real identity verification.
-- Remaining Connect inventory is account self/delete and people/person
-  fixtures.
+- Generated Connect inventory is closed; remaining work is deeper SDK/adoption
+  smoke and connected-account webhook routing evidence.
 
 Gate:
 
@@ -278,24 +278,23 @@ questions quickly.
   "generated_at": "2026-05-11T00:00:00Z",
   "summary": {
     "total_operations": 587,
-    "implemented_operations": 98,
-    "inventory_only_operations": 489,
-    "implemented_percent": 16.7,
+    "implemented_operations": 110,
+    "inventory_only_operations": 477,
+    "implemented_percent": 18.7,
     "families": [
       {
         "family": "connect",
         "priority": "P1",
         "target_level": "L2-L5",
         "total_operations": 53,
-        "implemented_operations": 41,
-        "inventory_only_operations": 12,
-        "implemented_percent": 77.4,
+        "implemented_operations": 53,
+        "inventory_only_operations": 0,
+        "implemented_percent": 100.0,
         "by_level": {
-          "L0": 12,
-          "L2": 9,
-          "L3": 32
+          "L2": 11,
+          "L3": 42
         },
-        "next_milestone": "Add account self/delete and people/person fixtures to close the remaining Connect inventory routes."
+        "next_milestone": "Deepen Connect SDK/adoption smoke, connected-account webhook routing, and v2 Core account inventory evidence."
       }
     ]
   },
@@ -360,7 +359,7 @@ Each chunk should use the PR -> review -> fix -> merge workflow.
 | S4-A  | Direct payment intents    | Create/confirm/capture/cancel state machine and failure aliases                  | API tests landed; SDK smoke remains               |
 | S4-B  | Setup/payment methods     | SetupIntent state machine landed; PaymentMethod attach/detach/update lifecycle   | SDK smoke and no-card-data boundary tests         |
 | S5-A  | Refund/dispute history    | Refunds, disputes, balance transactions, support/debug evidence                  | Scenario reports and dashboard/debug bundle tests |
-| S6-A  | Connect smoke             | Connected-account fixtures, transfer/application fee/payout evidence             | Webhook routing tests and sample platform smoke   |
+| S6-A  | Connect smoke             | Connected-account, people/person, transfer/application fee/payout evidence       | Webhook routing tests and SDK/adoption smoke      |
 | S7-A  | SDK matrix                | Node, Go, Java, Python, Ruby smoke lanes and reports                             | CI/manual workflow artifacts                      |
 | S8-A  | Optional oracle           | stripe-mock/live-testmode drift runner, redacted report format, accepted diffs   | Manual workflow only                              |
 
@@ -386,7 +385,7 @@ After the current inventory/protocol baseline, the highest-value implementation
 order is:
 
 1. Coupons, discounts, credit notes, refunds, and payment history.
-2. Connect smoke fixtures and connected-account webhook routing.
+2. Connect SDK/adoption smoke and connected-account webhook routing.
 3. PaymentMethod lifecycle breadth and remaining direct-payment adjunct routes.
 4. OpenAPI-derived L1/L2 validation and fixture breadth for low-state endpoints.
 5. Official SDK matrix and optional stripe-mock oracle lane.

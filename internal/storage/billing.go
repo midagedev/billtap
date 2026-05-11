@@ -304,6 +304,9 @@ func (s *SQLiteStore) GetConnectResource(ctx context.Context, object string, id 
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.ConnectResource{}, billing.ErrNotFound
 	}
+	if err == nil && resource.Deleted {
+		return billing.ConnectResource{}, billing.ErrNotFound
+	}
 	return resource, err
 }
 

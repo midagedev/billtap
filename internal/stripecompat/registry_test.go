@@ -8,8 +8,8 @@ import (
 func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	registry := DefaultRegistry()
 	claims := registry.Claims()
-	if len(claims) != 99 {
-		t.Fatalf("default claims = %d, want 99", len(claims))
+	if len(claims) != 111 {
+		t.Fatalf("default claims = %d, want 111", len(claims))
 	}
 
 	checkout, ok := registry.Lookup(http.MethodPost, "/v1/checkout/sessions")
@@ -37,6 +37,18 @@ func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	accountSession, ok := registry.Lookup(http.MethodPost, "/v1/account_sessions")
 	if !ok || accountSession.Level != "L2" || accountSession.Stateful {
 		t.Fatalf("connect account session claim = %#v ok=%t, want L2 smoke", accountSession, ok)
+	}
+	platformAccount, ok := registry.Lookup(http.MethodGet, "/v1/account")
+	if !ok || platformAccount.Level != "L2" || platformAccount.Stateful {
+		t.Fatalf("platform account claim = %#v ok=%t, want L2 non-stateful", platformAccount, ok)
+	}
+	personCreate, ok := registry.Lookup(http.MethodPost, "/v1/accounts/acct_123/people")
+	if !ok || personCreate.Level != "L3" || !personCreate.Stateful {
+		t.Fatalf("connect people claim = %#v ok=%t, want L3 stateful", personCreate, ok)
+	}
+	personDelete, ok := registry.Lookup(http.MethodDelete, "/v1/accounts/acct_123/persons/person_123")
+	if !ok || personDelete.Level != "L3" || !personDelete.Stateful {
+		t.Fatalf("connect persons delete claim = %#v ok=%t, want L3 stateful", personDelete, ok)
 	}
 	transfer, ok := registry.Lookup(http.MethodPost, "/v1/transfers")
 	if !ok || transfer.Level != "L3" || !transfer.Stateful {

@@ -270,6 +270,8 @@ func connectResourcePrefix(object string) string {
 		return "ba"
 	case ObjectCard:
 		return "card"
+	case ObjectPerson:
+		return "person"
 	case ObjectTransfer:
 		return "tr"
 	case ObjectTransferReversal:

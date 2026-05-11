@@ -21,6 +21,7 @@ const (
 	ObjectBankAccount      = "bank_account"
 	ObjectCard             = "card"
 	ObjectCapability       = "capability"
+	ObjectPerson           = "person"
 	ObjectTransfer         = "transfer"
 	ObjectTransferReversal = "transfer_reversal"
 	ObjectPayout           = "payout"

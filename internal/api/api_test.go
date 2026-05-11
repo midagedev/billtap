@@ -1006,24 +1006,6 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 		t.Fatalf("v2 trace = %#v, want unsupported v2 endpoint evidence", v2Traces.Data[0])
 	}
 
-	connectSubrouteReq := httptest.NewRequest(http.MethodGet, "/v1/accounts/acct_123/people?limit=1", nil)
-	connectSubrouteReq.Header.Set("Request-Id", "req_known_connect_subroute_unsupported")
-	connectSubrouteRec := httptest.NewRecorder()
-	handler.ServeHTTP(connectSubrouteRec, connectSubrouteReq)
-	connectSubrouteErr := decodeErrorBody(t, connectSubrouteRec.Body.String())
-	if connectSubrouteRec.Code != http.StatusBadRequest || connectSubrouteErr.Error.Code != "unsupported_endpoint" {
-		t.Fatalf("connect subroute status=%d error=%#v, want unsupported endpoint", connectSubrouteRec.Code, connectSubrouteErr.Error)
-	}
-	connectSubrouteTraces := getJSON[struct {
-		Object string                     `json:"object"`
-		Data   []diagnostics.RequestTrace `json:"data"`
-	}](t, handler, "/api/request-traces?requestId=req_known_connect_subroute_unsupported")
-	if connectSubrouteTraces.Object != "list" || len(connectSubrouteTraces.Data) != 1 {
-		t.Fatalf("connect subroute traces = %#v, want unsupported request trace", connectSubrouteTraces)
-	}
-	if connectSubrouteTraces.Data[0].Path != "/v1/accounts/acct_123/people" || connectSubrouteTraces.Data[0].ErrorCode != "unsupported_endpoint" {
-		t.Fatalf("connect subroute trace = %#v, want unsupported endpoint evidence", connectSubrouteTraces.Data[0])
-	}
 }
 
 func TestConnectAccountSmokeCompatibility(t *testing.T) {
@@ -1156,6 +1138,22 @@ func TestConnectAccountSmokeCompatibility(t *testing.T) {
 func TestConnectPlatformResourceCompatibility(t *testing.T) {
 	handler := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
 
+	platformAccount := getJSON[struct {
+		ID             string            `json:"id"`
+		Object         string            `json:"object"`
+		Type           string            `json:"type"`
+		ChargesEnabled bool              `json:"charges_enabled"`
+		PayoutsEnabled bool              `json:"payouts_enabled"`
+		Capabilities   map[string]string `json:"capabilities"`
+		Metadata       map[string]string `json:"metadata"`
+	}](t, handler, "/v1/account")
+	if platformAccount.ID != "acct_billtap_platform" || platformAccount.Object != "account" || platformAccount.Type != "standard" || !platformAccount.ChargesEnabled || !platformAccount.PayoutsEnabled {
+		t.Fatalf("platform account = %#v, want deterministic local platform account", platformAccount)
+	}
+	if platformAccount.Capabilities["card_payments"] != "active" || platformAccount.Capabilities["transfers"] != "active" || platformAccount.Metadata["billtap_account"] != "platform" {
+		t.Fatalf("platform account capabilities/metadata = %#v/%#v", platformAccount.Capabilities, platformAccount.Metadata)
+	}
+
 	account := postForm[struct {
 		ID string `json:"id"`
 	}](t, handler, "/v1/accounts", url.Values{
@@ -1163,6 +1161,92 @@ func TestConnectPlatformResourceCompatibility(t *testing.T) {
 		"country": {"US"},
 		"email":   {"platform-resource@example.test"},
 	})
+
+	person := postForm[struct {
+		ID           string            `json:"id"`
+		Object       string            `json:"object"`
+		Account      string            `json:"account"`
+		FirstName    string            `json:"first_name"`
+		LastName     string            `json:"last_name"`
+		Email        any               `json:"email"`
+		DOB          map[string]int64  `json:"dob"`
+		Relationship map[string]any    `json:"relationship"`
+		Metadata     map[string]string `json:"metadata"`
+		Verification map[string]any    `json:"verification"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/people", url.Values{
+		"first_name":                       {"Ada"},
+		"last_name":                        {"Lovelace"},
+		"dob[day]":                         {"10"},
+		"dob[month]":                       {"12"},
+		"dob[year]":                        {"1815"},
+		"relationship[owner]":              {"true"},
+		"relationship[representative]":     {"1"},
+		"relationship[percent_ownership]":  {"75"},
+		"address[line1]":                   {"1 Platform Way"},
+		"address[country]":                 {"US"},
+		"metadata[platformRepresentative]": {"true"},
+	})
+	if !strings.HasPrefix(person.ID, "person_") || person.Object != "person" || person.Account != account.ID || person.FirstName != "Ada" || person.LastName != "Lovelace" {
+		t.Fatalf("person = %#v, want local Connect person evidence", person)
+	}
+	if person.DOB["day"] != 10 || person.DOB["month"] != 12 || person.DOB["year"] != 1815 || person.Relationship["owner"] != true || person.Relationship["representative"] != true || person.Relationship["percent_ownership"] != float64(75) {
+		t.Fatalf("person dob/relationship = %#v/%#v", person.DOB, person.Relationship)
+	}
+	if person.Metadata["platformRepresentative"] != "true" || person.Verification["status"] != "unverified" {
+		t.Fatalf("person metadata/verification = %#v/%#v", person.Metadata, person.Verification)
+	}
+	peopleList := getJSON[struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/people")
+	if peopleList.Object != "list" || len(peopleList.Data) != 1 || peopleList.Data[0].ID != person.ID {
+		t.Fatalf("people list = %#v, want created person", peopleList)
+	}
+	personAlias := getJSON[struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Account string `json:"account"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/persons/"+person.ID)
+	if personAlias.ID != person.ID || personAlias.Object != "person" || personAlias.Account != account.ID {
+		t.Fatalf("person alias = %#v, want persons alias to retrieve person", personAlias)
+	}
+	updatedPerson := postForm[struct {
+		ID           string            `json:"id"`
+		Email        string            `json:"email"`
+		Relationship map[string]any    `json:"relationship"`
+		Metadata     map[string]string `json:"metadata"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/people/"+person.ID, url.Values{
+		"email":               {"ada@example.test"},
+		"relationship[title]": {"Founder"},
+		"metadata[stage]":     {"verified-by-test"},
+	})
+	if updatedPerson.ID != person.ID || updatedPerson.Email != "ada@example.test" || updatedPerson.Relationship["title"] != "Founder" || updatedPerson.Metadata["platformRepresentative"] != "true" || updatedPerson.Metadata["stage"] != "verified-by-test" {
+		t.Fatalf("updated person = %#v, want merged metadata and person data", updatedPerson)
+	}
+	deletedPerson := deleteJSON[struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Deleted bool   `json:"deleted"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/persons/"+person.ID)
+	if deletedPerson.ID != person.ID || deletedPerson.Object != "person" || !deletedPerson.Deleted {
+		t.Fatalf("deleted person = %#v, want deleted marker", deletedPerson)
+	}
+	deletedPersonGetReq := httptest.NewRequest(http.MethodGet, "/v1/accounts/"+account.ID+"/people/"+person.ID, nil)
+	deletedPersonGetRec := httptest.NewRecorder()
+	handler.ServeHTTP(deletedPersonGetRec, deletedPersonGetReq)
+	if deletedPersonGetRec.Code != http.StatusNotFound {
+		t.Fatalf("deleted person get status=%d body=%s, want 404", deletedPersonGetRec.Code, deletedPersonGetRec.Body.String())
+	}
+	emptyPeopleList := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/accounts/"+account.ID+"/persons")
+	if len(emptyPeopleList.Data) != 0 {
+		t.Fatalf("persons list after delete = %#v, want deleted person filtered out", emptyPeopleList)
+	}
 
 	capability := postForm[struct {
 		ID        string `json:"id"`
@@ -1302,6 +1386,14 @@ func TestConnectPlatformResourceCompatibility(t *testing.T) {
 	}](t, handler, "/v1/accounts/"+account.ID)
 	if storedRejected.ID != account.ID || storedRejected.ChargesEnabled || storedRejected.PayoutsEnabled {
 		t.Fatalf("stored rejected account = %#v, want disabled state persisted", storedRejected)
+	}
+	deletedAccount := deleteJSON[struct {
+		ID      string `json:"id"`
+		Object  string `json:"object"`
+		Deleted bool   `json:"deleted"`
+	}](t, handler, "/v1/accounts/"+account.ID)
+	if deletedAccount.ID != account.ID || deletedAccount.Object != "account" || !deletedAccount.Deleted {
+		t.Fatalf("deleted account = %#v, want local deletion marker", deletedAccount)
 	}
 
 	events := getJSON[struct {
