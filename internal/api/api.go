@@ -37,6 +37,7 @@ type Handler struct {
 	publicBase  string
 	mux         *http.ServeMux
 	idem        *idempotencyStore
+	local       *localEvidenceStore
 	compat      stripecompat.Registry
 	knownRoutes stripecompat.RouteCatalog
 	validation  stripecompat.ValidationCatalog
@@ -50,6 +51,7 @@ func New(opts Options) http.Handler {
 		publicBase:  strings.TrimRight(opts.PublicBaseURL, "/"),
 		mux:         http.NewServeMux(),
 		idem:        newIdempotencyStore(),
+		local:       newLocalEvidenceStore(),
 		compat:      stripecompat.DefaultRegistry(),
 		knownRoutes: stripecompat.DefaultRouteCatalog(),
 		validation:  stripecompat.DefaultValidationCatalog(),
@@ -72,6 +74,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/products", h.handleProducts)
 	h.mux.HandleFunc("/v1/products/search", h.handleProductSearch)
 	h.mux.HandleFunc("/v1/products/", h.handleProduct)
+	h.mux.HandleFunc("/v1/coupons", h.handleCoupons)
+	h.mux.HandleFunc("/v1/coupons/", h.handleCoupon)
+	h.mux.HandleFunc("/v1/promotion_codes", h.handlePromotionCodes)
+	h.mux.HandleFunc("/v1/promotion_codes/", h.handlePromotionCode)
 	h.mux.HandleFunc("/v1/prices", h.handlePrices)
 	h.mux.HandleFunc("/v1/prices/", h.handlePrice)
 	h.mux.HandleFunc("/v1/account", h.handlePlatformAccount)
@@ -90,6 +96,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/billing_portal/sessions", h.handleBillingPortalSessions)
 	h.mux.HandleFunc("/v1/subscriptions", h.handleSubscriptions)
 	h.mux.HandleFunc("/v1/subscriptions/", h.handleSubscription)
+	h.mux.HandleFunc("/v1/subscription_schedules", h.handleSubscriptionSchedules)
+	h.mux.HandleFunc("/v1/subscription_schedules/", h.handleSubscriptionSchedule)
 	h.mux.HandleFunc("/v1/subscription_items", h.handleSubscriptionItems)
 	h.mux.HandleFunc("/v1/subscription_items/", h.handleSubscriptionItem)
 	h.mux.HandleFunc("/v1/invoices/create_preview", h.handleInvoicePreview)
@@ -103,6 +111,10 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/payment_intents/", h.handlePaymentIntent)
 	h.mux.HandleFunc("/v1/setup_intents", h.handleSetupIntents)
 	h.mux.HandleFunc("/v1/setup_intents/", h.handleSetupIntent)
+	h.mux.HandleFunc("/v1/disputes", h.handleDisputes)
+	h.mux.HandleFunc("/v1/disputes/", h.handleDispute)
+	h.mux.HandleFunc("/v1/charges/", h.handleChargeSubresource)
+	h.mux.HandleFunc("/v1/test_helpers/customers/", h.handleTestHelperCustomer)
 	h.mux.HandleFunc("/v1/test_helpers/test_clocks", h.handleTestClocks)
 	h.mux.HandleFunc("/v1/test_helpers/test_clocks/", h.handleTestClock)
 	h.mux.HandleFunc("/v1/payment_methods", h.handlePaymentMethods)
@@ -131,8 +143,11 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/api/delivery-attempts", h.handleDeliveryAttempts)
 	h.mux.HandleFunc("/api/audit-log", h.handleAuditLog)
 	h.mux.HandleFunc("/api/retention/apply", h.handleRetentionApply)
+	h.mux.HandleFunc("/api/payment_intents/", h.handlePaymentIntentAction)
+	h.mux.HandleFunc("/api/events/replay-group", h.handleEventReplayGroup)
 	h.mux.HandleFunc("/api/webhooks/endpoints/", h.handleWebhookEndpointAction)
 	h.mux.HandleFunc("/api/events/", h.handleEventAction)
+	h.mux.HandleFunc("/api/disputes", h.handleDisputeSimulation)
 }
 
 func isStripeAPIPath(path string) bool {
@@ -235,9 +250,14 @@ func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/v1/customers/")
-	if id == "" || strings.Contains(id, "/") {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/customers/")
+	id, subresource, hasSubresource := strings.Cut(rest, "/")
+	if id == "" {
 		h.notFound(w, r)
+		return
+	}
+	if hasSubresource {
+		h.handleCustomerSubresource(w, r, id, subresource)
 		return
 	}
 	switch r.Method {
@@ -269,6 +289,21 @@ func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, stripeCustomer(customer), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleCustomerSubresource(w http.ResponseWriter, r *http.Request, customerID string, subresource string) {
+	switch subresource {
+	case "cash_balance":
+		h.handleCustomerCashBalance(w, r, customerID)
+	case "cash_balance_transactions":
+		h.handleCustomerCashBalanceTransactions(w, r, customerID, "")
+	default:
+		if strings.HasPrefix(subresource, "cash_balance_transactions/") {
+			h.handleCustomerCashBalanceTransactions(w, r, customerID, strings.TrimPrefix(subresource, "cash_balance_transactions/"))
+			return
+		}
+		h.notFound(w, r)
 	}
 }
 
@@ -1421,16 +1456,56 @@ func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Req
 		writeResult(w, nil, err)
 		return
 	}
+	sessionID := "bps_" + sanitizeID(customerID+"_"+time.Now().UTC().Format(time.RFC3339Nano))
+	returnURL := billingPortalSessionReturnURL(p)
+	flowType := billingPortalSessionFlowType(p)
 	session := map[string]any{
-		"id":         "bps_" + sanitizeID(customerID+"_"+time.Now().UTC().Format(time.RFC3339Nano)),
-		"object":     "billing_portal.session",
-		"customer":   customerID,
-		"return_url": p.string("return_url"),
-		"url":        h.absoluteURL(r, "/portal?customer_id="+customerID),
-		"created":    time.Now().UTC().Unix(),
-		"livemode":   false,
+		"id":            sessionID,
+		"object":        "billing_portal.session",
+		"customer":      customerID,
+		"configuration": emptyToNil(p.string("configuration")),
+		"return_url":    returnURL,
+		"url":           h.absoluteURL(r, billingPortalSessionPath(customerID, sessionID, returnURL, flowType, billingPortalSessionSubscriptionID(p))),
+		"created":       time.Now().UTC().Unix(),
+		"livemode":      false,
+	}
+	if flowType != "" {
+		session["flow"] = map[string]any{"type": flowType}
 	}
 	writeJSON(w, http.StatusOK, session)
+}
+
+func billingPortalSessionReturnURL(p params) string {
+	return p.first("return_url", "flow_data[after_completion][redirect][return_url]")
+}
+
+func billingPortalSessionFlowType(p params) string {
+	return p.first("flow_data[type]")
+}
+
+func billingPortalSessionSubscriptionID(p params) string {
+	return p.first(
+		"flow_data[subscription_cancel][subscription]",
+		"flow_data[subscription_update][subscription]",
+		"flow_data[subscription_update_confirm][subscription]",
+	)
+}
+
+func billingPortalSessionPath(customerID string, sessionID string, returnURL string, flowType string, subscriptionID string) string {
+	query := url.Values{}
+	query.Set("customer_id", customerID)
+	query.Set("session_id", sessionID)
+	if returnURL != "" {
+		query.Set("return_url", returnURL)
+		query.Set("redirect_on_action", "true")
+	}
+	if flowType != "" {
+		query.Set("flow", flowType)
+	}
+	if subscriptionID != "" {
+		query.Set("subscription_id", subscriptionID)
+	}
+	return "/portal?" + query.Encode()
 }
 
 func (h *Handler) handleCheckoutCompletion(w http.ResponseWriter, r *http.Request) {
@@ -1951,7 +2026,7 @@ func (h *Handler) handlePaymentIntents(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			h.emitPaymentIntentWebhook(r, "payment_intent.created", intent)
 		}
-		if err == nil && p.boolDefault("confirm", false) {
+		if err == nil && (p.boolDefault("confirm", false) || p.has("outcome")) {
 			intent, err = h.billing.ConfirmPaymentIntent(r.Context(), intent.ID, p.string("payment_method"), p.string("outcome"))
 			if err == nil {
 				h.emitPaymentIntentWebhook(r, paymentIntentTerminalEvent(intent.Status), intent)
@@ -2226,6 +2301,11 @@ func (h *Handler) handleTestClock(w http.ResponseWriter, r *http.Request) {
 	clock, advance, err := h.billing.AdvanceTestClock(r.Context(), id, frozenTime)
 	if err == nil {
 		h.emitClockAdvanceWebhooks(r, advance)
+		if scheduled := h.applyDueSubscriptionSchedules(r, id, frozenTime); len(scheduled) > 0 {
+			advance.Scheduled = append(advance.Scheduled, scheduled...)
+			advance.ScheduledCount += len(scheduled)
+			advance.Processed += len(scheduled)
+		}
 	}
 	response := stripeTestClock(clock)
 	if err == nil {
@@ -2244,25 +2324,13 @@ func (h *Handler) handlePaymentMethods(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, stripeList(r.URL.Path, []map[string]any{}), nil)
 		return
 	}
-	if _, err := h.billing.GetCustomer(r.Context(), customerID); err != nil {
+	customer, err := h.billing.GetCustomer(r.Context(), customerID)
+	if err != nil {
 		writeResult(w, nil, err)
 		return
 	}
-	method := map[string]any{
-		"id":       "pm_" + sanitizeID(customerID),
-		"object":   "payment_method",
-		"customer": customerID,
-		"type":     "card",
-		"card": map[string]any{
-			"brand":     "visa",
-			"last4":     "4242",
-			"exp_month": 12,
-			"exp_year":  2035,
-		},
-		"created":  time.Now().UTC().Unix(),
-		"livemode": false,
-	}
-	writeResult(w, stripeList(r.URL.Path, []map[string]any{method}), nil)
+	paymentMethodID := firstNonEmptyString(customer.Metadata["default_payment_method"], "pm_"+sanitizeID(customerID))
+	writeResult(w, stripeList(r.URL.Path, []map[string]any{stripePaymentMethod(customerID, paymentMethodID)}), nil)
 }
 
 func (h *Handler) handleObjects(w http.ResponseWriter, r *http.Request) {
@@ -2311,9 +2379,27 @@ func (h *Handler) handleWebhookEndpoint(w http.ResponseWriter, r *http.Request) 
 		writeResult(w, nil, webhooks.ErrNotFound)
 		return
 	}
-	id := strings.TrimPrefix(r.URL.Path, "/v1/webhook_endpoints/")
-	if id == "" || strings.Contains(id, "/") {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/webhook_endpoints/")
+	id, action, hasAction := strings.Cut(rest, "/")
+	if id == "" {
 		h.notFound(w, r)
+		return
+	}
+	if hasAction {
+		if action != "attempts" {
+			h.notFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			h.methodNotAllowed(w, r, "GET")
+			return
+		}
+		attempts, err := h.webhooks.ListDeliveryAttempts(r.Context(), webhooks.DeliveryAttemptFilter{EndpointID: id, Status: r.URL.Query().Get("status")})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"object": "list", "data": h.deliveryAttemptResponses(r, attempts)})
 		return
 	}
 	switch r.Method {
@@ -2373,7 +2459,105 @@ func (h *Handler) handleEvents(w http.ResponseWriter, r *http.Request) {
 		Type:          q.Get("type"),
 		ScenarioRunID: q.Get("scenarioRunId"),
 	})
+	if err == nil {
+		events = filterEventsByQuery(events, q)
+	}
 	writeResult(w, map[string]any{"object": "list", "data": events}, err)
+}
+
+func filterEventsByQuery(events []webhooks.Event, q url.Values) []webhooks.Event {
+	createdGTE := queryInt64Values(q, "created[gte]", "created_gte")
+	createdGT := queryInt64Values(q, "created[gt]", "created_gt")
+	createdLTE := queryInt64Values(q, "created[lte]", "created_lte")
+	createdLT := queryInt64Values(q, "created[lt]", "created_lt")
+	customerID := firstValue(q, "data.object.customer", "customer")
+	metadataFilters := eventMetadataFilters(q)
+	limit := queryIntFromValues(q, "limit")
+
+	out := make([]webhooks.Event, 0, len(events))
+	for _, event := range events {
+		if createdGTE != 0 && event.Created < createdGTE {
+			continue
+		}
+		if createdGT != 0 && event.Created <= createdGT {
+			continue
+		}
+		if createdLTE != 0 && event.Created > createdLTE {
+			continue
+		}
+		if createdLT != 0 && event.Created >= createdLT {
+			continue
+		}
+		object := eventObjectMap(event)
+		if customerID != "" && stringFromObject(object, "customer") != customerID {
+			continue
+		}
+		if !eventMetadataMatches(object, metadataFilters) {
+			continue
+		}
+		out = append(out, event)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+func queryInt64Values(q url.Values, keys ...string) int64 {
+	for _, key := range keys {
+		value := strings.TrimSpace(q.Get(key))
+		if value == "" {
+			continue
+		}
+		parsed, _ := strconv.ParseInt(value, 10, 64)
+		return parsed
+	}
+	return 0
+}
+
+func queryIntFromValues(q url.Values, key string) int {
+	parsed, _ := strconv.Atoi(strings.TrimSpace(q.Get(key)))
+	return parsed
+}
+
+func eventObjectMap(event webhooks.Event) map[string]any {
+	var object map[string]any
+	_ = json.Unmarshal(event.Data.Object, &object)
+	return object
+}
+
+func stringFromObject(object map[string]any, key string) string {
+	if value, ok := object[key].(string); ok {
+		return value
+	}
+	return ""
+}
+
+func eventMetadataFilters(q url.Values) map[string]string {
+	out := map[string]string{}
+	for key, values := range q {
+		if !strings.HasPrefix(key, "data.object.metadata[") && !strings.HasPrefix(key, "metadata[") {
+			continue
+		}
+		inner := strings.TrimSuffix(strings.TrimPrefix(strings.TrimPrefix(key, "data.object.metadata["), "metadata["), "]")
+		if inner != "" && len(values) > 0 {
+			out[inner] = values[0]
+		}
+	}
+	return out
+}
+
+func eventMetadataMatches(object map[string]any, filters map[string]string) bool {
+	if len(filters) == 0 {
+		return true
+	}
+	metadata, _ := object["metadata"].(map[string]any)
+	for key, value := range filters {
+		if fmt.Sprint(metadata[key]) != value {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *Handler) handleEvent(w http.ResponseWriter, r *http.Request) {
@@ -2847,10 +3031,16 @@ func (h *Handler) handlePortalCustomer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := h.billing.SimulatePaymentMethodUpdate(r.Context(), customerID, p.first("outcome", "simulate", "status"))
+	result, err := h.billing.SimulatePaymentMethodUpdate(r.Context(), customerID, p.first("outcome", "simulate", "status"), p.first("payment_method", "payment_method_id", "paymentMethod", "paymentMethodID"))
 	if err != nil {
 		writeResult(w, nil, err)
 		return
+	}
+	if result.Status == "succeeded" && result.PaymentMethodID != "" {
+		h.emitGenericWebhook(r, "payment_method.attached", result.PaymentMethodID, stripePaymentMethod(customerID, result.PaymentMethodID), webhooks.SourcePortal)
+		if customer, err := h.billing.GetCustomer(r.Context(), customerID); err == nil {
+			h.emitGenericWebhook(r, "customer.updated", customer.ID, stripeCustomer(customer), webhooks.SourcePortal)
+		}
 	}
 	state, stateErr := h.billing.PortalState(r.Context(), customerID)
 	writeResult(w, map[string]any{"object": "portal_action", "action": "payment_method", "payment_method": result, "state": state}, stateErr)
@@ -3061,6 +3251,109 @@ func (h *Handler) handleEventAction(w http.ResponseWriter, r *http.Request) {
 		SimulateAppFailure: simulateAppFailure,
 	})
 	writeResult(w, map[string]any{"message": "replay scheduled", "object": "list", "data": h.deliveryAttemptResponses(r, attempts)}, err)
+}
+
+func (h *Handler) handlePaymentIntentAction(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/payment_intents/")
+	id, action, found := strings.Cut(rest, "/")
+	if id == "" || !found {
+		h.notFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	var (
+		intent billing.PaymentIntent
+		err    error
+	)
+	switch action {
+	case "complete_action":
+		current, currentErr := h.billing.GetPaymentIntent(r.Context(), id)
+		if currentErr != nil {
+			writeResult(w, nil, currentErr)
+			return
+		}
+		intent, err = h.billing.ConfirmPaymentIntent(r.Context(), id, firstNonEmptyString(current.PaymentMethodID, "pm_card_visa"), "payment_succeeded")
+		if err == nil {
+			h.emitPaymentIntentWebhook(r, "payment_intent.succeeded", intent)
+		}
+	case "cancel_action":
+		intent, err = h.billing.CancelPaymentIntent(r.Context(), id)
+		if err == nil {
+			h.emitPaymentIntentWebhook(r, "payment_intent.canceled", intent)
+		}
+	default:
+		h.notFound(w, r)
+		return
+	}
+	writeResult(w, stripePaymentIntent(intent), err)
+}
+
+func (h *Handler) handleEventReplayGroup(w http.ResponseWriter, r *http.Request) {
+	if h.webhooks == nil {
+		writeResult(w, nil, webhooks.ErrNotFound)
+		return
+	}
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	eventIDs := historicalReplayEventIDs(p)
+	if len(eventIDs) == 0 {
+		writeError(w, http.StatusBadRequest, missingParam("event_ids"))
+		return
+	}
+	mode := strings.ToLower(p.stringDefault("mode", "ordered"))
+	if mode == "out_of_order" || mode == "reverse" {
+		for left, right := 0, len(eventIDs)-1; left < right; left, right = left+1, right-1 {
+			eventIDs[left], eventIDs[right] = eventIDs[right], eventIDs[left]
+		}
+	}
+	omit := map[string]bool{}
+	for _, id := range p.list("omit_event_ids") {
+		omit[id] = true
+	}
+	delaySeconds := p.int64("delay_seconds")
+	var attempts []webhooks.DeliveryAttempt
+	for idx, eventID := range eventIDs {
+		if omit[eventID] {
+			continue
+		}
+		delay := time.Duration(delaySeconds) * time.Second
+		if mode == "delayed" && delay == 0 {
+			delay = time.Duration(idx+1) * time.Second
+		}
+		next, err := h.webhooks.ReplayEvent(r.Context(), eventID, webhooks.ReplayOptions{
+			Duplicate:         int(p.int64Default("duplicate", 1)),
+			Delay:             delay,
+			OutOfOrder:        mode == "out_of_order" || mode == "reverse",
+			SignatureMismatch: p.boolDefault("signature_mismatch", false) || p.string("simulate") == "invalid_signature",
+		})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		attempts = append(attempts, next...)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"object": "event_replay_group", "mode": mode, "data": h.deliveryAttemptResponses(r, attempts)})
+}
+
+func historicalReplayEventIDs(p params) []string {
+	var out []string
+	for _, key := range []string{"event_ids", "eventIds", "events"} {
+		out = append(out, p.list(key)...)
+	}
+	if id := p.string("event_id"); id != "" {
+		out = append(out, id)
+	}
+	return out
 }
 
 func (h *Handler) handleWebhookEndpointAction(w http.ResponseWriter, r *http.Request) {
@@ -3437,6 +3730,7 @@ func stripeSearchResult(urlPath string, query string, data any) map[string]any {
 }
 
 func stripeCustomer(customer billing.Customer) map[string]any {
+	defaultPaymentMethod := customer.Metadata["default_payment_method"]
 	return map[string]any{
 		"id":         customer.ID,
 		"object":     billing.ObjectCustomer,
@@ -3446,10 +3740,43 @@ func stripeCustomer(customer billing.Customer) map[string]any {
 		"created":    unix(customer.CreatedAt),
 		"created_at": customer.CreatedAt,
 		"invoice_settings": map[string]any{
-			"default_payment_method": nil,
+			"default_payment_method": emptyToNil(defaultPaymentMethod),
 		},
 		"test_clock": emptyToNil(customer.Metadata["test_clock"]),
 		"livemode":   false,
+	}
+}
+
+func stripePaymentMethod(customerID string, paymentMethodID string) map[string]any {
+	if strings.TrimSpace(paymentMethodID) == "" {
+		paymentMethodID = "pm_" + sanitizeID(customerID)
+	}
+	return map[string]any{
+		"id":       paymentMethodID,
+		"object":   "payment_method",
+		"customer": customerID,
+		"type":     "card",
+		"card": map[string]any{
+			"brand":     "visa",
+			"last4":     paymentMethodLast4(paymentMethodID),
+			"exp_month": 12,
+			"exp_year":  2035,
+		},
+		"created":  time.Now().UTC().Unix(),
+		"livemode": false,
+	}
+}
+
+func paymentMethodLast4(paymentMethodID string) string {
+	switch strings.ToLower(strings.TrimSpace(paymentMethodID)) {
+	case "pm_card_visa", "pm_card_visa_debit":
+		return "4242"
+	case "pm_card_three_secure", "pm_card_threesecure2required", "pm_card_authenticationrequired":
+		return "3220"
+	case "pm_card_chargecustomerfail", "pm_card_charge_declined", "pm_card_chargecustomerfail_attach":
+		return "0002"
+	default:
+		return "4242"
 	}
 }
 
@@ -3959,10 +4286,29 @@ func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
 		"capture_method":     captureMethod,
 		"payment_method":     emptyToNil(intent.PaymentMethodID),
 		"last_payment_error": paymentIntentError(intent),
+		"next_action":        paymentIntentNextAction(intent),
 		"client_secret":      intent.ID + "_secret_billtap",
 		"created":            unix(intent.CreatedAt),
 		"created_at":         intent.CreatedAt,
 		"livemode":           false,
+	}
+}
+
+func paymentIntentNextAction(intent billing.PaymentIntent) any {
+	if intent.Status != "requires_action" {
+		return nil
+	}
+	return map[string]any{
+		"type": "use_stripe_sdk",
+		"use_stripe_sdk": map[string]any{
+			"type":                    "three_d_secure_redirect",
+			"stripe_js":               "https://js.stripe.com/v3/",
+			"source":                  intent.PaymentMethodID,
+			"server_transaction_id":   "billtap_" + sanitizeID(intent.ID),
+			"hosted_voucher_url":      "",
+			"billtap_completion_url":  "/api/payment_intents/" + intent.ID + "/complete_action",
+			"billtap_abandonment_url": "/api/payment_intents/" + intent.ID + "/cancel_action",
+		},
 	}
 }
 
@@ -4414,6 +4760,15 @@ func stringDefault(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func firstNonEmptyString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func sanitizeID(value string) string {

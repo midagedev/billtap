@@ -355,10 +355,10 @@ Each chunk should use the PR -> review -> fix -> merge workflow.
 | S2-A  | Generated validation P0   | OpenAPI-derived validators for catalog, customers, checkout, subscriptions       | Scorecard plus stripe-mock optional oracle        |
 | S2-B  | Fixture response harness  | Low-state fixture response engine for inventory-only endpoints                   | Fixture-shape scorecard                           |
 | S3-A  | Renewal/test clock        | Invoice retry mutation, local clock renewal, trial activation, period-end cancellation, and a bounded Stripe-like Test Clock API landed; full Stripe Test Clock parity remains future work | Scenario reports, scorecard cases, and webhook tests |
-| S3-B  | Discounts/credits/meters  | Coupons, promotion codes, discounts, credit notes, usage/meter events            | Scenario and billing engine tests                 |
-| S4-A  | Direct payment intents    | Create/confirm/capture/cancel state machine and failure aliases                  | API tests landed; SDK smoke remains               |
+| S3-B  | Discounts/credits/meters  | Coupon and promotion-code evidence landed; discount redemption, customer discounts, and usage/meter events remain future work | Scenario and billing engine tests                 |
+| S4-A  | Direct payment intents    | Create/confirm/capture/cancel state machine, failure aliases, SCA action callbacks, and bank-transfer processing evidence landed | API tests landed; SDK smoke remains               |
 | S4-B  | Setup/payment methods     | SetupIntent state machine landed; PaymentMethod attach/detach/update lifecycle   | SDK smoke and no-card-data boundary tests         |
-| S5-A  | Refund/dispute history    | Refunds, disputes, balance transactions, support/debug evidence                  | Scenario reports and dashboard/debug bundle tests |
+| S5-A  | Refund/dispute history    | Refund, credit-note, dispute, and support/debug evidence landed; balance transaction and ledger parity remain future work | Scenario reports and dashboard/debug bundle tests |
 | S6-A  | Connect smoke             | Connected-account, people/person, transfer/application fee/payout evidence       | Webhook routing tests and SDK/adoption smoke      |
 | S7-A  | SDK matrix                | Node, Go, Java, Python, Ruby smoke lanes and reports                             | CI/manual workflow artifacts                      |
 | S8-A  | Optional oracle           | stripe-mock/live-testmode drift runner, redacted report format, accepted diffs   | Manual workflow only                              |

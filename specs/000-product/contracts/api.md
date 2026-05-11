@@ -38,6 +38,28 @@ Storage and worker readiness.
 - `GET /v1/prices/{id}`
 - `GET /v1/prices`
 
+### Coupons
+
+- `POST /v1/coupons`
+- `GET /v1/coupons/{id}`
+- `GET /v1/coupons`
+- `POST /v1/coupons/{id}`
+- `DELETE /v1/coupons/{id}`
+
+Coupons are local discount evidence. They support basic percent-off or
+amount-off fields, metadata, and deletion markers, but do not apply discounts
+to invoices or subscriptions.
+
+### Promotion Codes
+
+- `POST /v1/promotion_codes`
+- `GET /v1/promotion_codes/{id}`
+- `GET /v1/promotion_codes`
+- `POST /v1/promotion_codes/{id}`
+
+Promotion codes are local coupon-linked evidence only. Redemption, customer
+discount state, expiration, and promotion-code analytics are not modeled.
+
 ### Checkout Sessions
 
 - `POST /v1/checkout/sessions`
@@ -58,6 +80,20 @@ Response includes:
 - `GET /v1/subscriptions`
 - `POST /v1/subscriptions/{id}`
 - `DELETE /v1/subscriptions/{id}`
+
+### Subscription Schedules
+
+- `POST /v1/subscription_schedules`
+- `GET /v1/subscription_schedules/{id}`
+- `GET /v1/subscription_schedules`
+- `POST /v1/subscription_schedules/{id}`
+- `POST /v1/subscription_schedules/{id}/cancel`
+- `POST /v1/subscription_schedules/{id}/release`
+
+Subscription schedules are local one-phase schedule evidence for existing
+subscriptions. Test-clock advance applies a due phase by replacing subscription
+items and emitting `customer.subscription.updated`. Multi-phase proration,
+invoicing, and full schedule lifecycle parity are not modeled.
 
 ### Invoices
 
@@ -84,8 +120,11 @@ automation are not part of the current release-compatible subset.
 
 Direct payment intents are local state-machine simulations. They support
 deterministic sandbox aliases, manual capture, cancel, timeline evidence, and
-local webhook events; they do not process real cards or claim full Stripe
-PaymentIntent parameter parity.
+local webhook events. `requires_action` returns a local
+`next_action.use_stripe_sdk` shape that can be completed or canceled through
+Billtap action callbacks, and local bank-transfer intents can move from
+`processing` to `succeeded` when customer cash balance is funded. They do not
+process real cards or claim full Stripe PaymentIntent parameter parity.
 
 ### Setup Intents
 
@@ -103,7 +142,20 @@ the current release-compatible subset.
 
 - `GET /v1/payment_methods?customer={id}&type=card`
 
-Returns deterministic sandbox card projections for known customers.
+Returns deterministic sandbox card projections for known customers, including
+the saved default payment method set by local portal payment-method simulation.
+
+### Customer Cash Balance
+
+- `GET /v1/customers/{id}/cash_balance`
+- `POST /v1/customers/{id}/cash_balance`
+- `GET /v1/customers/{id}/cash_balance_transactions`
+- `GET /v1/customers/{id}/cash_balance_transactions/{id}`
+- `POST /v1/test_helpers/customers/{id}/fund_cash_balance`
+
+Cash-balance APIs are local evidence for bank-transfer smoke tests. The
+test-helper funding endpoint records a cash-balance transaction and settles
+processing bank-transfer PaymentIntents for the customer.
 
 ### Refunds
 
@@ -127,6 +179,20 @@ Credit notes are local invoice-history evidence. Creation accepts `invoice`,
 `amount`, optional `reason`, and metadata. It emits `credit_note.created`, but
 does not model line-level tax/discount accounting, PDF rendering, or voiding.
 
+### Disputes
+
+- `GET /v1/disputes`
+- `GET /v1/disputes/{id}`
+- `POST /v1/disputes/{id}`
+- `POST /v1/disputes/{id}/close`
+- `GET /v1/charges/{id}/dispute`
+- `POST /v1/charges/{id}/dispute`
+
+Disputes are local chargeback-style evidence. Creating one emits
+`charge.dispute.created`; closing one emits `charge.dispute.closed`.
+Representment, evidence upload, deadlines, balance movement, and processor
+outcomes are not modeled.
+
 ### Test Clocks
 
 - `POST /v1/test_helpers/test_clocks`
@@ -143,7 +209,11 @@ period-end cancellations for attached objects.
 
 - `POST /v1/billing_portal/sessions`
 
-Returns a Billtap hosted portal URL for a known customer.
+Returns a Stripe-like `billing_portal.session` object and Billtap hosted portal
+URL for a known customer. The request accepts `customer`, `return_url`, optional
+`configuration`, and `flow_data`. Hosted portal actions can save a deterministic
+payment method, cancel a subscription, emit the matching local webhook evidence,
+and redirect to `return_url`.
 
 ### Connect Platform Evidence
 
@@ -223,11 +293,15 @@ movement, account closure, or settlement.
 - `POST /v1/webhook_endpoints/{id}`
 - `PATCH /v1/webhook_endpoints/{id}`
 - `DELETE /v1/webhook_endpoints/{id}`
+- `GET /v1/webhook_endpoints/{id}/attempts`
 
 ### Events
 
 - `GET /v1/events/{id}`
 - `GET /v1/events`
+
+Event list filters include `type`, `scenarioRunId`, created-time ranges,
+`data.object.customer`, and `data.object.metadata[key]`.
 
 ## Hosted UI
 
@@ -258,6 +332,24 @@ Filters:
 Webhook delivery attempts. Response evidence masks endpoint credentials,
 sensitive headers, sensitive request URL query parameters, and webhook
 signature HMAC values.
+
+### `POST /api/events/replay-group`
+
+Replays multiple existing event IDs with ordered, out-of-order, delayed,
+signature-mismatch, duplicate, or omitted delivery evidence.
+
+### `POST /api/payment_intents/{id}/complete_action`
+
+Completes a local `requires_action` PaymentIntent.
+
+### `POST /api/payment_intents/{id}/cancel_action`
+
+Cancels a local `requires_action` PaymentIntent.
+
+### `POST /api/disputes`
+
+Creates local dispute evidence when a test does not already have a charge-like
+ID to use through `/v1/charges/{id}/dispute`.
 
 ### `POST /api/events/{id}/replay`
 

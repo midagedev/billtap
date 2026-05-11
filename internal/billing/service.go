@@ -996,6 +996,35 @@ func (s *Service) CancelPaymentIntent(ctx context.Context, id string) (PaymentIn
 	})
 }
 
+func (s *Service) SettleBankTransferPaymentIntents(ctx context.Context, customerID string) ([]PaymentIntent, error) {
+	if strings.TrimSpace(customerID) == "" {
+		return nil, fmt.Errorf("%w: customer is required", ErrInvalidInput)
+	}
+	intents, err := s.repo.ListPaymentIntentsFiltered(ctx, PaymentIntentFilter{CustomerID: customerID})
+	if err != nil {
+		return nil, err
+	}
+	now := s.now()
+	var settled []PaymentIntent
+	for _, intent := range intents {
+		if intent.Status != "processing" || !isBankTransferPaymentMethod(intent.PaymentMethodID) {
+			continue
+		}
+		intent.Status = "succeeded"
+		intent.FailureCode = ""
+		intent.DeclineCode = ""
+		intent.FailureMessage = ""
+		updated, err := s.repo.UpdatePaymentIntent(ctx, intent, []TimelineEntry{
+			timelineEntry("pi_"+intent.ID+"_bank_transfer_settled_"+now.Format(time.RFC3339Nano), "payment_intent.succeeded", "Bank transfer payment intent settled", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status, "source": "fund_cash_balance"}, now),
+		})
+		if err != nil {
+			return settled, err
+		}
+		settled = append(settled, updated)
+	}
+	return settled, nil
+}
+
 func (s *Service) ListPaymentIntents(ctx context.Context) ([]PaymentIntent, error) {
 	return s.repo.ListPaymentIntents(ctx)
 }
@@ -1303,11 +1332,12 @@ func (s *Service) ResumePortalSubscription(ctx context.Context, subscriptionID s
 	)})
 }
 
-func (s *Service) SimulatePaymentMethodUpdate(ctx context.Context, customerID string, outcome string) (PaymentMethodSimulation, error) {
+func (s *Service) SimulatePaymentMethodUpdate(ctx context.Context, customerID string, outcome string, paymentMethodID string) (PaymentMethodSimulation, error) {
 	if strings.TrimSpace(customerID) == "" {
 		return PaymentMethodSimulation{}, fmt.Errorf("%w: customer is required", ErrInvalidInput)
 	}
-	if _, err := s.repo.GetCustomer(ctx, customerID); err != nil {
+	customer, err := s.repo.GetCustomer(ctx, customerID)
+	if err != nil {
 		return PaymentMethodSimulation{}, err
 	}
 	outcome = normalizePaymentMethodOutcome(outcome)
@@ -1326,7 +1356,16 @@ func (s *Service) SimulatePaymentMethodUpdate(ctx context.Context, customerID st
 	action := "payment_method.updated"
 	message := "Portal payment method update succeeded"
 	if outcome == "succeeds" {
-		result.PaymentMethodID = id("pm")
+		result.PaymentMethodID = strings.TrimSpace(paymentMethodID)
+		if result.PaymentMethodID == "" {
+			result.PaymentMethodID = id("pm")
+		}
+		customer.Metadata = copyMap(customer.Metadata)
+		customer.Metadata["default_payment_method"] = result.PaymentMethodID
+		customer.Metadata["payment_method_status"] = "saved"
+		if _, err := s.repo.UpdateCustomer(ctx, customer.ID, Customer{Metadata: customer.Metadata}); err != nil {
+			return PaymentMethodSimulation{}, err
+		}
 	} else {
 		result.Status = "failed"
 		result.FailureCode = "card_declined"
@@ -1334,7 +1373,7 @@ func (s *Service) SimulatePaymentMethodUpdate(ctx context.Context, customerID st
 		action = "payment_method.update_failed"
 		message = "Portal payment method update failed"
 	}
-	err := s.repo.RecordTimeline(ctx, TimelineEntry{
+	err = s.repo.RecordTimeline(ctx, TimelineEntry{
 		ID:         id("tl"),
 		Object:     ObjectTimelineEntry,
 		Action:     action,
@@ -1857,7 +1896,11 @@ func checkoutOutcomeFor(outcome string) (checkoutOutcomeSpec, bool) {
 	case "missing_payment_method", "payment_method_missing":
 		return failedCheckoutOutcome("missing_payment_method", "", "payment_method_missing", "", "No payment method is available to complete this checkout."), true
 	case "authentication_required", "requires_action", "pm_card_threedsecure2required":
-		spec := failedCheckoutOutcome("authentication_required", paymentMethodID(normalized), "authentication_required", "authentication_required", "This payment requires authentication.")
+		methodID := paymentMethodID(normalized)
+		if methodID == "" {
+			methodID = "pm_card_threeDSecure2Required"
+		}
+		spec := failedCheckoutOutcome("authentication_required", methodID, "authentication_required", "authentication_required", "This payment requires authentication.")
 		spec.PaymentIntentStatus = "requires_action"
 		return spec, true
 	case "payment_pending", "pending", "processing", "async_payment_pending":
@@ -1869,6 +1912,16 @@ func checkoutOutcomeFor(outcome string) (checkoutOutcomeSpec, bool) {
 			InvoiceStatus:       "open",
 			PaymentIntentStatus: "processing",
 			PaymentMethodID:     paymentMethodID(normalized),
+		}, true
+	case "bank_transfer", "bank_transfer_processing", "pm_bank_transfer":
+		return checkoutOutcomeSpec{
+			Outcome:             "bank_transfer",
+			Paid:                false,
+			PaymentStatus:       "unpaid",
+			SubscriptionStatus:  "incomplete",
+			InvoiceStatus:       "open",
+			PaymentIntentStatus: "processing",
+			PaymentMethodID:     "pm_bank_transfer",
 		}, true
 	case "canceled", "cancelled", "cancel", "payment_canceled", "pm_card_chargecustomercancel":
 		zeroAttempts := 0
@@ -1903,6 +1956,11 @@ func failedCheckoutOutcome(outcome string, paymentMethodID string, code string, 
 		DeclineCode:         declineCode,
 		FailureMessage:      message,
 	}
+}
+
+func isBankTransferPaymentMethod(paymentMethodID string) bool {
+	value := strings.ToLower(strings.TrimSpace(paymentMethodID))
+	return value == "pm_bank_transfer" || strings.Contains(value, "bank_transfer")
 }
 
 func intentOutcomeSpec(outcome string) (checkoutOutcomeSpec, bool) {
