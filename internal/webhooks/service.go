@@ -182,12 +182,9 @@ func (s *Service) ReplayEvent(ctx context.Context, eventID string, opts ReplayOp
 	if err != nil {
 		return nil, err
 	}
-	if !s.storeRawPayloads || len(bytes.TrimSpace(event.RawPayload)) == 0 || bytes.Equal(bytes.TrimSpace(event.RawPayload), []byte(`{}`)) {
-		raw, err := json.Marshal(event)
-		if err != nil {
-			return nil, err
-		}
-		event.RawPayload = raw
+	event, err = s.ensureEventRawPayload(event)
+	if err != nil {
+		return nil, err
 	}
 	endpoints, err := s.repo.ListWebhookEndpoints(ctx, EndpointFilter{ActiveOnly: true, EventType: event.Type})
 	if err != nil {
@@ -211,6 +208,108 @@ func (s *Service) ReplayEvent(ctx context.Context, eventID string, opts ReplayOp
 	}
 	_ = s.audit(ctx, "webhook.replay", "event", event.ID, deliveryMetadata(deliveryOpts))
 	return attempts, nil
+}
+
+func (s *Service) ReplayHistoricalForEndpoint(ctx context.Context, endpointID string, opts HistoricalReplayOptions) (HistoricalReplayResult, error) {
+	endpoint, err := s.repo.GetWebhookEndpoint(ctx, endpointID)
+	if err != nil {
+		return HistoricalReplayResult{}, err
+	}
+	if !endpoint.Active || endpoint.DeletedAt != nil {
+		return HistoricalReplayResult{}, fmt.Errorf("%w: endpoint is not active", ErrInvalidInput)
+	}
+	until := opts.Until
+	if until.IsZero() {
+		until = endpoint.CreatedAt
+	}
+	if until.IsZero() {
+		until = s.now()
+	}
+	if !opts.Since.IsZero() && opts.Since.After(until) {
+		return HistoricalReplayResult{}, fmt.Errorf("%w: since must be before until", ErrInvalidInput)
+	}
+
+	events, err := s.repo.ListEvents(ctx, EventFilter{})
+	if err != nil {
+		return HistoricalReplayResult{}, err
+	}
+
+	deliveryOpts := opts.DeliveryOptions
+	deliveryOpts.Replay = true
+	deliveryOpts.Historical = true
+	if deliveryOpts.Duplicate <= 0 {
+		deliveryOpts.Duplicate = 1
+	}
+
+	result := HistoricalReplayResult{
+		Object:     "historical_webhook_replay",
+		EndpointID: endpoint.ID,
+	}
+	if !opts.Since.IsZero() {
+		since := opts.Since
+		result.Since = &since
+	}
+	result.Until = &until
+
+	typeFilter := Endpoint{Active: true, EnabledEvents: opts.EventTypes}
+	for _, event := range events {
+		if !opts.Since.IsZero() && event.CreatedAt.Before(opts.Since) {
+			continue
+		}
+		if event.CreatedAt.After(until) {
+			continue
+		}
+		if len(opts.EventTypes) > 0 && !EndpointMatches(typeFilter, event.Type) {
+			continue
+		}
+		if !EndpointMatches(endpoint, event.Type) {
+			continue
+		}
+		result.MatchedEvents++
+		if opts.Limit > 0 && result.ReplayedEvents >= opts.Limit {
+			result.SkippedEvents++
+			continue
+		}
+		existing, err := s.repo.ListDeliveryAttempts(ctx, DeliveryAttemptFilter{EventID: event.ID, EndpointID: endpoint.ID})
+		if err != nil {
+			return result, err
+		}
+		if len(existing) > 0 && !opts.Force {
+			result.SkippedEvents++
+			continue
+		}
+		event, err = s.ensureEventRawPayload(event)
+		if err != nil {
+			return result, err
+		}
+		attempts, err := s.createAttempts(ctx, event, []Endpoint{endpoint}, deliveryOpts)
+		if err != nil {
+			return result, err
+		}
+		result.Events = append(result.Events, event)
+		result.Attempts = append(result.Attempts, attempts...)
+		result.ReplayedEvents++
+		result.AttemptCount += len(attempts)
+	}
+	_ = s.audit(ctx, "webhook.replay_historical", "webhook_endpoint", endpoint.ID, map[string]string{
+		"since":           timeString(opts.Since),
+		"until":           until.Format(time.RFC3339Nano),
+		"matched_events":  fmt.Sprintf("%d", result.MatchedEvents),
+		"replayed_events": fmt.Sprintf("%d", result.ReplayedEvents),
+		"skipped_events":  fmt.Sprintf("%d", result.SkippedEvents),
+	})
+	return result, nil
+}
+
+func (s *Service) ensureEventRawPayload(event Event) (Event, error) {
+	if !s.storeRawPayloads || len(bytes.TrimSpace(event.RawPayload)) == 0 || bytes.Equal(bytes.TrimSpace(event.RawPayload), []byte(`{}`)) {
+		raw, err := json.Marshal(event)
+		if err != nil {
+			return Event{}, err
+		}
+		event.RawPayload = raw
+	}
+	return event, nil
 }
 
 func (s *Service) ListAuditEntries(ctx context.Context, filter AuditFilter) ([]AuditEntry, error) {
@@ -316,6 +415,9 @@ func (s *Service) createAttempt(ctx context.Context, event Event, endpoint Endpo
 	metadata := map[string]string{}
 	if opts.Replay {
 		metadata["source"] = SourceReplay
+	}
+	if opts.Historical {
+		metadata["historical"] = "true"
 	}
 	if duplicateIndex > 0 {
 		metadata["duplicate"] = "true"
@@ -556,6 +658,9 @@ func deliveryMetadata(opts DeliveryOptions) map[string]string {
 	if opts.Replay {
 		metadata["source"] = SourceReplay
 	}
+	if opts.Historical {
+		metadata["historical"] = "true"
+	}
 	if opts.Duplicate > 1 {
 		metadata["duplicate"] = fmt.Sprintf("%d", opts.Duplicate)
 	}
@@ -583,6 +688,13 @@ func deliveryMetadata(opts DeliveryOptions) map[string]string {
 		metadata["fail_first_n_attempts"] = fmt.Sprintf("%d", opts.SimulateAppFailure.FailFirstNAttempts)
 	}
 	return metadata
+}
+
+func timeString(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.Format(time.RFC3339Nano)
 }
 
 func id(prefix string) string {

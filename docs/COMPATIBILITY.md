@@ -117,7 +117,7 @@ Base path: `/api`
 | Checkout           | `POST /api/checkout/sessions/{id}/complete`                                                                                                                                                                                                                                                             | Billtap-only checkout completion endpoint used by the hosted checkout UI and local tests.                                                    |
 | Portal             | `GET /api/portal`, `GET /api/portal/customers/{id}`, `POST /api/portal/subscriptions/{id}/plan-change`, `POST /api/portal/subscriptions/{id}/seat-change`, `POST /api/portal/subscriptions/{id}/cancel`, `POST /api/portal/subscriptions/{id}/resume`, `POST /api/portal/customers/{id}/payment-method` | Sandbox portal state and actions. These update local billing state and timeline evidence; they do not claim Stripe Billing Portal parity.    |
 | Dashboard evidence | `GET /api/objects`, `GET /api/timeline`, `GET /api/delivery-attempts`, `POST /api/debug-bundles`                                                                                                                                                                                                        | Object lists, timelines, delivery evidence, and debug bundle data for local investigation.                                                   |
-| Webhook operations | `POST /api/events/{id}/replay`                                                                                                                                                                                                                                                                          | Replays an existing event and can schedule duplicate, delayed, out-of-order, signature-mismatch, simulated endpoint response, and fail-first-then-deliver attempts. |
+| Webhook operations | `POST /api/events/{id}/replay`, `POST /api/webhooks/endpoints/{id}/replay-historical`                                                                                                                                                                                                                   | Replays an existing event and can schedule duplicate, delayed, out-of-order, signature-mismatch, simulated endpoint response, and fail-first-then-deliver attempts. Endpoint-scoped historical replay catches up matching events that were emitted before an app registered its webhook endpoint. |
 | Fixtures           | `POST /api/fixtures/apply`, `GET /api/fixtures/resolve`, `GET /api/fixtures/snapshot`, `POST /api/fixtures/assert`                                                                                                                                                                                      | Data-driven setup and assertion APIs for customers, products, prices, test clocks, subscription graphs, invoices, payment intents, refunds, credit notes, and timeline evidence. |
 | Scenarios          | `POST /api/scenarios/run`                                                                                                                                                                                                                                                                               | Runs a scenario JSON object or YAML payload and returns the scenario report.                                                                 |
 | Boundary controls  | `GET /api/audit-log`, `POST /api/retention/apply`                                                                                                                                                                                                                                                       | Audit and retention controls for replay, delivery overrides, and raw evidence redaction.                                                     |
@@ -193,6 +193,11 @@ Current event boundaries:
   verification, provider-side account closure, or settlement behavior.
 - Replay keeps the original event ID and payload, then creates new delivery
   attempts with replay metadata.
+- Historical endpoint replay uses `POST
+  /api/webhooks/endpoints/{id}/replay-historical`, respects the endpoint's
+  `enabled_events` filters, defaults `until` to endpoint creation time, skips
+  already-delivered event/endpoint pairs unless `force=true`, and marks
+  delivery attempts with historical replay metadata.
 - Duplicate delivery reuses the event ID and payload.
 - Delay changes delivery scheduling, not event creation time.
 - Out-of-order delivery changes attempt ordering evidence, not canonical event
@@ -271,7 +276,10 @@ Current scenario boundaries:
 - Generic webhook replay is available through `POST /api/events/{id}/replay`
   and the `webhook.replay` scenario action. Replay can schedule duplicate,
   delayed, out-of-order, simulated endpoint status, timeout, generic transport
-  error, signature-mismatch, and fail-first-then-deliver attempts.
+  error, signature-mismatch, and fail-first-then-deliver attempts. Endpoint
+  catchup replay is available through `POST
+  /api/webhooks/endpoints/{id}/replay-historical` for fixture events emitted
+  before an application registered its webhook endpoint.
 - `webhook.deliver_duplicate` and `webhook.deliver_out_of_order` use generic
   replay delivery when they reference a Billtap event and a webhook service is
   configured. They still update SaaS profile webhook evidence when they

@@ -271,6 +271,30 @@ delivery, signature mismatch, forced response status, and
 the app endpoint for the injected failures, then deliver the real replay
 attempt after the configured failures are exhausted.
 
+### `POST /api/webhooks/endpoints/{id}/replay-historical`
+
+Replay historical events to one webhook endpoint. This is a Billtap-specific
+catchup API for fixture or startup flows where events already exist before the
+application registers its webhook endpoint. It records
+`webhook.replay_historical` in the audit log and returns redacted delivery
+attempt evidence.
+
+Query or form fields:
+
+- `since`: optional RFC3339 timestamp, Unix timestamp, or `now`
+- `until`: optional RFC3339 timestamp, Unix timestamp, or `now`; defaults to
+  the endpoint creation time
+- `type` / `types` / `event_type` / `event_types`: optional event type filters
+  such as `invoice.paid` or `invoice.*`
+- `limit`: optional positive replay count
+- `force`: optional boolean; when false, events with existing delivery attempts
+  for the endpoint are skipped
+
+Historical replay respects the endpoint's `enabled_events` filters, keeps the
+original event ID and payload, marks delivery attempts with replay and
+historical metadata, and does not replay events created after the endpoint
+registration time unless an explicit `until` is provided.
+
 ### `POST /api/debug-bundles`
 
 Create a debug bundle.

@@ -87,6 +87,9 @@ Integration diagnostics for failed app runs:
   subscription, invoice, or payment intent IDs
 - include `delivery_attempts` when debugging webhook handler failures, missing
   subscriptions, entitlement drift, or retry/idempotency regressions
+- when a fixture emits events before the app registers a webhook endpoint, call
+  `POST /api/webhooks/endpoints/{id}/replay-historical` after registration to
+  produce deterministic catchup delivery evidence
 
 ### Stripe SDK smoke
 
