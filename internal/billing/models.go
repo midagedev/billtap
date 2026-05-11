@@ -11,6 +11,9 @@ const (
 	ObjectInvoice         = "invoice"
 	ObjectPaymentIntent   = "payment_intent"
 	ObjectSetupIntent     = "setup_intent"
+	ObjectTestClock       = "test_helpers.test_clock"
+	ObjectRefund          = "refund"
+	ObjectCreditNote      = "credit_note"
 	ObjectTimelineEntry   = "timeline_entry"
 )
 
@@ -117,14 +120,17 @@ type InvoicePaymentResult struct {
 }
 
 type ClockAdvanceResult struct {
-	Object        string                 `json:"object"`
-	AdvancedTo    time.Time              `json:"advanced_to"`
-	Renewals      []InvoicePaymentResult `json:"renewals,omitempty"`
-	Canceled      []Subscription         `json:"canceled,omitempty"`
-	Skipped       []string               `json:"skipped,omitempty"`
-	Processed     int                    `json:"processed"`
-	Renewed       int                    `json:"renewed"`
-	CanceledCount int                    `json:"canceled_count"`
+	Object         string                 `json:"object"`
+	AdvancedTo     time.Time              `json:"advanced_to"`
+	TestClockID    string                 `json:"test_clock,omitempty"`
+	Activated      []Subscription         `json:"activated,omitempty"`
+	Renewals       []InvoicePaymentResult `json:"renewals,omitempty"`
+	Canceled       []Subscription         `json:"canceled,omitempty"`
+	Skipped        []string               `json:"skipped,omitempty"`
+	Processed      int                    `json:"processed"`
+	ActivatedCount int                    `json:"activated_count"`
+	Renewed        int                    `json:"renewed"`
+	CanceledCount  int                    `json:"canceled_count"`
 }
 
 type PaymentIntent struct {
@@ -156,6 +162,44 @@ type SetupIntent struct {
 	CreatedAt       time.Time `json:"created_at"`
 }
 
+type TestClock struct {
+	ID         string    `json:"id"`
+	Object     string    `json:"object"`
+	Name       string    `json:"name,omitempty"`
+	Status     string    `json:"status"`
+	FrozenTime time.Time `json:"frozen_time"`
+	CreatedAt  time.Time `json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+type Refund struct {
+	ID              string            `json:"id"`
+	Object          string            `json:"object"`
+	ChargeID        string            `json:"charge,omitempty"`
+	PaymentIntentID string            `json:"payment_intent,omitempty"`
+	InvoiceID       string            `json:"invoice,omitempty"`
+	CustomerID      string            `json:"customer,omitempty"`
+	Amount          int64             `json:"amount"`
+	Currency        string            `json:"currency"`
+	Reason          string            `json:"reason,omitempty"`
+	Status          string            `json:"status"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+}
+
+type CreditNote struct {
+	ID         string            `json:"id"`
+	Object     string            `json:"object"`
+	InvoiceID  string            `json:"invoice"`
+	CustomerID string            `json:"customer,omitempty"`
+	Amount     int64             `json:"amount"`
+	Currency   string            `json:"currency"`
+	Reason     string            `json:"reason,omitempty"`
+	Status     string            `json:"status"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+	CreatedAt  time.Time         `json:"created_at"`
+}
+
 type TimelineEntry struct {
 	ID                string            `json:"id"`
 	Object            string            `json:"object"`
@@ -184,6 +228,18 @@ type InvoiceFilter struct {
 type PaymentIntentFilter struct {
 	CustomerID string
 	InvoiceIDs []string
+}
+
+type RefundFilter struct {
+	ChargeID        string
+	PaymentIntentID string
+	InvoiceID       string
+	CustomerID      string
+}
+
+type CreditNoteFilter struct {
+	InvoiceID  string
+	CustomerID string
 }
 
 type PortalState struct {

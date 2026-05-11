@@ -194,15 +194,16 @@ func (s *Service) ReplayEvent(ctx context.Context, eventID string, opts ReplayOp
 		return nil, err
 	}
 	deliveryOpts := DeliveryOptions{
-		Duplicate:         opts.Duplicate,
-		Delay:             opts.Delay,
-		OutOfOrder:        opts.OutOfOrder,
-		Replay:            true,
-		ResponseStatus:    opts.ResponseStatus,
-		ResponseBody:      opts.ResponseBody,
-		SimulatedError:    opts.SimulatedError,
-		SimulatedTimeout:  opts.SimulatedTimeout,
-		SignatureMismatch: opts.SignatureMismatch,
+		Duplicate:          opts.Duplicate,
+		Delay:              opts.Delay,
+		OutOfOrder:         opts.OutOfOrder,
+		Replay:             true,
+		ResponseStatus:     opts.ResponseStatus,
+		ResponseBody:       opts.ResponseBody,
+		SimulatedError:     opts.SimulatedError,
+		SimulatedTimeout:   opts.SimulatedTimeout,
+		SignatureMismatch:  opts.SignatureMismatch,
+		SimulateAppFailure: opts.SimulateAppFailure,
 	}
 	attempts, err := s.createAttempts(ctx, event, endpoints, deliveryOpts)
 	if err != nil {
@@ -235,6 +236,9 @@ func (s *Service) createAttempts(ctx context.Context, event Event, endpoints []E
 	if err := validateDeliveryOptions(opts); err != nil {
 		return nil, err
 	}
+	if opts.SimulateAppFailure != nil {
+		return s.createFailureInjectedAttempts(ctx, event, endpoints, opts)
+	}
 	duplicates := opts.Duplicate
 	if duplicates <= 0 {
 		duplicates = 1
@@ -257,7 +261,48 @@ func validateDeliveryOptions(opts DeliveryOptions) error {
 	if opts.ResponseStatus != 0 && (opts.ResponseStatus < 100 || opts.ResponseStatus > 599) {
 		return fmt.Errorf("%w: response status must be between 100 and 599", ErrInvalidInput)
 	}
+	if opts.SimulateAppFailure != nil {
+		if opts.SimulateAppFailure.Status < 500 || opts.SimulateAppFailure.Status > 599 {
+			return fmt.Errorf("%w: simulate_app_failure.status must be between 500 and 599", ErrInvalidInput)
+		}
+	}
 	return nil
+}
+
+func (s *Service) createFailureInjectedAttempts(ctx context.Context, event Event, endpoints []Endpoint, opts DeliveryOptions) ([]DeliveryAttempt, error) {
+	failure := *opts.SimulateAppFailure
+	if failure.FailFirstNAttempts <= 0 {
+		failure.FailFirstNAttempts = 1
+	}
+	var attempts []DeliveryAttempt
+	for _, endpoint := range endpoints {
+		for i := 0; i < failure.FailFirstNAttempts; i++ {
+			failOpts := opts
+			failOpts.ResponseStatus = failure.Status
+			failOpts.ResponseBody = failure.Body
+			failOpts.SimulatedError = ""
+			failOpts.SimulatedTimeout = false
+			failOpts.NoRetrySchedule = true
+			attempt, err := s.createAttempt(ctx, event, endpoint, failOpts, i)
+			if err != nil {
+				return attempts, err
+			}
+			attempts = append(attempts, attempt)
+		}
+		successOpts := opts
+		successOpts.ResponseStatus = 0
+		successOpts.ResponseBody = ""
+		successOpts.SimulatedError = ""
+		successOpts.SimulatedTimeout = false
+		successOpts.NoRetrySchedule = false
+		successOpts.SimulateAppFailure = nil
+		attempt, err := s.createAttempt(ctx, event, endpoint, successOpts, failure.FailFirstNAttempts)
+		if err != nil {
+			return attempts, err
+		}
+		attempts = append(attempts, attempt)
+	}
+	return attempts, nil
 }
 
 func (s *Service) createAttempt(ctx context.Context, event Event, endpoint Endpoint, opts DeliveryOptions, duplicateIndex int) (DeliveryAttempt, error) {
@@ -289,6 +334,13 @@ func (s *Service) createAttempt(ctx context.Context, event Event, endpoint Endpo
 	}
 	if opts.SignatureMismatch {
 		metadata["signature_mismatch"] = "true"
+	}
+	if opts.SimulateAppFailure != nil {
+		metadata["simulate_app_failure"] = "true"
+		metadata["fail_first_n_attempts"] = fmt.Sprintf("%d", opts.SimulateAppFailure.FailFirstNAttempts)
+		if duplicateIndex < opts.SimulateAppFailure.FailFirstNAttempts {
+			metadata["simulated_attempt"] = "true"
+		}
 	}
 
 	signatureHeader := SignatureHeader(endpoint.Secret, scheduledAt, event.RawPayload)
@@ -334,11 +386,17 @@ func (s *Service) recordSimulatedAttempt(ctx context.Context, endpoint Endpoint,
 	if opts.SimulatedTimeout {
 		attempt.Status = StatusFailed
 		attempt.Error = "simulated timeout"
+		if opts.NoRetrySchedule {
+			return s.createDeliveryAttempt(ctx, attempt)
+		}
 		return s.recordRetry(ctx, endpoint, attempt)
 	}
 	if opts.SimulatedError != "" {
 		attempt.Status = StatusFailed
 		attempt.Error = opts.SimulatedError
+		if opts.NoRetrySchedule {
+			return s.createDeliveryAttempt(ctx, attempt)
+		}
 		return s.recordRetry(ctx, endpoint, attempt)
 	}
 
@@ -352,6 +410,9 @@ func (s *Service) recordSimulatedAttempt(ctx context.Context, endpoint Endpoint,
 	attempt.Error = http.StatusText(attempt.ResponseStatus)
 	if attempt.Error == "" {
 		attempt.Error = fmt.Sprintf("HTTP %d", attempt.ResponseStatus)
+	}
+	if opts.NoRetrySchedule {
+		return s.createDeliveryAttempt(ctx, attempt)
 	}
 	return s.recordRetry(ctx, endpoint, attempt)
 }
@@ -487,7 +548,7 @@ func DefaultBackoff(endpoint Endpoint, attemptNumber int) time.Duration {
 }
 
 func hasDeliveryOverride(opts DeliveryOptions) bool {
-	return opts.Duplicate > 1 || opts.Delay > 0 || opts.OutOfOrder || hasSimulatedDeliveryResult(opts) || opts.SignatureMismatch
+	return opts.Duplicate > 1 || opts.Delay > 0 || opts.OutOfOrder || hasSimulatedDeliveryResult(opts) || opts.SignatureMismatch || opts.SimulateAppFailure != nil
 }
 
 func deliveryMetadata(opts DeliveryOptions) map[string]string {
@@ -515,6 +576,11 @@ func deliveryMetadata(opts DeliveryOptions) map[string]string {
 	}
 	if opts.SignatureMismatch {
 		metadata["signature_mismatch"] = "true"
+	}
+	if opts.SimulateAppFailure != nil {
+		metadata["simulate_app_failure"] = "true"
+		metadata["response_status"] = fmt.Sprintf("%d", opts.SimulateAppFailure.Status)
+		metadata["fail_first_n_attempts"] = fmt.Sprintf("%d", opts.SimulateAppFailure.FailFirstNAttempts)
 	}
 	return metadata
 }

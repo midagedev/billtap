@@ -79,7 +79,7 @@ The scorecard evidence should state:
 - imported/skipped/unsupported/mismatch/error counts
 - whether `passed` is `true`
 
-Current scorecard evidence on 2026-05-10:
+Current scorecard evidence on 2026-05-11:
 
 - Scorecard version: `l3-public-readiness-v7`
 - Scorecard result: `imported=49 skipped=1 unsupported=1 mismatch=0 error=0`

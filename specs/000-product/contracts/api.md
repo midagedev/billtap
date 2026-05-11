@@ -105,6 +105,40 @@ the current release-compatible subset.
 
 Returns deterministic sandbox card projections for known customers.
 
+### Refunds
+
+- `POST /v1/refunds`
+- `GET /v1/refunds/{id}`
+- `GET /v1/refunds`
+
+Refunds are local payment-history evidence. Creation accepts `charge`,
+`payment_intent`, or `invoice`, plus `amount`, optional `reason`, and metadata.
+It emits local `charge.refunded` and `charge.refund.updated` events, but does
+not model settlement, balance transactions, disputes, or failed refund
+processing.
+
+### Credit Notes
+
+- `POST /v1/credit_notes`
+- `GET /v1/credit_notes/{id}`
+- `GET /v1/credit_notes`
+
+Credit notes are local invoice-history evidence. Creation accepts `invoice`,
+`amount`, optional `reason`, and metadata. It emits `credit_note.created`, but
+does not model line-level tax/discount accounting, PDF rendering, or voiding.
+
+### Test Clocks
+
+- `POST /v1/test_helpers/test_clocks`
+- `GET /v1/test_helpers/test_clocks/{id}`
+- `GET /v1/test_helpers/test_clocks`
+- `POST /v1/test_helpers/test_clocks/{id}/advance`
+
+Test clocks are persisted local clocks for deterministic lifecycle simulation.
+Customers and subscriptions can be attached through `test_clock`. Advancing a
+clock processes due trials, renewals, configured renewal failures, and
+period-end cancellations for attached objects.
+
 ### Billing Portal Sessions
 
 - `POST /v1/billing_portal/sessions`
@@ -117,6 +151,7 @@ Returns a Billtap hosted portal URL for a known customer.
 - `GET /v1/webhook_endpoints/{id}`
 - `GET /v1/webhook_endpoints`
 - `POST /v1/webhook_endpoints/{id}`
+- `PATCH /v1/webhook_endpoints/{id}`
 - `DELETE /v1/webhook_endpoints/{id}`
 
 ### Events
@@ -159,6 +194,13 @@ signature HMAC values.
 Replay a webhook event. Records `webhook.replay` in the audit log and returns
 redacted delivery attempt evidence.
 
+Replay accepts reliability controls such as duplicate delivery, out-of-order
+delivery, signature mismatch, forced response status, and
+`simulate_app_failure` with `status`, `fail_first_n_attempts`, and optional
+`body`. Simulated app failures record failed delivery attempts without calling
+the app endpoint for the injected failures, then deliver the real replay
+attempt after the configured failures are exhausted.
+
 ### `POST /api/debug-bundles`
 
 Create a debug bundle.
@@ -172,7 +214,10 @@ Supported fixture sections:
 - `customers`
 - `catalog.products`
 - `catalog.prices`
+- `test_clocks`
 - `subscriptions`
+- `refunds`
+- `credit_notes`
 - `assertions`
 
 Billtap tags created objects with fixture metadata:
@@ -185,6 +230,28 @@ Billtap tags created objects with fixture metadata:
 Subscription fixtures are created through the same checkout-completion path as
 normal billing flows, so subscriptions, invoices, payment intents, checkout
 sessions, and timeline evidence remain consistent.
+When the HTTP fixture apply API is used, Billtap also creates seeded webhook
+events for the local checkout, subscription, invoice, payment-intent, refund,
+and credit-note evidence so tests can list and replay those events through the
+same `/v1/events` and `/api/events/{id}/replay` paths.
+
+Fixture-provided IDs are preserved for seeded objects. Fixtures also tag
+objects with `billtap_fixture_ref`, and the resolve endpoint below can map a
+fixture ref to the generated or stable customer, subscription, invoice, payment
+intent, checkout session, product, and price IDs.
+
+### `GET /api/fixtures/resolve`
+
+Resolve fixture-backed objects. Query fields:
+
+- `ref`
+- `id`
+- `lookup_key` / `lookupKey`
+- `runId`
+- `fixture` / `fixtureName`
+- `namespace`
+
+Returns the matching local IDs for the seeded object graph.
 
 ### `GET /api/fixtures/snapshot`
 

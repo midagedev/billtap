@@ -221,14 +221,14 @@ func (p params) validateUnixTimestampOrNow(key string) error {
 
 func validateCustomerCreate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:       []string{"id", "email", "name"},
+		Allowed:       []string{"id", "email", "name", "test_clock"},
 		AllowMetadata: true,
 	})
 }
 
 func validateCustomerUpdate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:       []string{"email", "name"},
+		Allowed:       []string{"email", "name", "test_clock"},
 		AllowMetadata: true,
 	})
 }
@@ -347,6 +347,7 @@ func validateSubscriptionCreate(p params) error {
 			"cancel_at",
 			"billing_cycle_anchor",
 			"outcome",
+			"test_clock",
 		},
 		AllowedRegex: []*regexp.Regexp{subscriptionItemRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
@@ -471,6 +472,41 @@ func validateInvoicePay(p params) error {
 	})
 }
 
+func validateRefundCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"charge",
+			"payment_intent",
+			"invoice",
+			"customer",
+			"amount",
+			"currency",
+			"reason",
+		},
+		RequiredAny:   [][]string{{"charge", "payment_intent", "invoice"}},
+		Int64Params:   []string{"amount"},
+		Positive:      []string{"amount"},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	if !p.has("amount") {
+		return missingParam("amount")
+	}
+	return nil
+}
+
+func validateCreditNoteCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"id", "invoice", "customer", "amount", "currency", "reason"},
+		Required:      []string{"invoice", "amount"},
+		Int64Params:   []string{"amount"},
+		Positive:      []string{"amount"},
+		AllowMetadata: true,
+	})
+}
+
 func validatePaymentIntentConfirm(p params) error {
 	return p.validate(paramSpec{
 		Allowed: []string{
@@ -552,6 +588,23 @@ func validateSetupIntentCancel(p params) error {
 	})
 }
 
+func validateTestClockCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed:     []string{"id", "name", "frozen_time", "frozenTime"},
+		RequiredAny: [][]string{{"frozen_time", "frozenTime"}},
+	}); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateTestClockAdvance(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"frozen_time", "frozenTime"},
+		RequiredAny: [][]string{{"frozen_time", "frozenTime"}},
+	})
+}
+
 func validateBillingPortalSessionCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:     []string{"customer", "customer_id", "return_url"},
@@ -571,11 +624,11 @@ func validateWebhookEndpointCreate(p params) error {
 
 func validateWebhookEndpointUpdate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:      []string{"url", "secret", "retry_max_attempts", "active"},
+		Allowed:      []string{"url", "secret", "retry_max_attempts", "active", "enabled"},
 		AllowedRegex: []*regexp.Regexp{enabledEventsParamRE, retryBackoffParamRE},
 		Int64Params:  []string{"retry_max_attempts"},
 		Positive:     []string{"retry_max_attempts"},
-		BoolParams:   []string{"active"},
+		BoolParams:   []string{"active", "enabled"},
 	})
 }
 

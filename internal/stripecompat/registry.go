@@ -177,6 +177,12 @@ func DefaultClaims() []Claim {
 	add(http.MethodGet, "/v1/invoices/{id}", statefulL3)
 	add(http.MethodPost, "/v1/invoices/{id}/pay", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"invoices.pay.failed_invoice_succeeds", "invoices.pay.failed_invoice_declines_again"}, WebhookEvents: []string{"payment_intent.succeeded", "payment_intent.payment_failed", "invoice.payment_succeeded", "invoice.payment_failed", "invoice.paid", "customer.subscription.updated"}, Risks: []string{"local retry/payment mutation only; finalize, send, void, collection, and dunning automation are not modeled"}})
 	add(http.MethodPost, "/v1/invoices/create_preview", Claim{Level: "L2", Risks: []string{"zero-value local smoke-test invoice; no full proration model"}})
+	add(http.MethodGet, "/v1/refunds", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"charge.refunded", "charge.refund.updated"}, Risks: []string{"local refund evidence only; charges, balances, payouts, and disputes are not modeled"}})
+	add(http.MethodPost, "/v1/refunds", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"charge.refunded", "charge.refund.updated"}, Risks: []string{"local refund evidence only; charges, balances, payouts, and disputes are not modeled"}})
+	add(http.MethodGet, "/v1/refunds/{id}", Claim{Level: "L3", Stateful: true})
+	add(http.MethodGet, "/v1/credit_notes", Claim{Level: "L2", Stateful: true, WebhookEvents: []string{"credit_note.created"}, Risks: []string{"local credit note evidence only; line/tax/customer-balance math is not modeled"}})
+	add(http.MethodPost, "/v1/credit_notes", Claim{Level: "L2", Stateful: true, WebhookEvents: []string{"credit_note.created"}, Risks: []string{"local credit note evidence only; line/tax/customer-balance math is not modeled"}})
+	add(http.MethodGet, "/v1/credit_notes/{id}", Claim{Level: "L2", Stateful: true})
 
 	add(http.MethodGet, "/v1/payment_intents", statefulL3)
 	add(http.MethodPost, "/v1/payment_intents", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"payment_intents.create.confirm.succeeds", "payment_intents.confirm.card_decline"}, Risks: []string{"local state machine only; no card processing or full PaymentIntent parameter parity"}})
@@ -195,9 +201,14 @@ func DefaultClaims() []Claim {
 		add(method, "/v1/webhook_endpoints", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
 		add(method, "/v1/webhook_endpoints/{id}", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
 	}
+	add(http.MethodPatch, "/v1/webhook_endpoints/{id}", Claim{Level: "L5", Stateful: true, Risks: []string{"Billtap accepts PATCH as a local mutation convenience in addition to Stripe-style POST update"}})
 	add(http.MethodDelete, "/v1/webhook_endpoints/{id}", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
 	add(http.MethodGet, "/v1/events", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
 	add(http.MethodGet, "/v1/events/{id}", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})
+	add(http.MethodGet, "/v1/test_helpers/test_clocks", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted", "invoice.created", "invoice.paid", "invoice.payment_failed"}, Risks: []string{"deterministic local clock subset; not full Stripe test-clock attachment semantics"}})
+	add(http.MethodPost, "/v1/test_helpers/test_clocks", Claim{Level: "L3", Stateful: true, Risks: []string{"deterministic local clock subset; not full Stripe test-clock attachment semantics"}})
+	add(http.MethodGet, "/v1/test_helpers/test_clocks/{id}", Claim{Level: "L3", Stateful: true})
+	add(http.MethodPost, "/v1/test_helpers/test_clocks/{id}/advance", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted", "invoice.created", "invoice.paid", "invoice.payment_failed"}})
 
 	return claims
 }

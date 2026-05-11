@@ -55,6 +55,16 @@ type Repository interface {
 	GetSetupIntent(context.Context, string) (SetupIntent, error)
 	UpdateSetupIntent(context.Context, SetupIntent, []TimelineEntry) (SetupIntent, error)
 	ListSetupIntents(context.Context) ([]SetupIntent, error)
+	CreateTestClock(context.Context, TestClock) (TestClock, error)
+	GetTestClock(context.Context, string) (TestClock, error)
+	ListTestClocks(context.Context) ([]TestClock, error)
+	UpdateTestClock(context.Context, TestClock) (TestClock, error)
+	CreateRefund(context.Context, Refund, []TimelineEntry) (Refund, error)
+	GetRefund(context.Context, string) (Refund, error)
+	ListRefundsFiltered(context.Context, RefundFilter) ([]Refund, error)
+	CreateCreditNote(context.Context, CreditNote, []TimelineEntry) (CreditNote, error)
+	GetCreditNote(context.Context, string) (CreditNote, error)
+	ListCreditNotesFiltered(context.Context, CreditNoteFilter) ([]CreditNote, error)
 
 	Timeline(context.Context, TimelineFilter) ([]TimelineEntry, error)
 	RecordTimeline(context.Context, TimelineEntry) error
@@ -337,10 +347,19 @@ func (s *Service) ListSubscriptions(ctx context.Context) ([]Subscription, error)
 }
 
 type SubscriptionPatch struct {
-	Items             []LineItem
-	ReplaceItems      bool
-	Metadata          map[string]string
-	CancelAtPeriodEnd *bool
+	Items              []LineItem
+	ReplaceItems       bool
+	Metadata           map[string]string
+	CancelAtPeriodEnd  *bool
+	Status             *string
+	CurrentPeriodStart *time.Time
+	CurrentPeriodEnd   *time.Time
+	CanceledAt         *time.Time
+	ClearCanceledAt    bool
+	LatestInvoiceID    *string
+	TimelineSource     string
+	TimelineAction     string
+	TimelineMessage    string
 }
 
 func (s *Service) PatchSubscription(ctx context.Context, subscriptionID string, patch SubscriptionPatch) (Subscription, error) {
@@ -357,8 +376,29 @@ func (s *Service) PatchSubscription(ctx context.Context, subscriptionID string, 
 	if patch.Metadata != nil {
 		sub.Metadata = copyMap(sub.Metadata)
 		for key, value := range patch.Metadata {
-			sub.Metadata[key] = value
+			if value == "" {
+				delete(sub.Metadata, key)
+			} else {
+				sub.Metadata[key] = value
+			}
 		}
+	}
+	if patch.Status != nil {
+		sub.Status = strings.ToLower(strings.TrimSpace(*patch.Status))
+	}
+	if patch.CurrentPeriodStart != nil {
+		sub.CurrentPeriodStart = *patch.CurrentPeriodStart
+	}
+	if patch.CurrentPeriodEnd != nil {
+		sub.CurrentPeriodEnd = *patch.CurrentPeriodEnd
+	}
+	if patch.LatestInvoiceID != nil {
+		sub.LatestInvoiceID = strings.TrimSpace(*patch.LatestInvoiceID)
+	}
+	if patch.ClearCanceledAt {
+		sub.CanceledAt = nil
+	} else if patch.CanceledAt != nil {
+		sub.CanceledAt = patch.CanceledAt
 	}
 	if patch.CancelAtPeriodEnd != nil {
 		sub.Metadata = copyMap(sub.Metadata)
@@ -382,12 +422,15 @@ func (s *Service) PatchSubscription(ctx context.Context, subscriptionID string, 
 	now := s.now()
 	sub.Metadata = copyMap(sub.Metadata)
 	sub.Metadata["stripe_compat_updated_at"] = now.Format(time.RFC3339Nano)
+	action := firstNonEmpty(patch.TimelineAction, "customer.subscription.updated")
+	message := firstNonEmpty(patch.TimelineMessage, "Stripe-compatible subscription updated")
+	source := firstNonEmpty(patch.TimelineSource, "stripe_compat")
 	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{portalTimeline(
 		"stripe_compat_update_"+sub.ID+"_"+now.Format(time.RFC3339Nano),
-		"customer.subscription.updated",
-		"Stripe-compatible subscription updated",
+		action,
+		message,
 		sub,
-		map[string]string{"source": "stripe_compat"},
+		map[string]string{"source": source, "status": sub.Status},
 		now,
 	)})
 }
@@ -483,15 +526,22 @@ func (s *Service) PayInvoice(ctx context.Context, invoiceID string, opts Invoice
 }
 
 func (s *Service) AdvanceClock(ctx context.Context, at time.Time) (ClockAdvanceResult, error) {
+	return s.advanceClock(ctx, at, "")
+}
+
+func (s *Service) advanceClock(ctx context.Context, at time.Time, testClockID string) (ClockAdvanceResult, error) {
 	if at.IsZero() {
 		at = s.now()
 	}
-	result := ClockAdvanceResult{Object: "clock_advance", AdvancedTo: at}
+	result := ClockAdvanceResult{Object: "clock_advance", AdvancedTo: at, TestClockID: strings.TrimSpace(testClockID)}
 	subscriptions, err := s.repo.ListSubscriptions(ctx)
 	if err != nil {
 		return result, err
 	}
 	for _, sub := range subscriptions {
+		if result.TestClockID != "" && !s.subscriptionAttachedToClock(ctx, sub, result.TestClockID) {
+			continue
+		}
 		if sub.Status == "canceled" {
 			result.Skipped = append(result.Skipped, sub.ID)
 			continue
@@ -512,6 +562,16 @@ func (s *Service) AdvanceClock(ctx context.Context, at time.Time) (ClockAdvanceR
 				result.Skipped = append(result.Skipped, current.ID)
 				break
 			}
+			if current.Status == "trialing" {
+				activated, err := s.activateTrialSubscriptionAtClock(ctx, current, current.CurrentPeriodEnd)
+				if err != nil {
+					return result, err
+				}
+				result.Activated = append(result.Activated, activated)
+				result.ActivatedCount++
+				current = activated
+				continue
+			}
 			renewal, err := s.renewSubscription(ctx, current, current.CurrentPeriodEnd)
 			if err != nil {
 				return result, err
@@ -522,6 +582,179 @@ func (s *Service) AdvanceClock(ctx context.Context, at time.Time) (ClockAdvanceR
 		}
 	}
 	return result, nil
+}
+
+func (s *Service) CreateTestClock(ctx context.Context, in TestClock) (TestClock, error) {
+	now := s.now()
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = id("clock")
+	}
+	in.Object = ObjectTestClock
+	in.Status = firstNonEmpty(strings.TrimSpace(in.Status), "ready")
+	if in.FrozenTime.IsZero() {
+		in.FrozenTime = now
+	}
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = now
+	}
+	if in.UpdatedAt.IsZero() {
+		in.UpdatedAt = in.CreatedAt
+	}
+	return s.repo.CreateTestClock(ctx, in)
+}
+
+func (s *Service) GetTestClock(ctx context.Context, clockID string) (TestClock, error) {
+	return s.repo.GetTestClock(ctx, clockID)
+}
+
+func (s *Service) ListTestClocks(ctx context.Context) ([]TestClock, error) {
+	return s.repo.ListTestClocks(ctx)
+}
+
+func (s *Service) UpdateTestClock(ctx context.Context, clock TestClock) (TestClock, error) {
+	clock.UpdatedAt = s.now()
+	if strings.TrimSpace(clock.Status) == "" {
+		clock.Status = "ready"
+	}
+	return s.repo.UpdateTestClock(ctx, clock)
+}
+
+func (s *Service) AdvanceTestClock(ctx context.Context, clockID string, frozenTime time.Time) (TestClock, ClockAdvanceResult, error) {
+	clock, err := s.repo.GetTestClock(ctx, clockID)
+	if err != nil {
+		return TestClock{}, ClockAdvanceResult{}, err
+	}
+	if frozenTime.IsZero() {
+		return TestClock{}, ClockAdvanceResult{}, fmt.Errorf("%w: frozen_time is required", ErrInvalidInput)
+	}
+	if frozenTime.Before(clock.FrozenTime) {
+		return TestClock{}, ClockAdvanceResult{}, fmt.Errorf("%w: frozen_time must not move backwards", ErrInvalidInput)
+	}
+	clock.Status = "ready"
+	clock.FrozenTime = frozenTime
+	clock.UpdatedAt = s.now()
+	updated, err := s.repo.UpdateTestClock(ctx, clock)
+	if err != nil {
+		return TestClock{}, ClockAdvanceResult{}, err
+	}
+	result, err := s.advanceClock(ctx, frozenTime, clock.ID)
+	if err != nil {
+		return updated, result, err
+	}
+	return updated, result, nil
+}
+
+func (s *Service) CreateRefund(ctx context.Context, in Refund) (Refund, error) {
+	if in.Amount <= 0 {
+		return Refund{}, fmt.Errorf("%w: amount must be at least 1", ErrInvalidInput)
+	}
+	now := s.now()
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = id("re")
+	}
+	in.Object = ObjectRefund
+	in.Status = firstNonEmpty(strings.TrimSpace(in.Status), "succeeded")
+	in.Currency = strings.ToLower(firstNonEmpty(strings.TrimSpace(in.Currency), "usd"))
+	in.ChargeID = strings.TrimSpace(in.ChargeID)
+	in.PaymentIntentID = strings.TrimSpace(in.PaymentIntentID)
+	in.InvoiceID = strings.TrimSpace(in.InvoiceID)
+	if in.PaymentIntentID != "" {
+		intent, err := s.repo.GetPaymentIntent(ctx, in.PaymentIntentID)
+		if err != nil {
+			return Refund{}, err
+		}
+		in.CustomerID = firstNonEmpty(in.CustomerID, intent.CustomerID)
+		in.InvoiceID = firstNonEmpty(in.InvoiceID, intent.InvoiceID)
+		in.Currency = firstNonEmpty(in.Currency, intent.Currency)
+	}
+	if in.InvoiceID != "" {
+		invoice, err := s.repo.GetInvoice(ctx, in.InvoiceID)
+		if err != nil {
+			return Refund{}, err
+		}
+		in.CustomerID = firstNonEmpty(in.CustomerID, invoice.CustomerID)
+		in.Currency = firstNonEmpty(in.Currency, invoice.Currency)
+		if in.PaymentIntentID == "" {
+			in.PaymentIntentID = invoice.PaymentIntentID
+		}
+	}
+	if in.ChargeID == "" && in.PaymentIntentID != "" {
+		in.ChargeID = "ch_" + sanitizeID(in.PaymentIntentID)
+	}
+	if in.ChargeID == "" {
+		return Refund{}, fmt.Errorf("%w: charge or payment_intent is required", ErrInvalidInput)
+	}
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = now
+	}
+	return s.repo.CreateRefund(ctx, in, []TimelineEntry{billingTimelineEntry(
+		"refund_"+in.ID,
+		"charge.refunded",
+		"Charge refunded",
+		ObjectRefund,
+		in.ID,
+		in.CustomerID,
+		"",
+		"",
+		in.InvoiceID,
+		in.PaymentIntentID,
+		map[string]string{"source": "refund.create", "charge": in.ChargeID, "status": in.Status, "reason": in.Reason},
+		in.CreatedAt,
+	)})
+}
+
+func (s *Service) GetRefund(ctx context.Context, refundID string) (Refund, error) {
+	return s.repo.GetRefund(ctx, refundID)
+}
+
+func (s *Service) ListRefunds(ctx context.Context, filter RefundFilter) ([]Refund, error) {
+	return s.repo.ListRefundsFiltered(ctx, filter)
+}
+
+func (s *Service) CreateCreditNote(ctx context.Context, in CreditNote) (CreditNote, error) {
+	if strings.TrimSpace(in.InvoiceID) == "" {
+		return CreditNote{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
+	}
+	if in.Amount <= 0 {
+		return CreditNote{}, fmt.Errorf("%w: amount must be at least 1", ErrInvalidInput)
+	}
+	invoice, err := s.repo.GetInvoice(ctx, in.InvoiceID)
+	if err != nil {
+		return CreditNote{}, err
+	}
+	now := s.now()
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = id("cn")
+	}
+	in.Object = ObjectCreditNote
+	in.Status = firstNonEmpty(strings.TrimSpace(in.Status), "issued")
+	in.CustomerID = firstNonEmpty(in.CustomerID, invoice.CustomerID)
+	in.Currency = strings.ToLower(firstNonEmpty(strings.TrimSpace(in.Currency), invoice.Currency, "usd"))
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = now
+	}
+	return s.repo.CreateCreditNote(ctx, in, []TimelineEntry{billingTimelineEntry(
+		"credit_note_"+in.ID,
+		"credit_note.created",
+		"Credit note created",
+		ObjectCreditNote,
+		in.ID,
+		in.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		in.InvoiceID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "credit_note.create", "status": in.Status, "reason": in.Reason},
+		in.CreatedAt,
+	)})
+}
+
+func (s *Service) GetCreditNote(ctx context.Context, creditNoteID string) (CreditNote, error) {
+	return s.repo.GetCreditNote(ctx, creditNoteID)
+}
+
+func (s *Service) ListCreditNotes(ctx context.Context, filter CreditNoteFilter) ([]CreditNote, error) {
+	return s.repo.ListCreditNotesFiltered(ctx, filter)
 }
 
 func (s *Service) GetPaymentIntent(ctx context.Context, id string) (PaymentIntent, error) {
@@ -1010,6 +1243,38 @@ func (s *Service) cancelSubscriptionAtClock(ctx context.Context, sub Subscriptio
 	)})
 }
 
+func (s *Service) activateTrialSubscriptionAtClock(ctx context.Context, sub Subscription, at time.Time) (Subscription, error) {
+	periodStart := sub.CurrentPeriodEnd
+	if periodStart.IsZero() {
+		periodStart = at
+	}
+	periodEnd, err := s.nextPeriodEnd(ctx, sub.Items, periodStart)
+	if err != nil {
+		return Subscription{}, err
+	}
+	sub.Status = "active"
+	sub.CurrentPeriodStart = periodStart
+	sub.CurrentPeriodEnd = periodEnd
+	sub.Metadata = copyMap(sub.Metadata)
+	sub.Metadata["billtap_trial_activated_at"] = at.Format(time.RFC3339Nano)
+	sub.Metadata["billtap_last_period_start"] = periodStart.Format(time.RFC3339Nano)
+	sub.Metadata["billtap_last_period_end"] = periodEnd.Format(time.RFC3339Nano)
+	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{billingTimelineEntry(
+		"clock_trial_activate_"+sub.ID+"_"+at.Format(time.RFC3339Nano),
+		"customer.subscription.updated",
+		"Trial subscription activated",
+		ObjectSubscription,
+		sub.ID,
+		sub.CustomerID,
+		"",
+		sub.ID,
+		sub.LatestInvoiceID,
+		"",
+		map[string]string{"source": "clock.advance", "status": sub.Status, "previous_status": "trialing"},
+		at,
+	)})
+}
+
 func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at time.Time) (InvoicePaymentResult, error) {
 	total, currency, err := s.subscriptionTotal(ctx, sub.Items)
 	if err != nil {
@@ -1031,6 +1296,8 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 	sub.Metadata["billtap_last_renewal_period_start"] = periodStart.Format(time.RFC3339Nano)
 	sub.Metadata["billtap_last_renewal_period_end"] = periodEnd.Format(time.RFC3339Nano)
 
+	renewalOutcome := renewalOutcome(sub.Metadata)
+	renewalFailed := renewalOutcome != ""
 	invoice := Invoice{
 		ID:             id("in"),
 		Object:         ObjectInvoice,
@@ -1045,6 +1312,15 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		AttemptCount:   1,
 		CreatedAt:      at,
 	}
+	if renewalFailed {
+		invoice.Status = "open"
+		invoice.AmountDue = total
+		invoice.AmountPaid = 0
+		nextPaymentAttempt := at.Add(24 * time.Hour)
+		invoice.NextPaymentAttempt = &nextPaymentAttempt
+		sub.Status = renewalFailureSubscriptionStatus(renewalOutcome)
+		sub.Metadata["billtap_last_renewal_outcome"] = renewalOutcome
+	}
 	intent := PaymentIntent{
 		ID:              id("pi"),
 		Object:          ObjectPaymentIntent,
@@ -1057,6 +1333,17 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		PaymentMethodID: "pm_card_visa",
 		CreatedAt:       at,
 	}
+	if renewalFailed {
+		spec, ok := intentOutcomeSpec(renewalOutcome)
+		if !ok {
+			spec, _ = intentOutcomeSpec("card_declined")
+		}
+		intent.Status = spec.PaymentIntentStatus
+		intent.PaymentMethodID = firstNonEmpty(spec.PaymentMethodID, "pm_card_declined")
+		intent.FailureCode = spec.FailureCode
+		intent.DeclineCode = spec.DeclineCode
+		intent.FailureMessage = spec.FailureMessage
+	}
 	invoice.PaymentIntentID = intent.ID
 	sub.LatestInvoiceID = invoice.ID
 
@@ -1064,10 +1351,20 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		billingTimelineEntry("renewal_invoice_created_"+invoice.ID, "invoice.created", "Renewal invoice created", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
 		billingTimelineEntry("renewal_invoice_finalized_"+invoice.ID, "invoice.finalized", "Renewal invoice finalized", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
 		billingTimelineEntry("renewal_payment_intent_created_"+intent.ID, "payment_intent.created", "Renewal payment intent created", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": intent.Status}, at),
-		billingTimelineEntry("renewal_payment_intent_succeeded_"+intent.ID, "payment_intent.succeeded", "Renewal payment intent succeeded", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": intent.Status}, at),
-		billingTimelineEntry("renewal_invoice_payment_succeeded_"+invoice.ID, "invoice.payment_succeeded", "Renewal invoice payment succeeded", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
-		billingTimelineEntry("renewal_invoice_paid_"+invoice.ID, "invoice.paid", "Renewal invoice paid", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
-		billingTimelineEntry("renewal_subscription_updated_"+sub.ID+"_"+invoice.ID, "customer.subscription.updated", "Subscription renewed", ObjectSubscription, sub.ID, sub.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": sub.Status}, at),
+	}
+	if renewalFailed {
+		timeline = append(timeline,
+			billingTimelineEntry("renewal_payment_intent_failed_"+intent.ID, paymentIntentEvent(intent.Status), "Renewal payment intent failed", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": intent.Status, "outcome": renewalOutcome}, at),
+			billingTimelineEntry("renewal_invoice_payment_failed_"+invoice.ID, "invoice.payment_failed", "Renewal invoice payment failed", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status, "outcome": renewalOutcome}, at),
+			billingTimelineEntry("renewal_subscription_past_due_"+sub.ID+"_"+invoice.ID, "customer.subscription.updated", "Subscription updated after renewal payment failure", ObjectSubscription, sub.ID, sub.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": sub.Status, "outcome": renewalOutcome}, at),
+		)
+	} else {
+		timeline = append(timeline,
+			billingTimelineEntry("renewal_payment_intent_succeeded_"+intent.ID, "payment_intent.succeeded", "Renewal payment intent succeeded", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": intent.Status}, at),
+			billingTimelineEntry("renewal_invoice_payment_succeeded_"+invoice.ID, "invoice.payment_succeeded", "Renewal invoice payment succeeded", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
+			billingTimelineEntry("renewal_invoice_paid_"+invoice.ID, "invoice.paid", "Renewal invoice paid", ObjectInvoice, invoice.ID, invoice.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": invoice.Status}, at),
+			billingTimelineEntry("renewal_subscription_updated_"+sub.ID+"_"+invoice.ID, "customer.subscription.updated", "Subscription renewed", ObjectSubscription, sub.ID, sub.CustomerID, "", sub.ID, invoice.ID, intent.ID, map[string]string{"source": "clock.advance", "status": sub.Status}, at),
+		)
 	}
 
 	sub, invoice, intent, err = s.repo.RecordSubscriptionRenewal(ctx, sub, invoice, intent, timeline)
@@ -1075,6 +1372,52 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		return InvoicePaymentResult{}, err
 	}
 	return InvoicePaymentResult{Invoice: invoice, Subscription: sub, PaymentIntent: intent}, nil
+}
+
+func (s *Service) subscriptionAttachedToClock(ctx context.Context, sub Subscription, clockID string) bool {
+	clockID = strings.TrimSpace(clockID)
+	if clockID == "" {
+		return true
+	}
+	for _, key := range []string{"test_clock", "testClock"} {
+		if strings.TrimSpace(sub.Metadata[key]) == clockID {
+			return true
+		}
+	}
+	customer, err := s.repo.GetCustomer(ctx, sub.CustomerID)
+	if err != nil {
+		return false
+	}
+	for _, key := range []string{"test_clock", "testClock"} {
+		if strings.TrimSpace(customer.Metadata[key]) == clockID {
+			return true
+		}
+	}
+	return false
+}
+
+func renewalOutcome(metadata map[string]string) string {
+	for _, key := range []string{"billtap_renewal_outcome", "renewal_outcome", "renewalOutcome"} {
+		value := strings.ToLower(strings.TrimSpace(metadata[key]))
+		switch value {
+		case "", "payment_succeeded", "succeeded", "success":
+			continue
+		case "payment_failed":
+			return "card_declined"
+		default:
+			return value
+		}
+	}
+	return ""
+}
+
+func renewalFailureSubscriptionStatus(outcome string) string {
+	switch strings.ToLower(strings.TrimSpace(outcome)) {
+	case "unpaid":
+		return "unpaid"
+	default:
+		return "past_due"
+	}
 }
 
 func (s *Service) subscriptionTotal(ctx context.Context, items []LineItem) (int64, string, error) {

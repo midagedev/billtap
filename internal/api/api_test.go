@@ -872,12 +872,6 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 		t.Fatalf("message=%q, want normalized known Stripe route", errBody.Error.Message)
 	}
 
-	refundStatus, refundBody := postFormStatus(t, handler, "/v1/refunds", url.Values{})
-	refundErr := decodeErrorBody(t, refundBody)
-	if refundStatus != http.StatusBadRequest || refundErr.Error.Code != "unsupported_endpoint" {
-		t.Fatalf("refund status=%d error=%#v, want known-route unsupported", refundStatus, refundErr.Error)
-	}
-
 	searchReq := httptest.NewRequest(http.MethodGet, "/v1/customers/search?query=email:'buyer@example.test'", nil)
 	searchReq.Header.Set("Request-Id", "req_known_search_unsupported")
 	searchRec := httptest.NewRecorder()
@@ -1990,7 +1984,7 @@ func TestSubscriptionUpdatePreservesItemsAndSupportsAdditiveSeatItems(t *testing
 		"id":                            {"prod_paid_update_plan"},
 		"name":                          {"Paid Update Plan"},
 		"metadata[productType]":         {"WORKSPACE_PLAN"},
-		"metadata[tenantId]":            {"dentbird"},
+		"metadata[tenantId]":            {"sample"},
 		"metadata[tier]":                {"STANDARD"},
 		"metadata[tierLevel]":           {"2"},
 		"metadata[basicSeat]":           {"1"},
@@ -2000,27 +1994,27 @@ func TestSubscriptionUpdatePreservesItemsAndSupportsAdditiveSeatItems(t *testing
 		"id":                    {"prod_paid_update_seat"},
 		"name":                  {"Paid Update Seat"},
 		"metadata[productType]": {"ADDITIONAL_SEAT"},
-		"metadata[tenantId]":    {"dentbird"},
+		"metadata[tenantId]":    {"sample"},
 	})
 	standardMonthly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
 		"product":             {plan.ID},
 		"currency":            {"usd"},
 		"unit_amount":         {"15000"},
-		"lookup_key":          {"dentbird_plan_standard_monthly"},
+		"lookup_key":          {"sample_plan_standard_monthly"},
 		"recurring[interval]": {"month"},
 	})
 	proYearly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
 		"product":             {plan.ID},
 		"currency":            {"usd"},
 		"unit_amount":         {"288000"},
-		"lookup_key":          {"dentbird_plan_premium_yearly"},
+		"lookup_key":          {"sample_plan_premium_yearly"},
 		"recurring[interval]": {"year"},
 	})
 	seatYearly := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
 		"product":             {seat.ID},
 		"currency":            {"usd"},
 		"unit_amount":         {"96000"},
-		"lookup_key":          {"dentbird_seat_yearly"},
+		"lookup_key":          {"sample_seat_yearly"},
 		"recurring[interval]": {"year"},
 	})
 
@@ -2178,20 +2172,20 @@ func TestFixtureApplySnapshotAndAssertAPI(t *testing.T) {
 func TestFixtureApplyPreservesStableBillingGraphIDs(t *testing.T) {
 	handler := newTestHandler(t)
 	pack := map[string]any{
-		"name":      "ds5-fixed-ids",
+		"name":      "sample-fixed-ids",
 		"runId":     "run-fixed-ids-1",
-		"namespace": "ds5",
+		"namespace": "sample-e2e",
 		"customers": []map[string]any{{
 			"id":       "cus_fixture_fixed",
 			"email":    "fixed@example.test",
-			"metadata": map[string]string{"tenantId": "dentbird"},
+			"metadata": map[string]string{"tenantId": "sample"},
 		}},
 		"products": []map[string]any{
 			{
 				"id":   "prod_fixture_plan",
 				"name": "Fixture Plan",
 				"metadata": map[string]string{
-					"tenantId":    "dentbird",
+					"tenantId":    "sample",
 					"productType": "WORKSPACE_PLAN",
 					"tier":        "PREMIUM",
 				},
@@ -2200,7 +2194,7 @@ func TestFixtureApplyPreservesStableBillingGraphIDs(t *testing.T) {
 				"id":   "prod_fixture_seat",
 				"name": "Fixture Seat",
 				"metadata": map[string]string{
-					"tenantId":    "dentbird",
+					"tenantId":    "sample",
 					"productType": "ADDITIONAL_SEAT",
 				},
 			},
@@ -2212,7 +2206,7 @@ func TestFixtureApplyPreservesStableBillingGraphIDs(t *testing.T) {
 				"currency":   "usd",
 				"unitAmount": 30000,
 				"interval":   "month",
-				"metadata":   map[string]string{"tenantId": "dentbird", "tier": "PREMIUM"},
+				"metadata":   map[string]string{"tenantId": "sample", "tier": "PREMIUM"},
 			},
 			{
 				"id":         "price_fixture_seat_monthly",
@@ -2220,7 +2214,7 @@ func TestFixtureApplyPreservesStableBillingGraphIDs(t *testing.T) {
 				"currency":   "usd",
 				"unitAmount": 10000,
 				"interval":   "month",
-				"metadata":   map[string]string{"tenantId": "dentbird"},
+				"metadata":   map[string]string{"tenantId": "sample"},
 			},
 		},
 		"subscriptions": []map[string]any{{
@@ -2234,7 +2228,7 @@ func TestFixtureApplyPreservesStableBillingGraphIDs(t *testing.T) {
 				{"price": "price_fixture_seat_monthly", "quantity": 2},
 			},
 			"metadata": map[string]string{
-				"tenantId":               "dentbird",
+				"tenantId":               "sample",
 				"manualExportLimitCount": "0",
 			},
 		}},
@@ -2333,6 +2327,383 @@ func TestFixtureApplyPreservesStableBillingGraphIDs(t *testing.T) {
 	}
 }
 
+func TestFixtureResolveStatusAndTestClockAdvance(t *testing.T) {
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+	handler := newTestHandler(t)
+	_ = postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"*"},
+	})
+	pack := map[string]any{
+		"name":      "sample-lifecycle",
+		"runId":     "run-lifecycle-1",
+		"namespace": "sample-e2e",
+		"test_clocks": []map[string]any{{
+			"id":          "clock_e2e_lifecycle",
+			"frozen_time": "2026-04-01T00:00:00Z",
+		}},
+		"customers": []map[string]any{
+			{"id": "cus_e2e_trial", "email": "trial@example.test", "test_clock": "clock_e2e_lifecycle", "metadata": map[string]string{"tenantId": "sample"}},
+			{"id": "cus_e2e_cancel", "email": "cancel@example.test", "metadata": map[string]string{"tenantId": "sample"}},
+			{"id": "cus_e2e_renew", "email": "renew@example.test", "metadata": map[string]string{"tenantId": "sample"}},
+			{"id": "cus_e2e_past_due", "email": "past-due@example.test", "metadata": map[string]string{"tenantId": "sample"}},
+		},
+		"products": []map[string]any{{
+			"id":       "prod_e2e_plan",
+			"name":     "Sample Pro",
+			"metadata": map[string]string{"tenantId": "sample"},
+		}},
+		"prices": []map[string]any{{
+			"id":          "price_e2e_plan_monthly",
+			"product":     "prod_e2e_plan",
+			"currency":    "usd",
+			"unit_amount": 30000,
+			"lookup_key":  "sample_plan_premium_monthly",
+			"interval":    "month",
+		}},
+		"subscriptions": []map[string]any{
+			{
+				"id":               "sub_e2e_trial",
+				"checkout_session": "cs_e2e_trial",
+				"invoice":          "in_e2e_trial",
+				"payment_intent":   "pi_e2e_trial",
+				"ref":              "trial-to-active",
+				"customer":         "cus_e2e_trial",
+				"price":            "price_e2e_plan_monthly",
+				"status":           "trialing",
+				"trial_start":      "2026-04-01T00:00:00Z",
+				"trial_end":        "2026-04-15T00:00:00Z",
+				"test_clock":       "clock_e2e_lifecycle",
+			},
+			{
+				"id":                   "sub_e2e_cancel",
+				"ref":                  "cancel-at-period-end",
+				"customer":             "cus_e2e_cancel",
+				"price":                "price_e2e_plan_monthly",
+				"status":               "active",
+				"current_period_start": "2026-04-01T00:00:00Z",
+				"current_period_end":   "2026-04-15T00:00:00Z",
+				"cancel_at_period_end": true,
+				"test_clock":           "clock_e2e_lifecycle",
+			},
+			{
+				"id":                   "sub_e2e_renew",
+				"ref":                  "renewal-success",
+				"customer":             "cus_e2e_renew",
+				"price":                "price_e2e_plan_monthly",
+				"status":               "active",
+				"current_period_start": "2026-04-01T00:00:00Z",
+				"current_period_end":   "2026-04-15T00:00:00Z",
+				"test_clock":           "clock_e2e_lifecycle",
+			},
+			{
+				"id":                    "sub_e2e_past_due",
+				"ref":                   "past-due-pro",
+				"customer":              "cus_e2e_past_due",
+				"price":                 "price_e2e_plan_monthly",
+				"status":                "past_due",
+				"latest_invoice_status": "open",
+				"metadata":              map[string]string{"tenantId": "sample"},
+			},
+		},
+	}
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if applied.Summary["test_clocks"] != 1 || applied.Summary["subscriptions"] != 4 {
+		t.Fatalf("apply summary = %#v", applied.Summary)
+	}
+
+	updated := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", map[string]any{
+		"name":  "sample-lifecycle",
+		"runId": "run-lifecycle-1",
+		"test_clocks": []map[string]any{{
+			"id":          "clock_e2e_lifecycle",
+			"name":        "Lifecycle clock updated",
+			"frozen_time": "2026-04-02T00:00:00Z",
+		}},
+	})
+	if len(updated.TestClocks) != 1 || updated.TestClocks[0].Name != "Lifecycle clock updated" || updated.TestClocks[0].FrozenTime.Format("2006-01-02") != "2026-04-02" {
+		t.Fatalf("updated test clock = %#v", updated.TestClocks)
+	}
+	directClockSub := postForm[struct {
+		ID                 string `json:"id"`
+		TestClock          string `json:"test_clock"`
+		CurrentPeriodStart int64  `json:"current_period_start"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {"cus_e2e_trial"},
+		"items[0][price]": {"price_e2e_plan_monthly"},
+		"test_clock":      {"clock_e2e_lifecycle"},
+	})
+	if directClockSub.ID == "" || directClockSub.TestClock != "clock_e2e_lifecycle" || directClockSub.CurrentPeriodStart != 1775088000 {
+		t.Fatalf("direct clock subscription = %#v, want creation at frozen clock time", directClockSub)
+	}
+	sessionsBeforeInvalidClock := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/checkout/sessions")
+	status, _ := postFormStatus(t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {"cus_e2e_trial"},
+		"items[0][price]": {"price_e2e_plan_monthly"},
+		"test_clock":      {"clock_missing"},
+	})
+	if status != http.StatusNotFound {
+		t.Fatalf("invalid test_clock subscription status = %d, want 404", status)
+	}
+	sessionsAfterInvalidClock := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/checkout/sessions")
+	if len(sessionsAfterInvalidClock.Data) != len(sessionsBeforeInvalidClock.Data) {
+		t.Fatalf("checkout sessions before=%d after=%d, invalid test_clock should not create session", len(sessionsBeforeInvalidClock.Data), len(sessionsAfterInvalidClock.Data))
+	}
+
+	createdEvents := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=customer.subscription.created")
+	if len(createdEvents.Data) == 0 {
+		t.Fatal("fixture apply did not create customer.subscription.created events")
+	}
+	replay := postJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/api/events/"+createdEvents.Data[0].ID+"/replay", map[string]any{
+		"duplicate": 1,
+	})
+	if len(replay.Data) == 0 {
+		t.Fatalf("fixture-created event replay = %#v, want delivery attempts", replay)
+	}
+
+	resolved := getJSON[fixtures.ResolveResult](t, handler, "/api/fixtures/resolve?ref=trial-to-active&runId=run-lifecycle-1")
+	if resolved.CustomerID != "cus_e2e_trial" || resolved.SubscriptionID != "sub_e2e_trial" || resolved.InvoiceID != "in_e2e_trial" || resolved.PaymentIntentID != "pi_e2e_trial" || resolved.CheckoutSessionID != "cs_e2e_trial" {
+		t.Fatalf("resolved = %#v, want stable fixture graph ids", resolved)
+	}
+	resolvedPrice := getJSON[fixtures.ResolveResult](t, handler, "/api/fixtures/resolve?lookup_key=sample_plan_premium_monthly&runId=run-lifecycle-1")
+	if resolvedPrice.PriceID != "price_e2e_plan_monthly" || resolvedPrice.ProductID != "prod_e2e_plan" {
+		t.Fatalf("resolved price = %#v, want lookup_key to resolve price/product", resolvedPrice)
+	}
+
+	filtered := getJSON[struct {
+		Data []struct {
+			ID       string            `json:"id"`
+			Metadata map[string]string `json:"metadata"`
+		} `json:"data"`
+	}](t, handler, "/v1/subscriptions?metadata[billtap_fixture_ref]=trial-to-active")
+	if len(filtered.Data) != 1 || filtered.Data[0].ID != "sub_e2e_trial" {
+		t.Fatalf("metadata filtered subscriptions = %#v", filtered.Data)
+	}
+
+	invoiceCreatedBefore := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=invoice.created")
+	advance := postForm[struct {
+		ID      string `json:"id"`
+		Status  string `json:"status"`
+		Billtap struct {
+			ActivatedCount int `json:"activated_count"`
+			CanceledCount  int `json:"canceled_count"`
+			Renewed        int `json:"renewed"`
+		} `json:"billtap_advance_result"`
+	}](t, handler, "/v1/test_helpers/test_clocks/clock_e2e_lifecycle/advance", url.Values{
+		"frozen_time": {"1776297600"},
+	})
+	if advance.ID != "clock_e2e_lifecycle" || advance.Status != "ready" || advance.Billtap.ActivatedCount != 1 || advance.Billtap.CanceledCount != 1 || advance.Billtap.Renewed != 1 {
+		t.Fatalf("advance = %#v, want one trial activation, one renewal, and one cancellation", advance)
+	}
+	invoiceCreatedAfter := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=invoice.created")
+	if len(invoiceCreatedAfter.Data) <= len(invoiceCreatedBefore.Data) {
+		t.Fatalf("invoice.created events before=%d after=%d, want renewal event emitted", len(invoiceCreatedBefore.Data), len(invoiceCreatedAfter.Data))
+	}
+	active := getJSON[struct {
+		Status string `json:"status"`
+	}](t, handler, "/v1/subscriptions/sub_e2e_trial")
+	if active.Status != "active" {
+		t.Fatalf("trial subscription status = %q, want active", active.Status)
+	}
+	canceled := getJSON[struct {
+		Status string `json:"status"`
+	}](t, handler, "/v1/subscriptions/sub_e2e_cancel")
+	if canceled.Status != "canceled" {
+		t.Fatalf("canceled subscription status = %q, want canceled", canceled.Status)
+	}
+	pastDue := getJSON[struct {
+		Status   string            `json:"status"`
+		Metadata map[string]string `json:"metadata"`
+	}](t, handler, "/v1/subscriptions/sub_e2e_past_due")
+	if pastDue.Status != "past_due" || pastDue.Metadata["latest_invoice_status"] != "open" {
+		t.Fatalf("past due subscription = %#v", pastDue)
+	}
+}
+
+func TestRefundCreditNoteAPIsAndEvents(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"refund@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"30000"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	completion := postJSON[struct {
+		Invoice       billing.Invoice       `json:"invoice"`
+		PaymentIntent billing.PaymentIntent `json:"payment_intent"`
+	}](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+
+	refund := postForm[struct {
+		ID            string `json:"id"`
+		Charge        string `json:"charge"`
+		Invoice       string `json:"invoice"`
+		PaymentIntent string `json:"payment_intent"`
+		Status        string `json:"status"`
+	}](t, handler, "/v1/refunds", url.Values{
+		"invoice": {completion.Invoice.ID},
+		"amount":  {"15000"},
+		"reason":  {"requested_by_customer"},
+	})
+	if refund.ID == "" || refund.Charge == "" || refund.Invoice != completion.Invoice.ID || refund.PaymentIntent != completion.PaymentIntent.ID || refund.Status != "succeeded" {
+		t.Fatalf("refund = %#v, want linked refund evidence", refund)
+	}
+
+	note := postForm[struct {
+		ID      string `json:"id"`
+		Invoice string `json:"invoice"`
+		Status  string `json:"status"`
+	}](t, handler, "/v1/credit_notes", url.Values{
+		"invoice": {completion.Invoice.ID},
+		"amount":  {"15000"},
+		"reason":  {"order_change"},
+	})
+	if note.ID == "" || note.Invoice != completion.Invoice.ID || note.Status != "issued" {
+		t.Fatalf("credit note = %#v, want issued note", note)
+	}
+
+	refundEvents := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=charge.refunded")
+	creditEvents := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=credit_note.created")
+	if len(refundEvents.Data) != 1 || len(creditEvents.Data) != 1 {
+		t.Fatalf("refund events=%d credit events=%d, want one each", len(refundEvents.Data), len(creditEvents.Data))
+	}
+	var chargePayload struct {
+		ID     string `json:"id"`
+		Object string `json:"object"`
+	}
+	if err := json.Unmarshal(refundEvents.Data[0].Data.Object, &chargePayload); err != nil {
+		t.Fatalf("decode charge.refunded payload: %v", err)
+	}
+	if chargePayload.Object != "charge" || chargePayload.ID != refund.Charge {
+		t.Fatalf("charge.refunded payload = %#v, want charge-shaped payload", chargePayload)
+	}
+
+	fixturePack := map[string]any{
+		"name":  "refund-credit-fixture",
+		"runId": "refund-run-1",
+		"refunds": []map[string]any{{
+			"id":      "re_e2e_partial_refund",
+			"invoice": completion.Invoice.ID,
+			"amount":  5000,
+			"reason":  "requested_by_customer",
+		}},
+		"credit_notes": []map[string]any{{
+			"id":      "cn_e2e_partial_credit",
+			"invoice": completion.Invoice.ID,
+			"amount":  5000,
+			"reason":  "order_change",
+		}},
+	}
+	firstApply := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", fixturePack)
+	secondApply := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", fixturePack)
+	if len(firstApply.Refunds) != 1 || len(secondApply.Refunds) != 1 || secondApply.Refunds[0].ID != "re_e2e_partial_refund" {
+		t.Fatalf("fixture refunds first=%#v second=%#v, want idempotent stable refund", firstApply.Refunds, secondApply.Refunds)
+	}
+	if len(firstApply.CreditNotes) != 1 || len(secondApply.CreditNotes) != 1 || secondApply.CreditNotes[0].ID != "cn_e2e_partial_credit" {
+		t.Fatalf("fixture credit notes first=%#v second=%#v, want idempotent stable credit note", firstApply.CreditNotes, secondApply.CreditNotes)
+	}
+}
+
+func TestWebhookReplaySimulateAppFailureThenDeliver(t *testing.T) {
+	calls := 0
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("ok"))
+	}))
+	defer receiver.Close()
+
+	handler := newTestHandler(t)
+	_ = postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"checkout.session.completed"},
+	})
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"webhook-failure@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"30000"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	_ = postJSON[map[string]any](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+	events := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=checkout.session.completed")
+	if len(events.Data) == 0 {
+		t.Fatal("checkout event not found")
+	}
+	beforeReplayCalls := calls
+	replay := postJSON[struct {
+		Data []webhooks.DeliveryAttempt `json:"data"`
+	}](t, handler, "/api/events/"+events.Data[0].ID+"/replay", map[string]any{
+		"simulate_app_failure": map[string]any{
+			"status":                502,
+			"fail_first_n_attempts": 1,
+			"body":                  "Upstream timeout",
+		},
+	})
+	if len(replay.Data) != 2 {
+		t.Fatalf("replay attempts = %#v, want failed attempt followed by delivered attempt", replay.Data)
+	}
+	if replay.Data[0].Status != webhooks.StatusFailed || replay.Data[0].ResponseStatus != 502 || replay.Data[0].Metadata["simulate_app_failure"] != "true" {
+		t.Fatalf("first replay attempt = %#v, want simulated 502 failure metadata", replay.Data[0])
+	}
+	if replay.Data[1].Status != webhooks.StatusSucceeded || replay.Data[1].ResponseStatus != http.StatusOK {
+		t.Fatalf("second replay attempt = %#v, want actual receiver success", replay.Data[1])
+	}
+	if calls != beforeReplayCalls+1 {
+		t.Fatalf("receiver calls = %d, before replay %d; simulated failure should not call receiver", calls, beforeReplayCalls)
+	}
+}
+
+func TestWebhookEndpointPatchPreservesActiveUnlessEnabledChanges(t *testing.T) {
+	handler := newTestHandler(t)
+	endpoint := postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {"http://example.test/a"},
+		"enabled_events": {"*"},
+	})
+
+	patched := patchForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints/"+endpoint.ID, url.Values{
+		"enabled": {"false"},
+	})
+	if patched.Active {
+		t.Fatalf("patched endpoint active = true, want disabled")
+	}
+	renamed := patchForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints/"+endpoint.ID, url.Values{
+		"url": {"http://example.test/b"},
+	})
+	if renamed.Active || renamed.URL != "http://example.test/b" {
+		t.Fatalf("renamed endpoint = %#v, want inactive endpoint with updated url", renamed)
+	}
+}
+
 func newTestHandler(t *testing.T) http.Handler {
 	t.Helper()
 	return newTestHandlerWithOptions(t, Options{})
@@ -2413,6 +2784,16 @@ func postFormStatusWithResponseHeaders(t *testing.T, handler http.Handler, path 
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String(), rec.Header()
+}
+
+func patchForm[T any](t *testing.T, handler http.Handler, path string, values url.Values) T {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPatch, path, stringsReader(values.Encode()))
+	req.Host = "billtap.test"
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return decodeResponse[T](t, rec)
 }
 
 func getJSON[T any](t *testing.T, handler http.Handler, path string) T {
