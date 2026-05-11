@@ -148,6 +148,7 @@ type EventInput struct {
 type DeliveryOptions struct {
 	Duplicate          int
 	Delay              time.Duration
+	Historical         bool
 	OutOfOrder         bool
 	Replay             bool
 	ResponseStatus     int
@@ -169,6 +170,28 @@ type ReplayOptions struct {
 	SimulatedTimeout   bool
 	SignatureMismatch  bool
 	SimulateAppFailure *SimulatedAppFailure
+}
+
+type HistoricalReplayOptions struct {
+	Since           time.Time
+	Until           time.Time
+	EventTypes      []string
+	Limit           int
+	Force           bool
+	DeliveryOptions DeliveryOptions
+}
+
+type HistoricalReplayResult struct {
+	Object         string            `json:"object"`
+	EndpointID     string            `json:"endpoint_id"`
+	Since          *time.Time        `json:"since,omitempty"`
+	Until          *time.Time        `json:"until,omitempty"`
+	MatchedEvents  int               `json:"matched_events"`
+	ReplayedEvents int               `json:"replayed_events"`
+	SkippedEvents  int               `json:"skipped_events"`
+	AttemptCount   int               `json:"attempt_count"`
+	Events         []Event           `json:"events,omitempty"`
+	Attempts       []DeliveryAttempt `json:"-"`
 }
 
 type SimulatedAppFailure struct {

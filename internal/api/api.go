@@ -131,6 +131,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/api/delivery-attempts", h.handleDeliveryAttempts)
 	h.mux.HandleFunc("/api/audit-log", h.handleAuditLog)
 	h.mux.HandleFunc("/api/retention/apply", h.handleRetentionApply)
+	h.mux.HandleFunc("/api/webhooks/endpoints/", h.handleWebhookEndpointAction)
 	h.mux.HandleFunc("/api/events/", h.handleEventAction)
 }
 
@@ -3062,6 +3063,66 @@ func (h *Handler) handleEventAction(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, map[string]any{"message": "replay scheduled", "object": "list", "data": h.deliveryAttemptResponses(r, attempts)}, err)
 }
 
+func (h *Handler) handleWebhookEndpointAction(w http.ResponseWriter, r *http.Request) {
+	if h.webhooks == nil {
+		writeResult(w, nil, webhooks.ErrNotFound)
+		return
+	}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/webhooks/endpoints/")
+	endpointID, action, found := strings.Cut(rest, "/")
+	if endpointID == "" || !found || action != "replay-historical" {
+		h.notFound(w, r)
+		return
+	}
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateHistoricalReplay(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	since, err := parseOptionalReplayTime(p.first("since", "created_after", "createdAfter"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, invalidParam("since", "Expected RFC3339 timestamp, Unix timestamp, or now."))
+		return
+	}
+	until, err := parseOptionalReplayTime(p.first("until", "created_before", "createdBefore"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, invalidParam("until", "Expected RFC3339 timestamp, Unix timestamp, or now."))
+		return
+	}
+	limit := int(p.int64("limit"))
+	result, err := h.webhooks.ReplayHistoricalForEndpoint(r.Context(), endpointID, webhooks.HistoricalReplayOptions{
+		Since:      since,
+		Until:      until,
+		EventTypes: historicalReplayEventTypes(p),
+		Limit:      limit,
+		Force:      p.boolDefault("force", false),
+	})
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object":          result.Object,
+		"endpoint_id":     result.EndpointID,
+		"since":           result.Since,
+		"until":           result.Until,
+		"matched_events":  result.MatchedEvents,
+		"replayed_events": result.ReplayedEvents,
+		"skipped_events":  result.SkippedEvents,
+		"attempt_count":   result.AttemptCount,
+		"events":          result.Events,
+		"data":            h.deliveryAttemptResponses(r, result.Attempts),
+	})
+}
+
 func replaySimulatedAppFailure(p params) *webhooks.SimulatedAppFailure {
 	status := p.int64("simulate_app_failure[status]")
 	if status == 0 {
@@ -3082,6 +3143,39 @@ func replaySimulatedAppFailure(p params) *webhooks.SimulatedAppFailure {
 		FailFirstNAttempts: int(failFirst),
 		Body:               p.first("simulate_app_failure[body]", "simulateAppFailure[body]"),
 	}
+}
+
+func parseOptionalReplayTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil
+	}
+	if value == "now" {
+		return time.Now().UTC(), nil
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return parsed.UTC(), nil
+	}
+	unix, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Unix(unix, 0).UTC(), nil
+}
+
+func historicalReplayEventTypes(p params) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	for _, key := range []string{"type", "types", "event_type", "event_types"} {
+		for _, value := range p.list(key) {
+			if _, ok := seen[value]; ok {
+				continue
+			}
+			seen[value] = struct{}{}
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 type params struct {

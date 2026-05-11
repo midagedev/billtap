@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added endpoint-scoped historical webhook replay so apps can catch up fixture
+  events emitted before webhook endpoint registration.
 - Licensed Billtap under Apache-2.0 and added a top-level `NOTICE`.
 - Hardened public-readiness validation: JSON numeric request values now
   preserve decimal input for wrong-type rejection, subscription quantities no

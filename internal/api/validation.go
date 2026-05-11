@@ -29,6 +29,7 @@ var (
 	automaticPaymentMethodsRE  = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
 	paymentMethodOptionsRE     = regexp.MustCompile(`^payment_method_options\[.+\]$`)
 	accountNestedParamRE       = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
+	eventTypeFilterParamRE     = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
 )
 
 type validationError struct {
@@ -833,6 +834,25 @@ func validateWebhookEndpointUpdate(p params) error {
 		Int64Params:  []string{"retry_max_attempts"},
 		Positive:     []string{"retry_max_attempts"},
 		BoolParams:   []string{"active", "enabled"},
+	})
+}
+
+func validateHistoricalReplay(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"since",
+			"until",
+			"created_after",
+			"createdAfter",
+			"created_before",
+			"createdBefore",
+			"limit",
+			"force",
+		},
+		AllowedRegex: []*regexp.Regexp{eventTypeFilterParamRE},
+		Int64Params:  []string{"limit"},
+		Positive:     []string{"limit"},
+		BoolParams:   []string{"force"},
 	})
 }
 

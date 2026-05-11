@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hckim/billtap/internal/billing"
 	"github.com/hckim/billtap/internal/diagnostics"
@@ -687,6 +688,112 @@ func TestWebhookEndpointDeliveryAndReplay(t *testing.T) {
 	}
 	if signature, _ := signatureMismatch.Data[0].RequestHeaders[webhooks.SignatureHeaderName]; !strings.Contains(signature, "v1=****") {
 		t.Fatalf("signature replay header = %q, want masked signature evidence", signature)
+	}
+}
+
+func TestWebhookEndpointHistoricalReplay(t *testing.T) {
+	handler := newTestHandler(t)
+	since := time.Now().UTC().Add(-time.Second).Format(time.RFC3339Nano)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"history@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"History"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	_ = postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+	initialAttempts := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/api/delivery-attempts")
+	if len(initialAttempts.Data) != 0 {
+		t.Fatalf("initial attempts = %#v, want no attempts before endpoint registration", initialAttempts.Data)
+	}
+
+	var receivedTypes []string
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode webhook payload: %v", err)
+		}
+		receivedTypes = append(receivedTypes, payload.Type)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+
+	endpoint := postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"invoice.*"},
+	})
+
+	laterSession := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	_ = postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+laterSession.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+	if len(receivedTypes) != 4 {
+		t.Fatalf("post-registration received types = %#v, want four normally delivered invoice events", receivedTypes)
+	}
+
+	catchup := postForm[struct {
+		Object         string           `json:"object"`
+		EndpointID     string           `json:"endpoint_id"`
+		MatchedEvents  int              `json:"matched_events"`
+		ReplayedEvents int              `json:"replayed_events"`
+		SkippedEvents  int              `json:"skipped_events"`
+		AttemptCount   int              `json:"attempt_count"`
+		Events         []webhooks.Event `json:"events"`
+		Data           []struct {
+			EventType string            `json:"event_type"`
+			Status    string            `json:"status"`
+			Metadata  map[string]string `json:"metadata"`
+		} `json:"data"`
+	}](t, handler, "/api/webhooks/endpoints/"+endpoint.ID+"/replay-historical?since="+url.QueryEscape(since), url.Values{})
+	if catchup.Object != "historical_webhook_replay" || catchup.EndpointID != endpoint.ID {
+		t.Fatalf("catchup identity = %#v, want historical replay for endpoint", catchup)
+	}
+	if catchup.MatchedEvents != 4 || catchup.ReplayedEvents != 4 || catchup.SkippedEvents != 0 || catchup.AttemptCount != 4 || len(catchup.Data) != 4 || len(catchup.Events) != 4 {
+		t.Fatalf("catchup = %#v, want four invoice events replayed", catchup)
+	}
+	for _, attempt := range catchup.Data {
+		if !strings.HasPrefix(attempt.EventType, "invoice.") || attempt.Status != webhooks.StatusSucceeded || attempt.Metadata["source"] != webhooks.SourceReplay || attempt.Metadata["historical"] != "true" {
+			t.Fatalf("catchup attempt = %#v, want successful historical invoice replay", attempt)
+		}
+	}
+	if len(receivedTypes) != 8 {
+		t.Fatalf("received types = %#v, want four normal and four historical invoice events", receivedTypes)
+	}
+
+	second := postForm[struct {
+		MatchedEvents  int `json:"matched_events"`
+		ReplayedEvents int `json:"replayed_events"`
+		SkippedEvents  int `json:"skipped_events"`
+		AttemptCount   int `json:"attempt_count"`
+	}](t, handler, "/api/webhooks/endpoints/"+endpoint.ID+"/replay-historical?since="+url.QueryEscape(since), url.Values{})
+	if second.MatchedEvents != 4 || second.ReplayedEvents != 0 || second.SkippedEvents != 4 || second.AttemptCount != 0 {
+		t.Fatalf("second catchup = %#v, want idempotent skip of existing attempts", second)
+	}
+	if len(receivedTypes) != 8 {
+		t.Fatalf("received types after second catchup = %#v, want no duplicate delivery", receivedTypes)
+	}
+
+	filtered := postForm[struct {
+		MatchedEvents  int `json:"matched_events"`
+		ReplayedEvents int `json:"replayed_events"`
+		AttemptCount   int `json:"attempt_count"`
+	}](t, handler, "/api/webhooks/endpoints/"+endpoint.ID+"/replay-historical?since="+url.QueryEscape(since)+"&type=invoice.paid&force=true", url.Values{})
+	if filtered.MatchedEvents != 1 || filtered.ReplayedEvents != 1 || filtered.AttemptCount != 1 {
+		t.Fatalf("filtered catchup = %#v, want forced invoice.paid replay", filtered)
 	}
 }
 
