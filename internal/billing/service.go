@@ -69,6 +69,11 @@ type Repository interface {
 	GetAccount(context.Context, string) (Account, error)
 	ListAccounts(context.Context) ([]Account, error)
 	UpdateAccount(context.Context, string, Account) (Account, error)
+	CreateConnectResource(context.Context, ConnectResource) (ConnectResource, error)
+	GetConnectResource(context.Context, string, string) (ConnectResource, error)
+	ListConnectResources(context.Context, ConnectResourceFilter) ([]ConnectResource, error)
+	UpdateConnectResource(context.Context, string, string, ConnectResource) (ConnectResource, error)
+	DeleteConnectResource(context.Context, string, string) (ConnectResource, error)
 
 	Timeline(context.Context, TimelineFilter) ([]TimelineEntry, error)
 	RecordTimeline(context.Context, TimelineEntry) error
@@ -212,6 +217,91 @@ func (s *Service) ListAccounts(ctx context.Context) ([]Account, error) {
 
 func (s *Service) UpdateAccount(ctx context.Context, id string, in Account) (Account, error) {
 	return s.repo.UpdateAccount(ctx, id, in)
+}
+
+func (s *Service) CreateConnectResource(ctx context.Context, in ConnectResource) (ConnectResource, error) {
+	if strings.TrimSpace(in.Object) == "" {
+		return ConnectResource{}, fmt.Errorf("%w: object is required", ErrInvalidInput)
+	}
+	if in.Amount < 0 {
+		return ConnectResource{}, fmt.Errorf("%w: amount must be non-negative", ErrInvalidInput)
+	}
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = id(connectResourcePrefix(in.Object))
+	}
+	if strings.TrimSpace(in.Currency) != "" {
+		in.Currency = strings.ToLower(in.Currency)
+	}
+	if strings.TrimSpace(in.Country) != "" {
+		in.Country = strings.ToUpper(in.Country)
+	}
+	if strings.TrimSpace(in.Status) == "" {
+		in.Status = defaultConnectResourceStatus(in.Object)
+	}
+	now := s.now()
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = now
+	}
+	if in.UpdatedAt.IsZero() {
+		in.UpdatedAt = in.CreatedAt
+	}
+	return s.repo.CreateConnectResource(ctx, in)
+}
+
+func (s *Service) GetConnectResource(ctx context.Context, object string, id string) (ConnectResource, error) {
+	return s.repo.GetConnectResource(ctx, object, id)
+}
+
+func (s *Service) ListConnectResources(ctx context.Context, filter ConnectResourceFilter) ([]ConnectResource, error) {
+	return s.repo.ListConnectResources(ctx, filter)
+}
+
+func (s *Service) UpdateConnectResource(ctx context.Context, object string, id string, in ConnectResource) (ConnectResource, error) {
+	return s.repo.UpdateConnectResource(ctx, object, id, in)
+}
+
+func (s *Service) DeleteConnectResource(ctx context.Context, object string, id string) (ConnectResource, error) {
+	return s.repo.DeleteConnectResource(ctx, object, id)
+}
+
+func connectResourcePrefix(object string) string {
+	switch object {
+	case ObjectBankAccount:
+		return "ba"
+	case ObjectCard:
+		return "card"
+	case ObjectTransfer:
+		return "tr"
+	case ObjectTransferReversal:
+		return "trr"
+	case ObjectPayout:
+		return "po"
+	case ObjectApplicationFee:
+		return "fee"
+	case ObjectFeeRefund:
+		return "fr"
+	default:
+		return "conn"
+	}
+}
+
+func defaultConnectResourceStatus(object string) string {
+	switch object {
+	case ObjectBankAccount:
+		return "new"
+	case ObjectCard:
+		return "active"
+	case ObjectTransfer:
+		return "paid"
+	case ObjectTransferReversal:
+		return "succeeded"
+	case ObjectPayout:
+		return "paid"
+	case ObjectFeeRefund:
+		return "succeeded"
+	default:
+		return ""
+	}
 }
 
 func (s *Service) CreateCheckoutSession(ctx context.Context, in CheckoutSession) (CheckoutSession, error) {

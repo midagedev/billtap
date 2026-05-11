@@ -101,7 +101,7 @@ Base path: `/v1`
 | Payment intents         | `POST /v1/payment_intents`, `GET /v1/payment_intents`, `GET /v1/payment_intents/{id}`, `POST /v1/payment_intents/{id}/confirm`, `POST /v1/payment_intents/{id}/capture`, `POST /v1/payment_intents/{id}/cancel` | Partial          | Create/list/retrieve and mutate local payment intents. `confirm` supports deterministic sandbox PaymentMethod aliases such as `pm_card_visa`, `pm_card_visa_chargeDeclined`, and `pm_card_threeDSecure2Required`; manual capture moves through `requires_capture` before `capture` succeeds. This is a local state machine, not card processing or full PaymentIntent parameter parity.                                                                                 |
 | Setup intents           | `POST /v1/setup_intents`, `GET /v1/setup_intents`, `GET /v1/setup_intents/{id}`, `POST /v1/setup_intents/{id}/confirm`, `POST /v1/setup_intents/{id}/cancel`        | Partial          | Create/list/retrieve and mutate local setup intents with deterministic success, decline, and authentication-required aliases. Mandates, bank-account verification, and full SCA behavior are not modeled.                                                                                                                                                                                                                                                               |
 | Payment methods         | `GET /v1/payment_methods?customer={id}&type=card`                                                                                                                   | Partial          | Returns a deterministic sandbox card projection for a known customer. Create, attach, detach, and update are not supported.                                                                                                                                                                                                                                                                                                                                             |
-| Connect smoke           | `POST /v1/accounts`, `GET /v1/accounts`, `GET /v1/accounts/{id}`, `POST /v1/accounts/{id}`, `POST /v1/account_links`, `POST /v1/account_sessions`                  | Partial          | Persist local connected-account profiles with metadata and basic capability status. Account links and account sessions return local hosted URLs or client secrets for onboarding and embedded-component smoke tests. Request traces preserve `Stripe-Account` routing evidence. KYC, external-account verification, real onboarding, transfers, payouts, application fees, and settlement behavior are not modeled.                                                                                                                        |
+| Connect platform evidence | `POST /v1/accounts`, `GET /v1/accounts`, `GET /v1/accounts/{id}`, `POST /v1/accounts/{id}`, `POST /v1/account_links`, `POST /v1/account_sessions`, account capabilities, external accounts, transfers/reversals, payouts, application fees/refunds | Partial          | Persist local connected-account profiles, capability status, bank-account evidence, transfers, transfer reversals, payouts, and application-fee refunds. Account links, account sessions, and login links return local URLs/client secrets. Request traces preserve `Stripe-Account` routing evidence, and local Connect evidence can emit `transfer.*`, `payout.*`, and `application_fee.refunded` webhooks. KYC, bank verification, real onboarding, balance movement, and settlement behavior are not modeled. |
 | Refunds                 | `POST /v1/refunds`, `GET /v1/refunds`, `GET /v1/refunds/{id}`                                                                                                      | Partial          | Create/list/retrieve local refund evidence against an invoice, payment intent, or charge-like ID. Creation emits `charge.refunded` and `charge.refund.updated` webhook evidence. Balance transactions, dispute linkage, failed refunds, and processor accounting are not modeled.                                                                                                                                                                                       |
 | Credit notes            | `POST /v1/credit_notes`, `GET /v1/credit_notes`, `GET /v1/credit_notes/{id}`                                                                                       | Partial          | Create/list/retrieve local credit note evidence for an invoice and emit `credit_note.created`. Line-level tax/discount accounting, PDF rendering, voiding, and preview semantics are not modeled.                                                                                                                                                                                                                                                                       |
 | Test clocks             | `POST /v1/test_helpers/test_clocks`, `GET /v1/test_helpers/test_clocks`, `GET /v1/test_helpers/test_clocks/{id}`, `POST /v1/test_helpers/test_clocks/{id}/advance` | Partial          | Create/retrieve/list/advance persisted local clocks. Customers and subscriptions can be attached with `test_clock`; advancing a clock processes attached trial activation, renewals, configured renewal failures, and period-end cancellation. This is a practical local subset, not full Stripe Test Clock object parity.                                                                                                                                               |
@@ -157,6 +157,12 @@ Supported generic event types:
 - `setup_intent.canceled`
 - `setup_intent.setup_failed`
 - `setup_intent.requires_action`
+- `transfer.created`
+- `transfer.reversed`
+- `payout.created`
+- `payout.canceled`
+- `payout.reversed`
+- `application_fee.refunded`
 
 Current event boundaries:
 
@@ -180,6 +186,10 @@ Current event boundaries:
 - Refund and credit-note APIs emit local payment-history events for application
   webhook and history screens. They do not imply balance transaction,
   settlement, dispute, or ledger parity.
+- Connect evidence APIs emit local transfer, payout, and application-fee refund
+  events with request traces that preserve connected-account routing context.
+  They do not imply real balance movement, onboarding, KYC, bank verification,
+  or settlement behavior.
 - Replay keeps the original event ID and payload, then creates new delivery
   attempts with replay metadata.
 - Duplicate delivery reuses the event ID and payload.
@@ -321,8 +331,8 @@ Billtap does not support or claim:
 - Full Stripe request idempotency-key semantics across all endpoints. Billtap
   only caches same-process `POST` responses for supported API simulation and
   rejects same-key parameter mismatches.
-- Direct charges, disputes, payouts, transfers, balance transactions,
-  external-account verification, real Connect onboarding, mandates, tax, coupons,
+- Direct charges, disputes, balance transactions, external-account verification,
+  real Connect onboarding, real payouts/transfers settlement, mandates, tax, coupons,
   promotion-code redemption, discounts, subscriptions schedules, quotes, or
   usage-based metering.
 - Full refund and credit-note ledger behavior, including balance transactions,

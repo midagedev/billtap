@@ -543,7 +543,7 @@ func nextMilestoneForFamily(family string) string {
 	case "payment_history":
 		return "Add charge, refund, balance transaction, dispute, and payment history evidence."
 	case "connect":
-		return "Add application fee, transfer, payout, and external-account fixtures plus connected-account webhook smoke."
+		return "Add account self/delete and people/person fixtures to close the remaining Connect inventory routes."
 	default:
 		return "Keep inventory visible and add schema/fixture smoke only when adoption requires it."
 	}

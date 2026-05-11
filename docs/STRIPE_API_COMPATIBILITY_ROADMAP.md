@@ -64,7 +64,7 @@ The concrete expansion target is defined in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
 
 - reach at least `90.0%` OpenAPI operation coverage at `L1+`
-- move from the current `57 / 587` baseline to at least `529 / 587`
+- move from the current `98 / 587` baseline to at least `529 / 587`
 - keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
   matters
 - use broad `L1-L2` validation/fixture coverage for safe low-state and
@@ -221,10 +221,13 @@ Gate:
 
 Output:
 
-- Account, account link/session, external account, transfer, application fee,
-  payout, and connected-account event fixtures.
+- Account, account link/session, account capability, external account,
+  transfer/reversal, application fee/refund, payout, and connected-account
+  event fixtures.
 - Connected-account webhook destination routing and signature evidence.
 - Safe stubs for onboarding/KYC without modeling real identity verification.
+- Remaining Connect inventory is account self/delete and people/person
+  fixtures.
 
 Gate:
 
@@ -275,22 +278,24 @@ questions quickly.
   "generated_at": "2026-05-11T00:00:00Z",
   "summary": {
     "total_operations": 587,
-    "implemented_operations": 57,
-    "inventory_only_operations": 530,
-    "implemented_percent": 9.7,
+    "implemented_operations": 98,
+    "inventory_only_operations": 489,
+    "implemented_percent": 16.7,
     "families": [
       {
         "family": "connect",
         "priority": "P1",
         "target_level": "L2-L5",
         "total_operations": 53,
-        "implemented_operations": 0,
-        "inventory_only_operations": 53,
-        "implemented_percent": 0.0,
+        "implemented_operations": 41,
+        "inventory_only_operations": 12,
+        "implemented_percent": 77.4,
         "by_level": {
-          "L0": 53
+          "L0": 12,
+          "L2": 9,
+          "L3": 32
         },
-        "next_milestone": "Add account retrieve/list fixtures, Stripe-Account tracing, and connected-account webhook smoke."
+        "next_milestone": "Add account self/delete and people/person fixtures to close the remaining Connect inventory routes."
       }
     ]
   },

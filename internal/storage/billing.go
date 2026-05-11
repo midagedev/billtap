@@ -258,10 +258,15 @@ func (s *SQLiteStore) UpdateAccount(ctx context.Context, id string, in billing.A
 	}
 	if in.Metadata != nil {
 		current.Metadata = mergeStringMap(current.Metadata, in.Metadata)
+		if _, rejected := in.Metadata["rejected_reason"]; rejected {
+			current.ChargesEnabled = false
+			current.PayoutsEnabled = false
+			current.DetailsSubmitted = false
+		}
 	}
 	current.UpdatedAt = time.Now().UTC()
-	if _, err := s.db.ExecContext(ctx, `UPDATE connect_accounts SET email = ?, business_type = ?, default_currency = ?, capabilities = ?, metadata = ?, updated_at = ? WHERE id = ?`,
-		current.Email, current.BusinessType, current.DefaultCurrency, encodeMap(current.Capabilities), encodeMap(current.Metadata), encodeTime(current.UpdatedAt), id); err != nil {
+	if _, err := s.db.ExecContext(ctx, `UPDATE connect_accounts SET email = ?, business_type = ?, default_currency = ?, charges_enabled = ?, payouts_enabled = ?, details_submitted = ?, capabilities = ?, metadata = ?, updated_at = ? WHERE id = ?`,
+		current.Email, current.BusinessType, current.DefaultCurrency, boolInt(current.ChargesEnabled), boolInt(current.PayoutsEnabled), boolInt(current.DetailsSubmitted), encodeMap(current.Capabilities), encodeMap(current.Metadata), encodeTime(current.UpdatedAt), id); err != nil {
 		return billing.Account{}, err
 	}
 	return s.GetAccount(ctx, id)
@@ -276,6 +281,138 @@ func mergeStringMap(current map[string]string, patch map[string]string) map[stri
 		merged[key] = value
 	}
 	return merged
+}
+
+func (s *SQLiteStore) CreateConnectResource(ctx context.Context, resource billing.ConnectResource) (billing.ConnectResource, error) {
+	if resource.CreatedAt.IsZero() {
+		resource.CreatedAt = time.Now().UTC()
+	}
+	if resource.UpdatedAt.IsZero() {
+		resource.UpdatedAt = resource.CreatedAt
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO connect_resources (id, object, account_id, parent_id, amount, currency, status, description, destination, source_transaction, country, bank_name, last4, routing_number, arrival_date, metadata, data, deleted, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		resource.ID, resource.Object, resource.AccountID, resource.ParentID, resource.Amount, strings.ToLower(resource.Currency), resource.Status, resource.Description, resource.Destination, resource.SourceTransaction, strings.ToUpper(resource.Country), resource.BankName, resource.Last4, resource.RoutingNumber, encodeTime(resource.ArrivalDate), encodeMap(resource.Metadata), encodeMap(resource.Data), boolInt(resource.Deleted), encodeTime(resource.CreatedAt), encodeTime(resource.UpdatedAt)); err != nil {
+		return billing.ConnectResource{}, err
+	}
+	return s.GetConnectResource(ctx, resource.Object, resource.ID)
+}
+
+func (s *SQLiteStore) GetConnectResource(ctx context.Context, object string, id string) (billing.ConnectResource, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, object, account_id, parent_id, amount, currency, status, description, destination, source_transaction, country, bank_name, last4, routing_number, arrival_date, metadata, data, deleted, created_at, updated_at FROM connect_resources WHERE object = ? AND id = ?`, object, id)
+	resource, err := scanConnectResource(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return billing.ConnectResource{}, billing.ErrNotFound
+	}
+	return resource, err
+}
+
+func (s *SQLiteStore) ListConnectResources(ctx context.Context, filter billing.ConnectResourceFilter) ([]billing.ConnectResource, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, object, account_id, parent_id, amount, currency, status, description, destination, source_transaction, country, bank_name, last4, routing_number, arrival_date, metadata, data, deleted, created_at, updated_at FROM connect_resources ORDER BY created_at DESC, id DESC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []billing.ConnectResource
+	for rows.Next() {
+		resource, err := scanConnectResource(rows)
+		if err != nil {
+			return nil, err
+		}
+		if filter.Object != "" && resource.Object != filter.Object {
+			continue
+		}
+		if filter.AccountID != "" && resource.AccountID != filter.AccountID {
+			continue
+		}
+		if filter.ParentID != "" && resource.ParentID != filter.ParentID {
+			continue
+		}
+		if filter.Destination != "" && resource.Destination != filter.Destination {
+			continue
+		}
+		if filter.Status != "" && resource.Status != filter.Status {
+			continue
+		}
+		if resource.Deleted {
+			continue
+		}
+		out = append(out, resource)
+	}
+	return out, rows.Err()
+}
+
+func (s *SQLiteStore) UpdateConnectResource(ctx context.Context, object string, id string, in billing.ConnectResource) (billing.ConnectResource, error) {
+	current, err := s.GetConnectResource(ctx, object, id)
+	if err != nil {
+		return billing.ConnectResource{}, err
+	}
+	if in.AccountID != "" {
+		current.AccountID = in.AccountID
+	}
+	if in.ParentID != "" {
+		current.ParentID = in.ParentID
+	}
+	if in.Amount > 0 {
+		current.Amount = in.Amount
+	}
+	if in.Currency != "" {
+		current.Currency = strings.ToLower(in.Currency)
+	}
+	if in.Status != "" {
+		current.Status = in.Status
+	}
+	if in.Description != "" {
+		current.Description = in.Description
+	}
+	if in.Destination != "" {
+		current.Destination = in.Destination
+	}
+	if in.SourceTransaction != "" {
+		current.SourceTransaction = in.SourceTransaction
+	}
+	if in.Country != "" {
+		current.Country = strings.ToUpper(in.Country)
+	}
+	if in.BankName != "" {
+		current.BankName = in.BankName
+	}
+	if in.Last4 != "" {
+		current.Last4 = in.Last4
+	}
+	if in.RoutingNumber != "" {
+		current.RoutingNumber = in.RoutingNumber
+	}
+	if !in.ArrivalDate.IsZero() {
+		current.ArrivalDate = in.ArrivalDate
+	}
+	if in.Metadata != nil {
+		current.Metadata = mergeStringMap(current.Metadata, in.Metadata)
+	}
+	if in.Data != nil {
+		current.Data = mergeStringMap(current.Data, in.Data)
+	}
+	current.UpdatedAt = time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `UPDATE connect_resources SET account_id = ?, parent_id = ?, amount = ?, currency = ?, status = ?, description = ?, destination = ?, source_transaction = ?, country = ?, bank_name = ?, last4 = ?, routing_number = ?, arrival_date = ?, metadata = ?, data = ?, deleted = ?, updated_at = ? WHERE object = ? AND id = ?`,
+		current.AccountID, current.ParentID, current.Amount, strings.ToLower(current.Currency), current.Status, current.Description, current.Destination, current.SourceTransaction, strings.ToUpper(current.Country), current.BankName, current.Last4, current.RoutingNumber, encodeTime(current.ArrivalDate), encodeMap(current.Metadata), encodeMap(current.Data), boolInt(current.Deleted), encodeTime(current.UpdatedAt), object, id); err != nil {
+		return billing.ConnectResource{}, err
+	}
+	return s.GetConnectResource(ctx, object, id)
+}
+
+func (s *SQLiteStore) DeleteConnectResource(ctx context.Context, object string, id string) (billing.ConnectResource, error) {
+	current, err := s.GetConnectResource(ctx, object, id)
+	if err != nil {
+		return billing.ConnectResource{}, err
+	}
+	current.Deleted = true
+	current.UpdatedAt = time.Now().UTC()
+	if _, err := s.db.ExecContext(ctx, `UPDATE connect_resources SET deleted = ?, updated_at = ? WHERE object = ? AND id = ?`,
+		boolInt(true), encodeTime(current.UpdatedAt), object, id); err != nil {
+		return billing.ConnectResource{}, err
+	}
+	current.Deleted = true
+	return current, nil
 }
 
 func (s *SQLiteStore) CreateCheckoutSession(ctx context.Context, cs billing.CheckoutSession) (billing.CheckoutSession, error) {
@@ -1086,6 +1223,22 @@ func scanAccount(row scanner) (billing.Account, error) {
 	account.CreatedAt = decodeTime(createdAt)
 	account.UpdatedAt = decodeTime(updatedAt)
 	return account, nil
+}
+
+func scanConnectResource(row scanner) (billing.ConnectResource, error) {
+	var resource billing.ConnectResource
+	var deleted int
+	var arrivalDate, metadata, data, createdAt, updatedAt string
+	if err := row.Scan(&resource.ID, &resource.Object, &resource.AccountID, &resource.ParentID, &resource.Amount, &resource.Currency, &resource.Status, &resource.Description, &resource.Destination, &resource.SourceTransaction, &resource.Country, &resource.BankName, &resource.Last4, &resource.RoutingNumber, &arrivalDate, &metadata, &data, &deleted, &createdAt, &updatedAt); err != nil {
+		return resource, err
+	}
+	resource.ArrivalDate = decodeTime(arrivalDate)
+	resource.Metadata = decodeMap(metadata)
+	resource.Data = decodeMap(data)
+	resource.Deleted = deleted != 0
+	resource.CreatedAt = decodeTime(createdAt)
+	resource.UpdatedAt = decodeTime(updatedAt)
+	return resource, nil
 }
 
 func scanCheckoutSession(row scanner) (billing.CheckoutSession, error) {
