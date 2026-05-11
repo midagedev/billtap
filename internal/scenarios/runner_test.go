@@ -322,6 +322,187 @@ steps:
 	}
 }
 
+func TestRunnerCheckoutCancelAndSubscriptionLifecycleActions(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	report, err := NewRunner(billing.NewService(store), webhooks.NewService(store)).Run(ctx, mustLoad(t, `
+name: lifecycle-actions
+clock:
+  start: "2026-05-08T00:00:00Z"
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: lifecycle@example.test
+  - id: checkout-to-cancel
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: cancel-checkout
+    action: checkout.cancel
+    params:
+      sessionRef: checkout-to-cancel.session.id
+  - id: checkout-to-complete
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout-to-complete.session.id
+      outcome: payment_succeeded
+  - id: schedule-cancel
+    action: subscription.cancel
+    params:
+      subscriptionRef: complete-checkout.subscription.id
+      mode: period
+  - id: resume-subscription
+    action: subscription.resume
+    params:
+      subscriptionRef: schedule-cancel.subscription.id
+  - id: immediate-cancel
+    action: subscription.cancel
+    params:
+      subscriptionRef: resume-subscription.subscription.id
+      mode: immediate
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+
+	canceledCheckout := report.Steps[2].Output
+	session := canceledCheckout["session"].(billing.CheckoutSession)
+	if session.Status != "expired" || session.PaymentStatus != "unpaid" {
+		t.Fatalf("canceled checkout session = %#v, want expired unpaid", session)
+	}
+	canceledInvoice := canceledCheckout["invoice"].(billing.Invoice)
+	if canceledInvoice.Status != "void" {
+		t.Fatalf("canceled checkout invoice = %#v, want void", canceledInvoice)
+	}
+	canceledIntent := canceledCheckout["payment_intent"].(billing.PaymentIntent)
+	if canceledIntent.Status != "canceled" {
+		t.Fatalf("canceled checkout intent = %#v, want canceled", canceledIntent)
+	}
+	checkoutEvents, ok := canceledCheckout["events"].([]webhooks.Event)
+	if !ok {
+		t.Fatalf("canceled checkout events = %#v, want webhook events", canceledCheckout["events"])
+	}
+	seenCheckoutExpired := false
+	for _, event := range checkoutEvents {
+		if event.Type == "checkout.session.expired" {
+			seenCheckoutExpired = true
+		}
+	}
+	if !seenCheckoutExpired {
+		t.Fatalf("canceled checkout events = %#v, want checkout.session.expired", checkoutEvents)
+	}
+
+	scheduled := report.Steps[5].Output["subscription"].(billing.Subscription)
+	if !scheduled.CancelAtPeriodEnd || scheduled.Status != "active" {
+		t.Fatalf("scheduled subscription = %#v, want active cancel_at_period_end", scheduled)
+	}
+	resumed := report.Steps[6].Output["subscription"].(billing.Subscription)
+	if resumed.CancelAtPeriodEnd || resumed.Status != "active" || resumed.CanceledAt != nil {
+		t.Fatalf("resumed subscription = %#v, want active without cancellation", resumed)
+	}
+	immediate := report.Steps[7].Output["subscription"].(billing.Subscription)
+	if immediate.Status != "canceled" || immediate.CancelAtPeriodEnd {
+		t.Fatalf("immediate cancel subscription = %#v, want canceled immediately", immediate)
+	}
+	events, ok := report.Steps[7].Output["events"].([]webhooks.Event)
+	if !ok || len(events) != 1 || events[0].Type != "customer.subscription.deleted" {
+		t.Fatalf("immediate cancel events = %#v, want customer.subscription.deleted", report.Steps[7].Output["events"])
+	}
+}
+
+func TestRunnerInvoiceFailPaymentActionMutatesOpenInvoice(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	report, err := NewRunner(billing.NewService(store), webhooks.NewService(store)).Run(ctx, mustLoad(t, `
+name: invoice-fail-payment
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: fail@example.test
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_failed
+  - id: fail-payment
+    action: invoice.fail_payment
+    params:
+      invoiceRef: complete-checkout.invoice.id
+      payment_method: pm_card_visa_chargeDeclinedInsufficientFunds
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+
+	output := report.Steps[3].Output
+	if output["failure_simulation"] != true {
+		t.Fatalf("fail output = %#v, want failure_simulation", output)
+	}
+	invoice := output["invoice"].(billing.Invoice)
+	if invoice.Status != "open" || invoice.NextPaymentAttempt == nil {
+		t.Fatalf("invoice = %#v, want open invoice with next payment attempt", invoice)
+	}
+	subscription := output["subscription"].(billing.Subscription)
+	if subscription.Status != "past_due" {
+		t.Fatalf("subscription = %#v, want past_due", subscription)
+	}
+	intent := output["payment_intent"].(billing.PaymentIntent)
+	if intent.Status != "requires_payment_method" || intent.DeclineCode != "insufficient_funds" {
+		t.Fatalf("payment intent = %#v, want insufficient funds failure", intent)
+	}
+}
+
 func TestRunnerAppAssertPass(t *testing.T) {
 	var gotPath string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -466,6 +647,88 @@ steps:
 		if attempt.Status != webhooks.StatusFailed || attempt.ResponseStatus != 500 || attempt.Metadata["signature_mismatch"] != "true" {
 			t.Fatalf("attempt = %#v, want failed 500 signature mismatch evidence", attempt)
 		}
+	}
+}
+
+func TestRunnerWebhookDeliveryConvenienceActionsUseGenericReplay(t *testing.T) {
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(); err != nil {
+			t.Fatalf("close store: %v", err)
+		}
+	})
+
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+
+	webhookService := webhooks.NewService(store)
+	if _, err := webhookService.CreateEndpoint(ctx, webhooks.Endpoint{
+		URL:           receiver.URL,
+		EnabledEvents: []string{"checkout.session.completed"},
+	}); err != nil {
+		t.Fatalf("CreateEndpoint: %v", err)
+	}
+
+	report, err := NewRunner(billing.NewService(store), webhookService).Run(ctx, mustLoad(t, `
+name: webhook-delivery-convenience-actions
+catalog:
+  products:
+    - id: prod_pro
+      name: Pro
+  prices:
+    - id: price_pro_monthly
+      product: prod_pro
+      currency: usd
+      unitAmount: 4900
+      interval: month
+steps:
+  - id: create-customer
+    action: customer.create
+    params:
+      email: webhook@example.test
+  - id: checkout
+    action: checkout.create
+    params:
+      customerRef: create-customer.customer.id
+      price: price_pro_monthly
+  - id: complete-checkout
+    action: checkout.complete
+    params:
+      sessionRef: checkout.session.id
+      outcome: payment_succeeded
+  - id: duplicate-delivery
+    action: webhook.deliver_duplicate
+    params:
+      eventRef: complete-checkout.events.0.id
+  - id: out-of-order-delivery
+    action: webhook.deliver_out_of_order
+    params:
+      eventRef: complete-checkout.events.0.id
+`))
+	if err != nil {
+		t.Fatalf("Run returned error: %v\n%s", err, report.Markdown())
+	}
+
+	duplicateAttempts, ok := report.Steps[3].Output["delivery_attempts"].([]webhooks.DeliveryAttempt)
+	if !ok || len(duplicateAttempts) != 2 {
+		t.Fatalf("duplicate output = %#v, want two replay attempts", report.Steps[3].Output)
+	}
+	if duplicateAttempts[1].Metadata["duplicate"] != "true" || duplicateAttempts[1].Metadata["source"] != webhooks.SourceReplay {
+		t.Fatalf("duplicate attempt metadata = %#v, want duplicate replay evidence", duplicateAttempts[1].Metadata)
+	}
+
+	outOfOrderAttempts, ok := report.Steps[4].Output["delivery_attempts"].([]webhooks.DeliveryAttempt)
+	if !ok || len(outOfOrderAttempts) != 1 {
+		t.Fatalf("out-of-order output = %#v, want one replay attempt", report.Steps[4].Output)
+	}
+	if outOfOrderAttempts[0].Metadata["out_of_order"] != "true" || outOfOrderAttempts[0].Metadata["source"] != webhooks.SourceReplay {
+		t.Fatalf("out-of-order attempt metadata = %#v, want out-of-order replay evidence", outOfOrderAttempts[0].Metadata)
 	}
 }
 

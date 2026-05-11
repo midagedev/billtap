@@ -27,6 +27,8 @@ type BillingService interface {
 	CompleteCheckoutAt(context.Context, string, string, time.Time) (billing.CheckoutSession, error)
 	GetSubscription(context.Context, string) (billing.Subscription, error)
 	PatchSubscription(context.Context, string, billing.SubscriptionPatch) (billing.Subscription, error)
+	CancelPortalSubscription(context.Context, string, billing.PortalCancel) (billing.Subscription, error)
+	ResumePortalSubscription(context.Context, string) (billing.Subscription, error)
 	GetInvoice(context.Context, string) (billing.Invoice, error)
 	GetPaymentIntent(context.Context, string) (billing.PaymentIntent, error)
 	PayInvoice(context.Context, string, billing.InvoicePaymentOptions) (billing.InvoicePaymentResult, error)
@@ -210,16 +212,24 @@ func (r *Runner) runStep(ctx context.Context, scenario Scenario, step Step, stat
 		return finish(r.createCheckout(ctx, step, params, state))
 	case "checkout.complete":
 		return finish(r.completeCheckout(ctx, scenario, step, params, state))
+	case "checkout.cancel":
+		return finish(r.cancelCheckout(ctx, scenario, step, params, state))
 	case "subscription.update":
 		return finish(r.updateSubscription(ctx, scenario, step, params, state))
+	case "subscription.cancel":
+		return finish(r.cancelSubscription(ctx, scenario, step, params, state))
+	case "subscription.resume":
+		return finish(r.resumeSubscription(ctx, scenario, step, params, state))
 	case "clock.advance":
 		return finish(r.advanceClock(ctx, scenario, step, params, state))
+	case "invoice.fail_payment":
+		return finish(r.failInvoicePayment(ctx, scenario, step, params, state))
 	case "invoice.retry":
 		return finish(r.retryInvoice(ctx, scenario, step, params, state))
 	case "webhook.replay":
 		return finish(r.replayWebhook(ctx, step, params, state))
 	case "webhook.deliver_duplicate", "webhook.deliver_out_of_order":
-		return finish(r.runSaaSStep(ctx, scenario, step, params, state))
+		return finish(r.deliverWebhook(ctx, scenario, step, params, state))
 	case "app.assert":
 		output, assertion, err := r.assertApp(ctx, scenario, step, params, state)
 		stepReport.Assertion = assertion
@@ -377,6 +387,14 @@ func (r *Runner) completeCheckout(ctx context.Context, scenario Scenario, step S
 	return output, nil
 }
 
+func (r *Runner) cancelCheckout(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
+	cancelParams := copyParams(params)
+	if firstString(cancelParams, "outcome", "paymentMethod", "payment_method", "payment_method_id") == "" {
+		cancelParams["outcome"] = "canceled"
+	}
+	return r.completeCheckout(ctx, scenario, step, cancelParams, state)
+}
+
 func (r *Runner) advanceClock(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
 	raw := stringValue(params, "duration")
 	before := state.clock.Now()
@@ -402,6 +420,68 @@ func (r *Runner) advanceClock(ctx context.Context, scenario Scenario, step Step,
 		if len(events) > 0 {
 			output["events"] = events
 		}
+	}
+	state.results[step.ID] = output
+	return output, nil
+}
+
+func (r *Runner) cancelSubscription(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
+	if r.Billing == nil {
+		return nil, errors.New("billing service is required for subscription.cancel")
+	}
+	subscriptionID := firstString(params, "subscriptionRef", "subscription", "subscription_id", "id")
+	if subscriptionID == "" {
+		return nil, fmt.Errorf("%w: subscription.cancel requires subscriptionRef", ErrInvalidConfig)
+	}
+	mode := firstString(params, "mode", "cancelMode", "cancel_mode")
+	if mode == "" {
+		if _, ok := params["cancel_at_period_end"]; ok && !boolValue(params, "cancel_at_period_end", true) {
+			mode = "immediate"
+		} else if _, ok := params["cancelAtPeriodEnd"]; ok && !boolValue(params, "cancelAtPeriodEnd", true) {
+			mode = "immediate"
+		} else {
+			mode = "period"
+		}
+	}
+	subscription, err := r.Billing.CancelPortalSubscription(ctx, subscriptionID, billing.PortalCancel{Mode: mode})
+	if err != nil {
+		return nil, err
+	}
+	eventType := "customer.subscription.updated"
+	if subscription.Status == "canceled" {
+		eventType = "customer.subscription.deleted"
+	}
+	output := map[string]any{"subscription": subscription, "mode": mode}
+	events, err := r.emitSubscriptionWebhook(ctx, scenario, eventType, subscription, state)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		output["events"] = events
+	}
+	state.results[step.ID] = output
+	return output, nil
+}
+
+func (r *Runner) resumeSubscription(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
+	if r.Billing == nil {
+		return nil, errors.New("billing service is required for subscription.resume")
+	}
+	subscriptionID := firstString(params, "subscriptionRef", "subscription", "subscription_id", "id")
+	if subscriptionID == "" {
+		return nil, fmt.Errorf("%w: subscription.resume requires subscriptionRef", ErrInvalidConfig)
+	}
+	subscription, err := r.Billing.ResumePortalSubscription(ctx, subscriptionID)
+	if err != nil {
+		return nil, err
+	}
+	output := map[string]any{"subscription": subscription}
+	events, err := r.emitSubscriptionWebhook(ctx, scenario, "customer.subscription.updated", subscription, state)
+	if err != nil {
+		return nil, err
+	}
+	if len(events) > 0 {
+		output["events"] = events
 	}
 	state.results[step.ID] = output
 	return output, nil
@@ -437,6 +517,18 @@ func (r *Runner) updateSubscription(ctx context.Context, scenario Scenario, step
 	}
 	state.results[step.ID] = output
 	return output, nil
+}
+
+func (r *Runner) failInvoicePayment(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
+	failParams := copyParams(params)
+	if firstString(failParams, "outcome", "paymentMethod", "payment_method", "payment_method_id") == "" {
+		failParams["outcome"] = "card_declined"
+	}
+	output, err := r.retryInvoice(ctx, scenario, step, failParams, state)
+	if output != nil {
+		output["failure_simulation"] = true
+	}
+	return output, err
 }
 
 func (r *Runner) retryInvoice(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
@@ -490,6 +582,29 @@ func (r *Runner) retryInvoice(ctx context.Context, scenario Scenario, step Step,
 	}
 	state.results[step.ID] = output
 	return output, nil
+}
+
+func (r *Runner) deliverWebhook(ctx context.Context, scenario Scenario, step Step, params map[string]any, state *runState) (map[string]any, error) {
+	eventID := firstString(params, "eventRef", "event", "event_id", "eventId")
+	if _, ok := state.saas.webhookEvents[eventID]; ok || r.Webhooks == nil || eventID == "" {
+		return r.runSaaSStep(ctx, scenario, step, params, state)
+	}
+	replayParams := copyParams(params)
+	if step.Action == "webhook.deliver_duplicate" {
+		if int64Value(replayParams, "duplicate") == 0 {
+			replayParams["duplicate"] = 2
+		}
+	}
+	if step.Action == "webhook.deliver_out_of_order" {
+		if _, ok := replayParams["outOfOrder"]; !ok {
+			replayParams["outOfOrder"] = true
+		}
+	}
+	output, err := r.replayWebhook(ctx, step, replayParams, state)
+	if output != nil {
+		output["action"] = step.Action
+	}
+	return output, err
 }
 
 func (r *Runner) replayWebhook(ctx context.Context, step Step, params map[string]any, state *runState) (map[string]any, error) {
@@ -1066,6 +1181,14 @@ func firstString(params map[string]any, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+func copyParams(params map[string]any) map[string]any {
+	out := make(map[string]any, len(params)+1)
+	for key, value := range params {
+		out[key] = value
+	}
+	return out
 }
 
 func stringValue(params map[string]any, key string) string {

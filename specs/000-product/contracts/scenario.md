@@ -117,6 +117,7 @@ Numeric path segments address list entries, for example
 - `checkout.cancel`
 - `subscription.update`
 - `subscription.cancel`
+- `subscription.resume`
 - `invoice.fail_payment`
 - `invoice.retry`
 - `clock.advance`
@@ -128,9 +129,26 @@ Numeric path segments address list entries, for example
 `webhook.replay` schedules delivery attempts for an existing event id. It can
 use `duplicate`, `delay` or `delay_seconds`, `outOfOrder`, `responseStatus`,
 `responseBody`, `timeout`, `error`, and `signatureMismatch` parameters.
+`webhook.deliver_duplicate` and `webhook.deliver_out_of_order` are convenience
+actions over the same replay path when they reference a generic Billtap event.
+They keep their SaaS profile evidence behavior when they reference a SaaS
+profile webhook event.
 
-`subscription.update` accepts `subscriptionRef`/`subscription` and currently
-supports `cancel_at_period_end` for local lifecycle scenarios.
+`checkout.cancel` completes a local checkout session with Billtap's deterministic
+`canceled` outcome. The resulting evidence includes an expired checkout session,
+a canceled payment intent, and a void invoice.
+
+`subscription.update` accepts `subscriptionRef`/`subscription` and supports
+`cancel_at_period_end` for local lifecycle scenarios. `subscription.cancel`
+accepts `mode: period` or `mode: immediate` and emits
+`customer.subscription.updated` or `customer.subscription.deleted` evidence.
+`subscription.resume` clears pending cancellation and emits
+`customer.subscription.updated`.
+
+`invoice.fail_payment` is a deterministic failure-oriented wrapper around the
+local invoice payment mutation. It accepts the same `invoiceRef`/`invoice`,
+`payment_method`, and `outcome` parameters as `invoice.retry`, defaulting to a
+card-declined outcome when no explicit failure alias is supplied.
 
 `invoice.retry` mutates the local billing graph when the runner has a billing
 service and the step supplies `invoiceRef`/`invoice`. It also accepts

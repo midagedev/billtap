@@ -118,8 +118,12 @@ func supportedAction(action string) bool {
 		"price.create",
 		"checkout.create",
 		"checkout.complete",
+		"checkout.cancel",
 		"subscription.update",
+		"subscription.cancel",
+		"subscription.resume",
 		"clock.advance",
+		"invoice.fail_payment",
 		"invoice.retry",
 		"webhook.replay",
 		"app.assert":

@@ -200,14 +200,17 @@ Supported generic actions:
 - `price.create`
 - `checkout.create`
 - `checkout.complete`
+- `checkout.cancel`
+- `subscription.update`
+- `subscription.cancel`
+- `subscription.resume`
 - `clock.advance`
+- `invoice.fail_payment`
 - `invoice.retry`
-- `app.assert`
-
-Supported SaaS profile webhook evidence actions:
-
+- `webhook.replay`
 - `webhook.deliver_duplicate`
 - `webhook.deliver_out_of_order`
+- `app.assert`
 
 Supported SaaS profile actions are documented in
 `specs/000-product/contracts/scenario.md` and exercised by
@@ -217,8 +220,16 @@ Current scenario boundaries:
 
 - `checkout.complete` mutates local billing state and emits checkout-related
   webhook evidence.
+- `checkout.cancel` is a deterministic local cancellation outcome over the
+  checkout completion path. It records an expired checkout session, a canceled
+  payment intent, a void invoice, and checkout expiration webhook evidence.
 - `subscription.update` supports `cancel_at_period_end` for local lifecycle
-  scenarios.
+  scenarios. `subscription.cancel` uses the same local portal cancellation
+  state machine for period-end or immediate cancellation, and
+  `subscription.resume` clears pending cancellation.
+- `invoice.fail_payment` uses the same local invoice payment mutation as
+  `invoice.retry`, but defaults to a declined-card outcome when no explicit
+  failure alias is supplied.
 - `invoice.retry` calls the same local invoice payment mutation as
   `POST /v1/invoices/{id}/pay` when a billing service and invoice reference are
   available. Success marks the invoice paid, clears `next_payment_attempt`,
@@ -235,9 +246,10 @@ Current scenario boundaries:
   and the `webhook.replay` scenario action. Replay can schedule duplicate,
   delayed, out-of-order, simulated endpoint status, timeout, generic transport
   error, and signature-mismatch delivery attempts.
-- `webhook.deliver_duplicate` and `webhook.deliver_out_of_order` currently
-  update SaaS profile webhook evidence. Use `webhook.replay` for generic HTTP
-  delivery attempts.
+- `webhook.deliver_duplicate` and `webhook.deliver_out_of_order` use generic
+  replay delivery when they reference a Billtap event and a webhook service is
+  configured. They still update SaaS profile webhook evidence when they
+  reference SaaS profile events.
 - App assertions call the configured app assertion endpoint and can fail the
   run with a non-zero exit code.
 - Scenario reports are JSON and Markdown capable from the CLI.
