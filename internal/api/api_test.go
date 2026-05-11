@@ -1005,6 +1005,25 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 	if v2Traces.Data[0].Path != "/v2/core/accounts" || v2Traces.Data[0].ErrorCode != "unsupported_endpoint" {
 		t.Fatalf("v2 trace = %#v, want unsupported v2 endpoint evidence", v2Traces.Data[0])
 	}
+
+	connectSubrouteReq := httptest.NewRequest(http.MethodGet, "/v1/accounts/acct_123/external_accounts?limit=1", nil)
+	connectSubrouteReq.Header.Set("Request-Id", "req_known_connect_subroute_unsupported")
+	connectSubrouteRec := httptest.NewRecorder()
+	handler.ServeHTTP(connectSubrouteRec, connectSubrouteReq)
+	connectSubrouteErr := decodeErrorBody(t, connectSubrouteRec.Body.String())
+	if connectSubrouteRec.Code != http.StatusBadRequest || connectSubrouteErr.Error.Code != "unsupported_endpoint" {
+		t.Fatalf("connect subroute status=%d error=%#v, want unsupported endpoint", connectSubrouteRec.Code, connectSubrouteErr.Error)
+	}
+	connectSubrouteTraces := getJSON[struct {
+		Object string                     `json:"object"`
+		Data   []diagnostics.RequestTrace `json:"data"`
+	}](t, handler, "/api/request-traces?requestId=req_known_connect_subroute_unsupported")
+	if connectSubrouteTraces.Object != "list" || len(connectSubrouteTraces.Data) != 1 {
+		t.Fatalf("connect subroute traces = %#v, want unsupported request trace", connectSubrouteTraces)
+	}
+	if connectSubrouteTraces.Data[0].Path != "/v1/accounts/acct_123/external_accounts" || connectSubrouteTraces.Data[0].ErrorCode != "unsupported_endpoint" {
+		t.Fatalf("connect subroute trace = %#v, want unsupported endpoint evidence", connectSubrouteTraces.Data[0])
+	}
 }
 
 func TestConnectAccountSmokeCompatibility(t *testing.T) {
@@ -1062,8 +1081,8 @@ func TestConnectAccountSmokeCompatibility(t *testing.T) {
 		"capabilities[card_payments][status]": {"pending"},
 		"metadata[stage]":                     {"onboarding"},
 	})
-	if updated.ID != account.ID || updated.Capabilities["card_payments"] != "pending" || updated.Metadata["stage"] != "onboarding" {
-		t.Fatalf("updated account = %#v, want updated capability and metadata", updated)
+	if updated.ID != account.ID || updated.Capabilities["card_payments"] != "pending" || updated.Capabilities["transfers"] != "active" || updated.Metadata["platform"] != "sample" || updated.Metadata["stage"] != "onboarding" {
+		t.Fatalf("updated account = %#v, want merged capability and metadata", updated)
 	}
 
 	list := getJSON[struct {
@@ -1095,6 +1114,7 @@ func TestConnectAccountSmokeCompatibility(t *testing.T) {
 		Object       string `json:"object"`
 		Account      string `json:"account"`
 		ClientSecret string `json:"client_secret"`
+		ExpiresAt    int64  `json:"expires_at"`
 		Components   map[string]struct {
 			Enabled bool `json:"enabled"`
 		} `json:"components"`
@@ -1103,8 +1123,26 @@ func TestConnectAccountSmokeCompatibility(t *testing.T) {
 		"components[account_onboarding][enabled]":  {"true"},
 		"components[notification_banner][enabled]": {"false"},
 	})
-	if session.Object != "account_session" || session.Account != account.ID || session.ClientSecret == "" || !session.Components["account_onboarding"].Enabled || session.Components["notification_banner"].Enabled {
-		t.Fatalf("account session = %#v, want component flags and client secret", session)
+	if session.Object != "account_session" || session.Account != account.ID || session.ClientSecret == "" || session.ExpiresAt == 0 || !session.Components["account_onboarding"].Enabled || session.Components["notification_banner"].Enabled {
+		t.Fatalf("account session = %#v, want component flags, expiry, and client secret", session)
+	}
+
+	missingLinkTypeStatus, missingLinkTypeBody := postFormStatus(t, handler, "/v1/account_links", url.Values{
+		"account":     {account.ID},
+		"refresh_url": {"http://app.example.test/refresh"},
+		"return_url":  {"http://app.example.test/return"},
+	})
+	missingLinkTypeErr := decodeErrorBody(t, missingLinkTypeBody)
+	if missingLinkTypeStatus != http.StatusBadRequest || missingLinkTypeErr.Error.Code != "parameter_missing" || missingLinkTypeErr.Error.Param != "type" {
+		t.Fatalf("account link missing type status=%d error=%#v, want missing type", missingLinkTypeStatus, missingLinkTypeErr.Error)
+	}
+
+	missingSessionComponentsStatus, missingSessionComponentsBody := postFormStatus(t, handler, "/v1/account_sessions", url.Values{
+		"account": {account.ID},
+	})
+	missingSessionComponentsErr := decodeErrorBody(t, missingSessionComponentsBody)
+	if missingSessionComponentsStatus != http.StatusBadRequest || missingSessionComponentsErr.Error.Code != "parameter_missing" || missingSessionComponentsErr.Error.Param != "components" {
+		t.Fatalf("account session missing components status=%d error=%#v, want missing components", missingSessionComponentsStatus, missingSessionComponentsErr.Error)
 	}
 
 	traces := getJSON[struct {

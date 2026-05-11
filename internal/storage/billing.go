@@ -254,10 +254,10 @@ func (s *SQLiteStore) UpdateAccount(ctx context.Context, id string, in billing.A
 		current.DefaultCurrency = strings.ToLower(in.DefaultCurrency)
 	}
 	if in.Capabilities != nil {
-		current.Capabilities = in.Capabilities
+		current.Capabilities = mergeStringMap(current.Capabilities, in.Capabilities)
 	}
 	if in.Metadata != nil {
-		current.Metadata = in.Metadata
+		current.Metadata = mergeStringMap(current.Metadata, in.Metadata)
 	}
 	current.UpdatedAt = time.Now().UTC()
 	if _, err := s.db.ExecContext(ctx, `UPDATE connect_accounts SET email = ?, business_type = ?, default_currency = ?, capabilities = ?, metadata = ?, updated_at = ? WHERE id = ?`,
@@ -265,6 +265,17 @@ func (s *SQLiteStore) UpdateAccount(ctx context.Context, id string, in billing.A
 		return billing.Account{}, err
 	}
 	return s.GetAccount(ctx, id)
+}
+
+func mergeStringMap(current map[string]string, patch map[string]string) map[string]string {
+	merged := map[string]string{}
+	for key, value := range current {
+		merged[key] = value
+	}
+	for key, value := range patch {
+		merged[key] = value
+	}
+	return merged
 }
 
 func (s *SQLiteStore) CreateCheckoutSession(ctx context.Context, cs billing.CheckoutSession) (billing.CheckoutSession, error) {

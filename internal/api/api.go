@@ -533,6 +533,7 @@ func (h *Handler) handleAccountSessions(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	sessionID := "accsess_" + sanitizeID(accountID+"_"+time.Now().UTC().Format(time.RFC3339Nano))
+	expiresAt := time.Now().UTC().Add(30 * time.Minute).Unix()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"id":            sessionID,
 		"object":        billing.ObjectAccountSession,
@@ -540,6 +541,7 @@ func (h *Handler) handleAccountSessions(w http.ResponseWriter, r *http.Request) 
 		"client_secret": sessionID + "_secret_billtap",
 		"components":    accountSessionComponents(p),
 		"created":       time.Now().UTC().Unix(),
+		"expires_at":    expiresAt,
 		"livemode":      false,
 	})
 }

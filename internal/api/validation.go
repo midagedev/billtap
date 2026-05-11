@@ -356,7 +356,7 @@ func validateCapabilityParams(p params) error {
 func validateAccountLinkCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:    []string{"account", "refresh_url", "return_url", "type", "collection_options[fields]"},
-		Required:   []string{"account"},
+		Required:   []string{"account", "refresh_url", "return_url", "type"},
 		EnumParams: map[string][]string{"type": {"account_onboarding", "account_update"}},
 	})
 }
@@ -369,12 +369,17 @@ func validateAccountSessionCreate(p params) error {
 	}); err != nil {
 		return err
 	}
+	hasComponent := false
 	for key := range p.values {
 		if accountSessionComponentPattern.MatchString(key) {
+			hasComponent = true
 			if err := p.validateBool(key); err != nil {
 				return err
 			}
 		}
+	}
+	if !hasComponent {
+		return missingParam("components")
 	}
 	return nil
 }
