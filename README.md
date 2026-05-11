@@ -142,6 +142,17 @@ Fixture-provided object IDs are preserved where the fixture supplies them, and
 every created object is tagged with `billtap_fixture_ref` metadata so local E2E
 tests can find the seeded graph without relying on random IDs.
 
+Subscription fixture lifecycle fields are authoritative. If a subscription
+fixture sets `status`, that status wins over `outcome` for the final seeded
+subscription state. This lets a fixture use `outcome: payment_succeeded` to
+build checkout, invoice, and payment-intent evidence while still seeding
+`trialing`, `canceled`, `past_due`, `unpaid`, `incomplete`, or
+`incomplete_expired`. Explicit `current_period_start`, `current_period_end`,
+`trial_start`, `trial_end`, `canceled_at`, and `ended_at` values are applied as
+absolute times and are restored on re-apply. For `trialing`, attach a
+`test_clock` to the customer or subscription and set `trial_end`; advancing the
+clock past that timestamp emits the local trial-to-active update evidence.
+
 ## Diagnostic APIs
 
 Billtap records Stripe-like `/v1` and `/v2` API requests as redacted request traces.

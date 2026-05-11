@@ -1044,17 +1044,21 @@ func fixtureTrialCompletionTiming(fixture SubscriptionFixture) (int64, time.Time
 }
 
 func fixtureOutcome(fixture SubscriptionFixture) string {
+	status := strings.ToLower(strings.TrimSpace(fixture.Status))
+	switch status {
+	case "trialing":
+		return "payment_succeeded"
+	case "canceled", "incomplete_expired":
+		return "canceled"
+	case "past_due", "unpaid":
+		return "card_declined"
+	case "incomplete":
+		return "payment_pending"
+	}
 	if strings.TrimSpace(fixture.Outcome) != "" {
 		return strings.TrimSpace(fixture.Outcome)
 	}
-	switch strings.ToLower(strings.TrimSpace(fixture.Status)) {
-	case "past_due", "unpaid", "incomplete":
-		return "card_declined"
-	case "incomplete_expired":
-		return "canceled"
-	default:
-		return "payment_succeeded"
-	}
+	return "payment_succeeded"
 }
 
 func fixtureCancelAtPeriodEnd(fixture SubscriptionFixture) *bool {

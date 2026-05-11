@@ -20,6 +20,10 @@ Billtap uses spec-driven development and parallel agent orchestration.
 - Do not build real payment processing.
 - Use Go for backend runtime and React + TypeScript for UI.
 - Any behavior affecting webhook order, signature, retry, idempotency, or billing state must have tests.
+- Fixture subscription `status` and lifecycle dates are authoritative over
+  checkout `outcome`; changes to fixture seeding must preserve explicit
+  `trialing`, `canceled`, `past_due`, `unpaid`, `incomplete`, and
+  `incomplete_expired` states and their absolute period/trial timestamps.
 - Any production-facing feature must be optional, bounded, and safe.
 - Agent work must declare ownership, verification, and gate status.
 
@@ -32,4 +36,3 @@ Every agent handoff should include:
 - Verification
 - Open risks
 - Gate status
-
