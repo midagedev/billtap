@@ -252,6 +252,7 @@ func DefaultClaims() []Claim {
 	add(http.MethodPost, "/v1/setup_intents/{id}/confirm", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"setup_intents.create.confirm.succeeds"}, Risks: []string{"local deterministic outcome aliases only"}})
 	add(http.MethodPost, "/v1/setup_intents/{id}/cancel", Claim{Level: "L3", Stateful: true})
 	add(http.MethodGet, "/v1/payment_methods", Claim{Level: "L2", Risks: []string{"deterministic sandbox card projection only"}})
+	add(http.MethodGet, "/v1/customers/{customer}/payment_methods", Claim{Level: "L2", Risks: []string{"deterministic sandbox card projection only"}})
 
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
 		add(method, "/v1/webhook_endpoints", Claim{Level: "L5", Stateful: true, SDKSmoke: []string{"stripe-node"}})

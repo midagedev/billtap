@@ -34,12 +34,24 @@ type CatalogFixture struct {
 }
 
 type CustomerFixture struct {
-	ID        string            `json:"id" yaml:"id"`
-	Email     string            `json:"email" yaml:"email"`
-	Name      string            `json:"name" yaml:"name"`
-	Ref       string            `json:"ref" yaml:"ref"`
-	TestClock string            `json:"test_clock" yaml:"test_clock"`
-	Metadata  map[string]string `json:"metadata" yaml:"metadata"`
+	ID                         string                 `json:"id" yaml:"id"`
+	Email                      string                 `json:"email" yaml:"email"`
+	Name                       string                 `json:"name" yaml:"name"`
+	Ref                        string                 `json:"ref" yaml:"ref"`
+	TestClock                  string                 `json:"test_clock" yaml:"test_clock"`
+	PaymentMethodsFixture      string                 `json:"payment_methods_fixture" yaml:"payment_methods_fixture"`
+	PaymentMethodsFixtureCamel string                 `json:"paymentMethodsFixture" yaml:"paymentMethodsFixture"`
+	PaymentMethods             []PaymentMethodFixture `json:"payment_methods" yaml:"payment_methods"`
+	PaymentMethodsCamel        []PaymentMethodFixture `json:"paymentMethods" yaml:"paymentMethods"`
+	Metadata                   map[string]string      `json:"metadata" yaml:"metadata"`
+}
+
+type PaymentMethodFixture struct {
+	ID      string `json:"id" yaml:"id"`
+	Type    string `json:"type" yaml:"type"`
+	Brand   string `json:"brand" yaml:"brand"`
+	Last4   string `json:"last4" yaml:"last4"`
+	Default bool   `json:"default" yaml:"default"`
 }
 
 type ProductFixture struct {

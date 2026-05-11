@@ -1361,7 +1361,7 @@ func (s *Service) SimulatePaymentMethodUpdate(ctx context.Context, customerID st
 			result.PaymentMethodID = id("pm")
 		}
 		customer.Metadata = copyMap(customer.Metadata)
-		customer.Metadata["default_payment_method"] = result.PaymentMethodID
+		customer.Metadata[MetadataDefaultPaymentMethod] = result.PaymentMethodID
 		customer.Metadata["payment_method_status"] = "saved"
 		if _, err := s.repo.UpdateCustomer(ctx, customer.ID, Customer{Metadata: customer.Metadata}); err != nil {
 			return PaymentMethodSimulation{}, err

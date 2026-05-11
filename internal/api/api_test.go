@@ -2478,6 +2478,110 @@ func TestBillingPortalSessionActionsEmitWebhooks(t *testing.T) {
 	}
 }
 
+func TestFixtureCustomerPaymentMethodsCanBeEmptyUntilPortalSave(t *testing.T) {
+	handler := newTestHandler(t)
+	pack := map[string]any{
+		"name":      "sample-payment-method-fixtures",
+		"runId":     "run-payment-method-fixtures-1",
+		"namespace": "sample-app",
+		"customers": []map[string]any{
+			{
+				"id":              "cus_fixture_no_payment_methods",
+				"email":           "no-payment-methods@example.test",
+				"payment_methods": []map[string]any{},
+				"metadata":        map[string]string{"tenantId": "sample"},
+			},
+			{
+				"id":                      "cus_fixture_no_payment_methods_mode",
+				"email":                   "no-payment-methods-mode@example.test",
+				"payment_methods_fixture": "empty",
+				"metadata":                map[string]string{"tenantId": "sample"},
+			},
+			{
+				"id":    "cus_fixture_default_payment_method_projection",
+				"email": "default-payment-method-projection@example.test",
+			},
+			{
+				"id":    "cus_fixture_explicit_payment_methods",
+				"email": "explicit-payment-methods@example.test",
+				"payment_methods": []map[string]any{
+					{"id": "pm_fixture_secondary"},
+					{"id": "pm_fixture_primary", "default": true},
+				},
+			},
+		},
+	}
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if applied.Summary["customers"] != 4 {
+		t.Fatalf("apply summary = %#v, want four customers", applied.Summary)
+	}
+
+	assertPaymentMethodIDs := func(customerID string, want ...string) {
+		t.Helper()
+		methods := getJSON[struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}](t, handler, "/v1/payment_methods?customer="+customerID+"&type=card")
+		var got []string
+		for _, method := range methods.Data {
+			got = append(got, method.ID)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("payment methods for %s = %#v, want %#v", customerID, got, want)
+		}
+
+		nested := getJSON[struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}](t, handler, "/v1/customers/"+customerID+"/payment_methods?type=card")
+		got = got[:0]
+		for _, method := range nested.Data {
+			got = append(got, method.ID)
+		}
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Fatalf("nested payment methods for %s = %#v, want %#v", customerID, got, want)
+		}
+	}
+
+	assertPaymentMethodIDs("cus_fixture_no_payment_methods")
+	assertPaymentMethodIDs("cus_fixture_no_payment_methods_mode")
+	assertPaymentMethodIDs("cus_fixture_default_payment_method_projection", "pm_cus_fixture_default_payment_method_projection")
+	assertPaymentMethodIDs("cus_fixture_explicit_payment_methods", "pm_fixture_secondary", "pm_fixture_primary")
+
+	noMethodCustomer := getJSON[struct {
+		InvoiceSettings struct {
+			DefaultPaymentMethod *string `json:"default_payment_method"`
+		} `json:"invoice_settings"`
+	}](t, handler, "/v1/customers/cus_fixture_no_payment_methods")
+	if noMethodCustomer.InvoiceSettings.DefaultPaymentMethod != nil {
+		t.Fatalf("default payment method = %v, want nil", *noMethodCustomer.InvoiceSettings.DefaultPaymentMethod)
+	}
+	explicitCustomer := getJSON[struct {
+		InvoiceSettings struct {
+			DefaultPaymentMethod string `json:"default_payment_method"`
+		} `json:"invoice_settings"`
+	}](t, handler, "/v1/customers/cus_fixture_explicit_payment_methods")
+	if explicitCustomer.InvoiceSettings.DefaultPaymentMethod != "pm_fixture_primary" {
+		t.Fatalf("explicit default payment method = %q, want pm_fixture_primary", explicitCustomer.InvoiceSettings.DefaultPaymentMethod)
+	}
+
+	_ = postJSON[struct {
+		PaymentMethod billing.PaymentMethodSimulation `json:"payment_method"`
+	}](t, handler, "/api/portal/customers/cus_fixture_no_payment_methods/payment-method", map[string]string{
+		"outcome":        "succeeds",
+		"payment_method": "pm_card_visa",
+	})
+	assertPaymentMethodIDs("cus_fixture_no_payment_methods", "pm_cus_fixture_no_payment_methods", "pm_card_visa")
+
+	reapplied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if reapplied.Summary["customers"] != 4 {
+		t.Fatalf("reapply summary = %#v, want four customers", reapplied.Summary)
+	}
+	assertPaymentMethodIDs("cus_fixture_no_payment_methods")
+}
+
 func TestExpandedStripeSurfaceSimulations(t *testing.T) {
 	handler := newTestHandler(t)
 

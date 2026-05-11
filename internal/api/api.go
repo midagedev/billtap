@@ -298,6 +298,8 @@ func (h *Handler) handleCustomerSubresource(w http.ResponseWriter, r *http.Reque
 		h.handleCustomerCashBalance(w, r, customerID)
 	case "cash_balance_transactions":
 		h.handleCustomerCashBalanceTransactions(w, r, customerID, "")
+	case "payment_methods":
+		h.handleCustomerPaymentMethods(w, r, customerID)
 	default:
 		if strings.HasPrefix(subresource, "cash_balance_transactions/") {
 			h.handleCustomerCashBalanceTransactions(w, r, customerID, strings.TrimPrefix(subresource, "cash_balance_transactions/"))
@@ -2320,6 +2322,18 @@ func (h *Handler) handlePaymentMethods(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	customerID := r.URL.Query().Get("customer")
+	h.writeCustomerPaymentMethods(w, r, customerID)
+}
+
+func (h *Handler) handleCustomerPaymentMethods(w http.ResponseWriter, r *http.Request, customerID string) {
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	h.writeCustomerPaymentMethods(w, r, customerID)
+}
+
+func (h *Handler) writeCustomerPaymentMethods(w http.ResponseWriter, r *http.Request, customerID string) {
 	if customerID == "" {
 		writeResult(w, stripeList(r.URL.Path, []map[string]any{}), nil)
 		return
@@ -2329,8 +2343,7 @@ func (h *Handler) handlePaymentMethods(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, nil, err)
 		return
 	}
-	paymentMethodID := firstNonEmptyString(customer.Metadata["default_payment_method"], "pm_"+sanitizeID(customerID))
-	writeResult(w, stripeList(r.URL.Path, []map[string]any{stripePaymentMethod(customerID, paymentMethodID)}), nil)
+	writeResult(w, stripeList(r.URL.Path, stripePaymentMethods(customer)), nil)
 }
 
 func (h *Handler) handleObjects(w http.ResponseWriter, r *http.Request) {
@@ -3730,7 +3743,7 @@ func stripeSearchResult(urlPath string, query string, data any) map[string]any {
 }
 
 func stripeCustomer(customer billing.Customer) map[string]any {
-	defaultPaymentMethod := customer.Metadata["default_payment_method"]
+	defaultPaymentMethod := customer.Metadata[billing.MetadataDefaultPaymentMethod]
 	return map[string]any{
 		"id":         customer.ID,
 		"object":     billing.ObjectCustomer,
@@ -3765,6 +3778,67 @@ func stripePaymentMethod(customerID string, paymentMethodID string) map[string]a
 		"created":  time.Now().UTC().Unix(),
 		"livemode": false,
 	}
+}
+
+func stripePaymentMethods(customer billing.Customer) []map[string]any {
+	ids := customerPaymentMethodIDs(customer)
+	data := make([]map[string]any, 0, len(ids))
+	for _, id := range ids {
+		data = append(data, stripePaymentMethod(customer.ID, id))
+	}
+	return data
+}
+
+func customerPaymentMethodIDs(customer billing.Customer) []string {
+	defaultPaymentMethod := strings.TrimSpace(customer.Metadata[billing.MetadataDefaultPaymentMethod])
+	explicitIDs := splitPaymentMethodIDs(customer.Metadata[billing.MetadataPaymentMethodIDs])
+	autoPaymentMethod := "pm_" + sanitizeID(customer.ID)
+
+	switch strings.ToLower(strings.TrimSpace(customer.Metadata[billing.MetadataPaymentMethodsFixture])) {
+	case billing.PaymentMethodsFixtureEmpty:
+		if defaultPaymentMethod == "" {
+			return explicitIDs
+		}
+		return uniquePaymentMethodIDs([]string{autoPaymentMethod, defaultPaymentMethod})
+	case billing.PaymentMethodsFixtureExplicit:
+		ids := append([]string{}, explicitIDs...)
+		if defaultPaymentMethod != "" {
+			ids = append(ids, defaultPaymentMethod)
+		}
+		return uniquePaymentMethodIDs(ids)
+	default:
+		if defaultPaymentMethod != "" {
+			return []string{defaultPaymentMethod}
+		}
+		return []string{autoPaymentMethod}
+	}
+}
+
+func splitPaymentMethodIDs(raw string) []string {
+	var ids []string
+	for _, value := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == '\n'
+	}) {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			ids = append(ids, value)
+		}
+	}
+	return uniquePaymentMethodIDs(ids)
+}
+
+func uniquePaymentMethodIDs(ids []string) []string {
+	out := make([]string, 0, len(ids))
+	seen := map[string]bool{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	return out
 }
 
 func paymentMethodLast4(paymentMethodID string) string {

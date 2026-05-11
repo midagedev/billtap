@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Added customer fixture controls for empty or explicit payment-method lists so
+  no-card local billing scenarios can remain deterministic until portal save.
 - Expanded the Stripe-like simulation surface with hosted billing portal
   sessions/actions, local coupons and promotion codes, subscription schedules,
   SCA-required PaymentIntent callbacks, customer cash-balance funding for

@@ -1,6 +1,10 @@
 package fixtures
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/hckim/billtap/internal/billing"
+)
 
 func TestFixtureOutcomeStatusOverridesSuccessfulOutcome(t *testing.T) {
 	tests := []struct {
@@ -64,5 +68,39 @@ func TestFixtureOutcomeStatusOverridesSuccessfulOutcome(t *testing.T) {
 				t.Fatalf("fixtureOutcome() = %q, want %q", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestCustomerPaymentMethodFixtureConfig(t *testing.T) {
+	yamlPack := []byte(`
+customers:
+  - id: cus_fixture_empty_methods
+    payment_methods_fixture: empty
+  - id: cus_fixture_empty_methods_list
+    payment_methods: []
+  - id: cus_fixture_explicit_methods
+    payment_methods:
+      - id: pm_fixture_secondary
+      - id: pm_fixture_primary
+        default: true
+`)
+	pack, err := LoadPack(yamlPack, "application/yaml")
+	if err != nil {
+		t.Fatalf("LoadPack() error = %v", err)
+	}
+
+	mode, ids, defaultID, configured, err := customerPaymentMethodFixtureConfig(pack.Customers[0])
+	if err != nil || !configured || mode != billing.PaymentMethodsFixtureEmpty || len(ids) != 0 || defaultID != "" {
+		t.Fatalf("mode fixture config = mode %q ids %#v default %q configured %v err %v, want empty", mode, ids, defaultID, configured, err)
+	}
+
+	mode, ids, defaultID, configured, err = customerPaymentMethodFixtureConfig(pack.Customers[1])
+	if err != nil || !configured || mode != billing.PaymentMethodsFixtureEmpty || len(ids) != 0 || defaultID != "" {
+		t.Fatalf("empty list config = mode %q ids %#v default %q configured %v err %v, want empty", mode, ids, defaultID, configured, err)
+	}
+
+	mode, ids, defaultID, configured, err = customerPaymentMethodFixtureConfig(pack.Customers[2])
+	if err != nil || !configured || mode != billing.PaymentMethodsFixtureExplicit || len(ids) != 2 || ids[0] != "pm_fixture_secondary" || ids[1] != "pm_fixture_primary" || defaultID != "pm_fixture_primary" {
+		t.Fatalf("explicit config = mode %q ids %#v default %q configured %v err %v, want explicit methods with primary default", mode, ids, defaultID, configured, err)
 	}
 }

@@ -312,10 +312,19 @@ func (s *Service) upsertCustomer(ctx context.Context, pack Pack, fixture Custome
 		}
 		metadata["test_clock"] = strings.TrimSpace(fixture.TestClock)
 	}
+	var err error
+	metadata, err = applyCustomerPaymentMethodFixture(metadata, fixture)
+	if err != nil {
+		return billing.Customer{}, err
+	}
 	if fixture.ID != "" {
 		current, err := s.billing.GetCustomer(ctx, fixture.ID)
 		if err == nil {
 			metadata = mergeStringMap(current.Metadata, metadata)
+			metadata, err = applyCustomerPaymentMethodFixture(metadata, fixture)
+			if err != nil {
+				return billing.Customer{}, err
+			}
 			return s.billing.UpdateCustomer(ctx, fixture.ID, billing.Customer{
 				Email:    fixture.Email,
 				Name:     fixture.Name,
@@ -657,6 +666,9 @@ func validatePack(pack Pack) error {
 		if strings.TrimSpace(customer.ID) == "" && strings.TrimSpace(customer.Email) == "" {
 			problems = append(problems, fmt.Sprintf("customers[%d] requires id or email", idx))
 		}
+		if _, _, _, configured, err := customerPaymentMethodFixtureConfig(customer); configured && err != nil {
+			problems = append(problems, fmt.Sprintf("customers[%d].payment_methods is invalid: %v", idx, err))
+		}
 	}
 	for idx, product := range pack.Products {
 		if strings.TrimSpace(product.Name) == "" {
@@ -860,6 +872,59 @@ func fixtureMetadata(base map[string]string, pack Pack, ref string) map[string]s
 		return nil
 	}
 	return out
+}
+
+func applyCustomerPaymentMethodFixture(metadata map[string]string, fixture CustomerFixture) (map[string]string, error) {
+	mode, ids, defaultID, configured, err := customerPaymentMethodFixtureConfig(fixture)
+	if err != nil || !configured {
+		return metadata, err
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata[billing.MetadataPaymentMethodsFixture] = mode
+	delete(metadata, billing.MetadataPaymentMethodIDs)
+	delete(metadata, billing.MetadataDefaultPaymentMethod)
+	if len(ids) > 0 {
+		metadata[billing.MetadataPaymentMethodIDs] = strings.Join(ids, ",")
+	}
+	if defaultID != "" {
+		metadata[billing.MetadataDefaultPaymentMethod] = defaultID
+	}
+	return metadata, nil
+}
+
+func customerPaymentMethodFixtureConfig(fixture CustomerFixture) (string, []string, string, bool, error) {
+	mode := strings.ToLower(firstFixtureNonEmpty(fixture.PaymentMethodsFixture, fixture.PaymentMethodsFixtureCamel))
+	if mode != "" && mode != billing.PaymentMethodsFixtureEmpty && mode != billing.PaymentMethodsFixtureExplicit {
+		return "", nil, "", true, fmt.Errorf("unsupported payment_methods_fixture %q", mode)
+	}
+	methodsConfigured := fixture.PaymentMethods != nil || fixture.PaymentMethodsCamel != nil
+	methods := append([]PaymentMethodFixture{}, fixture.PaymentMethods...)
+	methods = append(methods, fixture.PaymentMethodsCamel...)
+	if !methodsConfigured {
+		if mode == "" {
+			return "", nil, "", false, nil
+		}
+		return mode, nil, "", true, nil
+	}
+	if len(methods) == 0 {
+		return billing.PaymentMethodsFixtureEmpty, nil, "", true, nil
+	}
+
+	ids := make([]string, 0, len(methods))
+	defaultID := ""
+	for idx, method := range methods {
+		if strings.TrimSpace(method.ID) == "" {
+			return "", nil, "", true, fmt.Errorf("payment_methods[%d].id is required", idx)
+		}
+		id := strings.TrimSpace(method.ID)
+		ids = append(ids, id)
+		if method.Default {
+			defaultID = id
+		}
+	}
+	return billing.PaymentMethodsFixtureExplicit, uniqueFixtureStrings(ids), defaultID, true, nil
 }
 
 func fixtureMetadataMatches(metadata map[string]string, filter SnapshotFilter) bool {
@@ -1115,6 +1180,20 @@ func firstFixtureNonEmpty(values ...string) string {
 		}
 	}
 	return ""
+}
+
+func uniqueFixtureStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]bool{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || seen[value] {
+			continue
+		}
+		seen[value] = true
+		out = append(out, value)
+	}
+	return out
 }
 
 func ensureStringMap(in map[string]string) map[string]string {
