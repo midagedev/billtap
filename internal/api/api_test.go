@@ -582,6 +582,21 @@ func TestDirectPaymentIntentAndSetupIntentStateMachines(t *testing.T) {
 	if confirmedSCA.Status != "requires_action" || confirmedSCA.PaymentMethod != "pm_card_visa" || confirmedSCA.NextAction["type"] != "use_stripe_sdk" {
 		t.Fatalf("confirmed SCA intent = %#v, want configured requires_action outcome", confirmedSCA)
 	}
+	redirectSCA := postForm[struct {
+		Status     string         `json:"status"`
+		NextAction map[string]any `json:"next_action"`
+	}](t, handler, "/v1/payment_intents", url.Values{
+		"amount":   {"3300"},
+		"currency": {"usd"},
+		"customer": {customer.ID},
+		"confirm":  {"true"},
+		"metadata[billtap_payment_intent_outcome]": {"requires_action"},
+		"billtap_next_action_type":                 {"redirect_to_url"},
+		"return_url":                               {"http://app.example.test/return"},
+	})
+	if redirectSCA.Status != "requires_action" || redirectSCA.NextAction["type"] != "redirect_to_url" {
+		t.Fatalf("redirect SCA intent = %#v, want redirect_to_url next_action", redirectSCA)
+	}
 
 	setup := postForm[billing.SetupIntent](t, handler, "/v1/setup_intents", url.Values{
 		"customer":       {customer.ID},
@@ -4295,6 +4310,291 @@ func TestRefundCreditNoteAPIsAndEvents(t *testing.T) {
 	}
 	if len(firstApply.CreditNotes) != 1 || len(secondApply.CreditNotes) != 1 || secondApply.CreditNotes[0].ID != "cn_e2e_partial_credit" {
 		t.Fatalf("fixture credit notes first=%#v second=%#v, want idempotent stable credit note", firstApply.CreditNotes, secondApply.CreditNotes)
+	}
+}
+
+func TestInvoicePreviewProrationAndUpcoming(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"preview@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Preview Team"}})
+	lite := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"1000"},
+		"recurring[interval]": {"month"},
+	})
+	pro := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"3000"},
+		"recurring[interval]": {"month"},
+	})
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", map[string]any{
+		"name":  "preview-proration",
+		"runId": "preview-run-1",
+		"subscriptions": []map[string]any{{
+			"id":                   "sub_preview_proration",
+			"customer":             customer.ID,
+			"price":                lite.ID,
+			"status":               "active",
+			"current_period_start": "2030-01-01T00:00:00Z",
+			"current_period_end":   "2030-01-31T00:00:00Z",
+		}},
+	})
+	if len(applied.Subscriptions) != 1 {
+		t.Fatalf("fixture apply = %#v, want subscription", applied)
+	}
+	prorationDate := time.Date(2030, 1, 16, 0, 0, 0, 0, time.UTC).Unix()
+	preview := postForm[struct {
+		Object    string `json:"object"`
+		AmountDue int64  `json:"amount_due"`
+		Lines     struct {
+			Object string `json:"object"`
+			Data   []struct {
+				Amount    int64 `json:"amount"`
+				Proration bool  `json:"proration"`
+				Parent    struct {
+					Type                    string `json:"type"`
+					SubscriptionItemDetails struct {
+						Proration bool   `json:"proration"`
+						Price     string `json:"price"`
+					} `json:"subscription_item_details"`
+				} `json:"parent"`
+			} `json:"data"`
+		} `json:"lines"`
+	}](t, handler, "/v1/invoices/create_preview", url.Values{
+		"subscription":                             {"sub_preview_proration"},
+		"subscription_details[items][0][price]":    {pro.ID},
+		"subscription_details[items][0][quantity]": {"1"},
+		"subscription_details[proration_behavior]": {"create_prorations"},
+		"subscription_details[proration_date]":     {strconv.FormatInt(prorationDate, 10)},
+	})
+	if preview.Object != "invoice" || preview.AmountDue != 1000 || len(preview.Lines.Data) != 1 || !preview.Lines.Data[0].Proration || preview.Lines.Data[0].Parent.SubscriptionItemDetails.Price != pro.ID {
+		t.Fatalf("preview = %#v, want one 1000-cent proration line for pro price", preview)
+	}
+	q := url.Values{}
+	q.Set("subscription", "sub_preview_proration")
+	q.Set("subscription_details[items][0][price]", pro.ID)
+	q.Set("subscription_details[proration_date]", strconv.FormatInt(prorationDate, 10))
+	upcoming := getJSON[struct {
+		Object    string `json:"object"`
+		AmountDue int64  `json:"amount_due"`
+	}](t, handler, "/v1/invoices/upcoming?"+q.Encode())
+	if upcoming.Object != "invoice" || upcoming.AmountDue != 1000 {
+		t.Fatalf("upcoming = %#v, want Stripe upcoming-compatible preview", upcoming)
+	}
+	none := postForm[struct {
+		AmountDue int64 `json:"amount_due"`
+		Lines     struct {
+			Data []any `json:"data"`
+		} `json:"lines"`
+	}](t, handler, "/v1/invoices/create_preview", url.Values{
+		"subscription":                             {"sub_preview_proration"},
+		"subscription_details[items][0][price]":    {pro.ID},
+		"subscription_details[proration_behavior]": {"none"},
+	})
+	if none.AmountDue != 0 || len(none.Lines.Data) != 0 {
+		t.Fatalf("none proration preview = %#v, want no proration line", none)
+	}
+}
+
+func TestCustomerDefaultInvoiceOutcomeFailsRenewal(t *testing.T) {
+	handler := newTestHandler(t)
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Renewal Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"2400"},
+		"recurring[interval]": {"month"},
+	})
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", map[string]any{
+		"name": "renewal-failure",
+		"test_clocks": []map[string]any{{
+			"id":          "clock_renewal_failure",
+			"frozen_time": "2030-02-01T00:00:00Z",
+		}},
+		"customers": []map[string]any{{
+			"id":                      "cus_renewal_failure",
+			"email":                   "renewal-failure@example.test",
+			"test_clock":              "clock_renewal_failure",
+			"default_invoice_outcome": "insufficient_funds",
+		}},
+		"subscriptions": []map[string]any{{
+			"id":                   "sub_renewal_failure",
+			"customer":             "cus_renewal_failure",
+			"price":                price.ID,
+			"status":               "active",
+			"test_clock":           "clock_renewal_failure",
+			"current_period_start": "2030-02-01T00:00:00Z",
+			"current_period_end":   "2030-03-01T00:00:00Z",
+		}},
+	})
+	if got := applied.Customers[0].Metadata[billing.MetadataDefaultInvoiceOutcome]; got != "insufficient_funds" {
+		t.Fatalf("customer metadata outcome = %q, want insufficient_funds", got)
+	}
+	advance := postForm[struct {
+		BilltapAdvanceResult struct {
+			Renewed  int `json:"renewed"`
+			Renewals []struct {
+				Invoice struct {
+					Status       string `json:"status"`
+					AmountDue    int64  `json:"amount_due"`
+					AmountPaid   int64  `json:"amount_paid"`
+					AttemptCount int    `json:"attempt_count"`
+				} `json:"invoice"`
+				Subscription struct {
+					Status string `json:"status"`
+				} `json:"subscription"`
+				PaymentIntent struct {
+					Status      string `json:"status"`
+					FailureCode string `json:"failure_code"`
+					DeclineCode string `json:"decline_code"`
+				} `json:"payment_intent"`
+			} `json:"renewals"`
+		} `json:"billtap_advance_result"`
+	}](t, handler, "/v1/test_helpers/test_clocks/clock_renewal_failure/advance", url.Values{
+		"frozen_time": {strconv.FormatInt(time.Date(2030, 3, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)},
+	})
+	if advance.BilltapAdvanceResult.Renewed != 1 || len(advance.BilltapAdvanceResult.Renewals) != 1 {
+		t.Fatalf("advance = %#v, want one failed renewal", advance)
+	}
+	renewal := advance.BilltapAdvanceResult.Renewals[0]
+	if renewal.Invoice.Status != "open" || renewal.Invoice.AmountDue != 2400 || renewal.Invoice.AmountPaid != 0 || renewal.Subscription.Status != "past_due" || renewal.PaymentIntent.Status != "requires_payment_method" || renewal.PaymentIntent.FailureCode != "card_declined" || renewal.PaymentIntent.DeclineCode != "insufficient_funds" {
+		t.Fatalf("failed renewal = %#v, want open invoice, past_due subscription, insufficient_funds error", renewal)
+	}
+	events := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=invoice.payment_failed")
+	if len(events.Data) == 0 {
+		t.Fatalf("invoice.payment_failed events = %#v, want renewal failure webhook", events.Data)
+	}
+}
+
+func TestRefundTimingCreditVoidFixtureValidateAndDisputes(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"history@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"History Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"5000"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	completion := postJSON[struct {
+		Invoice billing.Invoice `json:"invoice"`
+	}](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+	validation := postJSON[struct {
+		Valid   bool           `json:"valid"`
+		Summary map[string]int `json:"summary"`
+	}](t, handler, "/api/fixtures/validate", map[string]any{
+		"name": "surface-fixture",
+		"connected_accounts": []map[string]any{{
+			"id":                "acct_fixture_surface",
+			"country":           "US",
+			"default_currency":  "usd",
+			"details_submitted": true,
+		}},
+		"refunds": []map[string]any{{
+			"id":        "re_pending_clock",
+			"invoice":   completion.Invoice.ID,
+			"amount":    1200,
+			"status":    "pending",
+			"settle_at": "2030-05-03T00:00:00Z",
+		}},
+		"credit_notes": []map[string]any{{
+			"id":      "cn_void_fixture",
+			"invoice": completion.Invoice.ID,
+			"amount":  1200,
+			"status":  "void",
+		}},
+		"disputes": []map[string]any{{
+			"id":     "dp_fixture_surface",
+			"charge": "ch_fixture_surface",
+			"amount": 1200,
+			"status": "needs_response",
+		}},
+	})
+	if !validation.Valid || validation.Summary["connected_accounts"] != 1 || validation.Summary["disputes"] != 1 {
+		t.Fatalf("fixture validation = %#v, want valid account/dispute counts", validation)
+	}
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", map[string]any{
+		"name": "surface-fixture",
+		"connected_accounts": []map[string]any{{
+			"id":               "acct_fixture_surface",
+			"country":          "US",
+			"default_currency": "usd",
+		}},
+		"test_clocks": []map[string]any{{
+			"id":          "clock_refund_settle",
+			"frozen_time": "2030-05-01T00:00:00Z",
+		}},
+		"customers": []map[string]any{{
+			"id":         customer.ID,
+			"test_clock": "clock_refund_settle",
+		}},
+		"refunds": []map[string]any{{
+			"id":         "re_pending_clock",
+			"invoice":    completion.Invoice.ID,
+			"amount":     1200,
+			"status":     "pending",
+			"settle_at":  "2030-05-03T00:00:00Z",
+			"test_clock": "clock_refund_settle",
+		}},
+		"credit_notes": []map[string]any{{
+			"id":      "cn_void_fixture",
+			"invoice": completion.Invoice.ID,
+			"amount":  1200,
+			"status":  "void",
+		}},
+		"disputes": []map[string]any{{
+			"id":       "dp_fixture_surface",
+			"charge":   "ch_fixture_surface",
+			"amount":   1200,
+			"currency": "usd",
+			"reason":   "fraudulent",
+			"status":   "needs_response",
+		}},
+	})
+	if len(applied.ConnectedAccounts) != 1 || len(applied.Refunds) != 1 || applied.Refunds[0].Status != "pending" || len(applied.CreditNotes) != 1 || applied.CreditNotes[0].Status != "void" || len(applied.Disputes) != 1 {
+		t.Fatalf("fixture apply = %#v, want account, pending refund, void credit note, dispute", applied)
+	}
+	advance := postForm[struct {
+		BilltapAdvanceResult struct {
+			RefundCount    int `json:"refund_count"`
+			SettledRefunds []struct {
+				ID     string `json:"id"`
+				Status string `json:"status"`
+			} `json:"settled_refunds"`
+		} `json:"billtap_advance_result"`
+	}](t, handler, "/v1/test_helpers/test_clocks/clock_refund_settle/advance", url.Values{
+		"frozen_time": {strconv.FormatInt(time.Date(2030, 5, 3, 0, 0, 0, 0, time.UTC).Unix(), 10)},
+	})
+	if advance.BilltapAdvanceResult.RefundCount != 1 || advance.BilltapAdvanceResult.SettledRefunds[0].Status != "succeeded" {
+		t.Fatalf("refund clock advance = %#v, want one settled refund", advance)
+	}
+	updatedDispute := postForm[struct {
+		ID              string         `json:"id"`
+		EvidenceDetails map[string]any `json:"evidence_details"`
+	}](t, handler, "/v1/disputes/dp_fixture_surface", url.Values{
+		"evidence[product_description]": {"Local test product"},
+	})
+	if updatedDispute.ID != "dp_fixture_surface" || updatedDispute.EvidenceDetails["has_evidence"] != true {
+		t.Fatalf("updated dispute = %#v, want submitted evidence details", updatedDispute)
+	}
+	events := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events")
+	eventTypes := map[string]bool{}
+	for _, event := range events.Data {
+		eventTypes[event.Type] = true
+	}
+	for _, eventType := range []string{"charge.refund.updated", "credit_note.voided", "charge.dispute.created", "charge.dispute.updated"} {
+		if !eventTypes[eventType] {
+			t.Fatalf("events missing %s in %#v", eventType, eventTypes)
+		}
 	}
 }
 

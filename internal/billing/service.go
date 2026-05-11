@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -62,9 +63,11 @@ type Repository interface {
 	CreateRefund(context.Context, Refund, []TimelineEntry) (Refund, error)
 	GetRefund(context.Context, string) (Refund, error)
 	ListRefundsFiltered(context.Context, RefundFilter) ([]Refund, error)
+	UpdateRefund(context.Context, Refund, []TimelineEntry) (Refund, error)
 	CreateCreditNote(context.Context, CreditNote, []TimelineEntry) (CreditNote, error)
 	GetCreditNote(context.Context, string) (CreditNote, error)
 	ListCreditNotesFiltered(context.Context, CreditNoteFilter) ([]CreditNote, error)
+	UpdateCreditNote(context.Context, CreditNote, []TimelineEntry) (CreditNote, error)
 	CreateAccount(context.Context, Account) (Account, error)
 	GetAccount(context.Context, string) (Account, error)
 	ListAccounts(context.Context) ([]Account, error)
@@ -719,6 +722,13 @@ func (s *Service) advanceClock(ctx context.Context, at time.Time, testClockID st
 			current = renewal.Subscription
 		}
 	}
+	settled, err := s.settlePendingRefunds(ctx, at, result.TestClockID)
+	if err != nil {
+		return result, err
+	}
+	result.SettledRefunds = settled
+	result.RefundCount = len(settled)
+	result.Processed += len(settled)
 	return result, nil
 }
 
@@ -849,6 +859,39 @@ func (s *Service) ListRefunds(ctx context.Context, filter RefundFilter) ([]Refun
 	return s.repo.ListRefundsFiltered(ctx, filter)
 }
 
+func (s *Service) UpdateRefundStatus(ctx context.Context, refundID string, status string, at time.Time) (Refund, error) {
+	refund, err := s.repo.GetRefund(ctx, refundID)
+	if err != nil {
+		return Refund{}, err
+	}
+	status = strings.ToLower(strings.TrimSpace(status))
+	switch status {
+	case "pending", "succeeded", "failed", "canceled":
+	default:
+		return Refund{}, fmt.Errorf("%w: status must be pending, succeeded, failed, or canceled", ErrInvalidInput)
+	}
+	if at.IsZero() {
+		at = s.now()
+	}
+	refund.Status = status
+	refund.Metadata = copyMap(refund.Metadata)
+	refund.Metadata["billtap_last_status_update"] = at.Format(time.RFC3339Nano)
+	return s.repo.UpdateRefund(ctx, refund, []TimelineEntry{billingTimelineEntry(
+		"refund_status_"+refund.ID+"_"+status+"_"+at.Format(time.RFC3339Nano),
+		"charge.refund.updated",
+		"Refund "+status,
+		ObjectRefund,
+		refund.ID,
+		refund.CustomerID,
+		"",
+		"",
+		refund.InvoiceID,
+		refund.PaymentIntentID,
+		map[string]string{"source": "refund.update", "status": refund.Status, "charge": refund.ChargeID},
+		at,
+	)})
+}
+
 func (s *Service) CreateCreditNote(ctx context.Context, in CreditNote) (CreditNote, error) {
 	if strings.TrimSpace(in.InvoiceID) == "" {
 		return CreditNote{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
@@ -893,6 +936,37 @@ func (s *Service) GetCreditNote(ctx context.Context, creditNoteID string) (Credi
 
 func (s *Service) ListCreditNotes(ctx context.Context, filter CreditNoteFilter) ([]CreditNote, error) {
 	return s.repo.ListCreditNotesFiltered(ctx, filter)
+}
+
+func (s *Service) VoidCreditNote(ctx context.Context, creditNoteID string) (CreditNote, error) {
+	note, err := s.repo.GetCreditNote(ctx, creditNoteID)
+	if err != nil {
+		return CreditNote{}, err
+	}
+	if note.Status == "void" {
+		return note, nil
+	}
+	if note.Status != "issued" {
+		return CreditNote{}, fmt.Errorf("%w: status must be issued", ErrInvalidInput)
+	}
+	now := s.now()
+	note.Status = "void"
+	note.Metadata = copyMap(note.Metadata)
+	note.Metadata["billtap_voided_at"] = now.Format(time.RFC3339Nano)
+	return s.repo.UpdateCreditNote(ctx, note, []TimelineEntry{billingTimelineEntry(
+		"credit_note_voided_"+note.ID+"_"+now.Format(time.RFC3339Nano),
+		"credit_note.voided",
+		"Credit note voided",
+		ObjectCreditNote,
+		note.ID,
+		note.CustomerID,
+		"",
+		"",
+		note.InvoiceID,
+		"",
+		map[string]string{"source": "credit_note.void", "status": note.Status},
+		now,
+	)})
 }
 
 func (s *Service) GetPaymentIntent(ctx context.Context, id string) (PaymentIntent, error) {
@@ -1515,6 +1589,11 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 	sub.Metadata["billtap_last_renewal_period_end"] = periodEnd.Format(time.RFC3339Nano)
 
 	renewalOutcome := renewalOutcome(sub.Metadata)
+	if renewalOutcome == "" && sub.CustomerID != "" {
+		if customer, err := s.repo.GetCustomer(ctx, sub.CustomerID); err == nil {
+			renewalOutcome = CustomerDefaultInvoiceOutcome(customer.Metadata)
+		}
+	}
 	renewalFailed := renewalOutcome != ""
 	invoice := Invoice{
 		ID:             id("in"),
@@ -1538,6 +1617,7 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		invoice.NextPaymentAttempt = &nextPaymentAttempt
 		sub.Status = renewalFailureSubscriptionStatus(renewalOutcome)
 		sub.Metadata["billtap_last_renewal_outcome"] = renewalOutcome
+		sub.Metadata["billtap_next_retry_at"] = nextPaymentAttempt.Format(time.RFC3339Nano)
 	}
 	intent := PaymentIntent{
 		ID:              id("pi"),
@@ -1614,19 +1694,109 @@ func (s *Service) subscriptionAttachedToClock(ctx context.Context, sub Subscript
 	return false
 }
 
+func (s *Service) refundAttachedToClock(ctx context.Context, refund Refund, clockID string) bool {
+	clockID = strings.TrimSpace(clockID)
+	if clockID == "" {
+		return true
+	}
+	if strings.TrimSpace(refund.Metadata["test_clock"]) == clockID || strings.TrimSpace(refund.Metadata["testClock"]) == clockID {
+		return true
+	}
+	if refund.CustomerID == "" {
+		return false
+	}
+	customer, err := s.repo.GetCustomer(ctx, refund.CustomerID)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(customer.Metadata["test_clock"]) == clockID || strings.TrimSpace(customer.Metadata["testClock"]) == clockID
+}
+
+func (s *Service) settlePendingRefunds(ctx context.Context, at time.Time, testClockID string) ([]Refund, error) {
+	refunds, err := s.repo.ListRefundsFiltered(ctx, RefundFilter{})
+	if err != nil {
+		return nil, err
+	}
+	var settled []Refund
+	for _, refund := range refunds {
+		if refund.Status != "pending" || !s.refundAttachedToClock(ctx, refund, testClockID) {
+			continue
+		}
+		settleAtRaw := firstNonEmpty(refund.Metadata["billtap_settle_at"], refund.Metadata["settle_at"], refund.Metadata["available_on"])
+		if settleAtRaw == "" {
+			continue
+		}
+		settleAt, err := parseMetadataTime(settleAtRaw)
+		if err != nil {
+			return settled, err
+		}
+		if settleAt.After(at) {
+			continue
+		}
+		updated, err := s.UpdateRefundStatus(ctx, refund.ID, "succeeded", settleAt)
+		if err != nil {
+			return settled, err
+		}
+		settled = append(settled, updated)
+	}
+	return settled, nil
+}
+
 func renewalOutcome(metadata map[string]string) string {
 	for _, key := range []string{"billtap_renewal_outcome", "renewal_outcome", "renewalOutcome"} {
-		value := strings.ToLower(strings.TrimSpace(metadata[key]))
-		switch value {
-		case "", "payment_succeeded", "succeeded", "success":
-			continue
-		case "payment_failed":
-			return "card_declined"
-		default:
+		if value := normalizeInvoiceOutcome(metadata[key]); value != "" {
 			return value
 		}
 	}
 	return ""
+}
+
+// CustomerDefaultInvoiceOutcome returns the default renewal invoice outcome from customer metadata.
+func CustomerDefaultInvoiceOutcome(metadata map[string]string) string {
+	for _, key := range []string{MetadataDefaultInvoiceOutcome, "billtap_default_renewal_outcome", "default_invoice_outcome", "default_renewal_outcome"} {
+		if value := normalizeInvoiceOutcome(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func IsSupportedInvoiceOutcome(outcome string) bool {
+	outcome = normalizeInvoiceOutcome(outcome)
+	if outcome == "" {
+		return true
+	}
+	return IsSupportedPaymentIntentOutcome(outcome)
+}
+
+func normalizeInvoiceOutcome(outcome string) string {
+	value := strings.ToLower(strings.TrimSpace(outcome))
+	switch value {
+	case "", "payment_succeeded", "succeeded", "success":
+		return ""
+	case "payment_failed":
+		return "card_declined"
+	default:
+		return value
+	}
+}
+
+func parseMetadataTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("%w: time is required", ErrInvalidInput)
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		return time.Unix(seconds, 0).UTC(), nil
+	}
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		parsed, err = time.Parse(time.RFC3339Nano, value)
+	}
+	if err != nil {
+		return time.Time{}, fmt.Errorf("%w: invalid time %q", ErrInvalidInput, value)
+	}
+	return parsed.UTC(), nil
 }
 
 func renewalFailureSubscriptionStatus(outcome string) string {
@@ -1743,6 +1913,8 @@ type TimelineFilter struct {
 	SubscriptionID    string
 	InvoiceID         string
 	PaymentIntentID   string
+	ObjectType        string
+	ObjectID          string
 }
 
 func firstNonEmpty(values ...string) string {

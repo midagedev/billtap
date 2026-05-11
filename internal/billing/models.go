@@ -35,6 +35,7 @@ const (
 	MetadataPaymentMethodIDs            = "billtap_payment_method_ids"
 	MetadataPaymentIntentOutcome        = "billtap_payment_intent_outcome"
 	MetadataDefaultPaymentIntentOutcome = "billtap_default_payment_intent_outcome"
+	MetadataDefaultInvoiceOutcome       = "billtap_default_invoice_outcome"
 
 	PaymentMethodsFixtureEmpty    = "empty"
 	PaymentMethodsFixtureExplicit = "explicit"
@@ -150,12 +151,14 @@ type ClockAdvanceResult struct {
 	Renewals       []InvoicePaymentResult `json:"renewals,omitempty"`
 	Canceled       []Subscription         `json:"canceled,omitempty"`
 	Scheduled      []Subscription         `json:"scheduled,omitempty"`
+	SettledRefunds []Refund               `json:"settled_refunds,omitempty"`
 	Skipped        []string               `json:"skipped,omitempty"`
 	Processed      int                    `json:"processed"`
 	ActivatedCount int                    `json:"activated_count"`
 	Renewed        int                    `json:"renewed"`
 	CanceledCount  int                    `json:"canceled_count"`
 	ScheduledCount int                    `json:"scheduled_count"`
+	RefundCount    int                    `json:"refund_count"`
 }
 
 type PaymentIntent struct {
