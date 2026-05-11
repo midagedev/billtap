@@ -22,8 +22,8 @@ func TestSQLiteMigrationsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersions returned error: %v", err)
 	}
-	if len(versions) != 12 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 || versions[4] != 5 || versions[5] != 6 || versions[6] != 7 || versions[7] != 8 || versions[8] != 9 || versions[9] != 10 || versions[10] != 11 || versions[11] != 12 {
-		t.Fatalf("versions = %#v, want [1 2 3 4 5 6 7 8 9 10 11 12]", versions)
+	if len(versions) != 13 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 || versions[4] != 5 || versions[5] != 6 || versions[6] != 7 || versions[7] != 8 || versions[8] != 9 || versions[9] != 10 || versions[10] != 11 || versions[11] != 12 || versions[12] != 13 {
+		t.Fatalf("versions = %#v, want [1 2 3 4 5 6 7 8 9 10 11 12 13]", versions)
 	}
 }
 
@@ -52,15 +52,20 @@ func TestDirectIntentSchemaAllowsOptionalCustomerAndPreservesForeignKeys(t *test
 	}
 	defer store.Close()
 
-	if _, err := store.CreatePaymentIntent(ctx, billing.PaymentIntent{
+	created, err := store.CreatePaymentIntent(ctx, billing.PaymentIntent{
 		ID:            "pi_direct_no_customer",
 		Amount:        1000,
 		Currency:      "usd",
 		Status:        "requires_payment_method",
 		CaptureMethod: "automatic",
+		Metadata:      map[string]string{billing.MetadataPaymentIntentOutcome: "card_declined"},
 		CreatedAt:     time.Now().UTC(),
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("CreatePaymentIntent without customer returned error: %v", err)
+	}
+	if created.Metadata[billing.MetadataPaymentIntentOutcome] != "card_declined" {
+		t.Fatalf("created payment intent metadata = %#v, want deferred outcome metadata", created.Metadata)
 	}
 
 	if _, err := store.CreatePaymentIntent(ctx, billing.PaymentIntent{

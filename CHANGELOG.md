@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added deferred per-PaymentIntent outcome controls for one-time payment flows
+  through `metadata[billtap_payment_intent_outcome]`, local create aliases, and
+  `POST /api/payment_intents/{id}/outcome`.
 - Hardened Stripe-like shape and validation for billing portal sessions and
   customer payment-method lists, including portal flow enum checks,
   PaymentMethod SDK fields, non-card filtering, and Stripe-style validation

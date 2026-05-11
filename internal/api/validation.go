@@ -761,6 +761,9 @@ func validatePaymentIntentCreate(p params) error {
 			"confirm",
 			"capture_method",
 			"outcome",
+			"billtap_outcome",
+			"deferred_outcome",
+			"payment_intent_outcome",
 			"description",
 			"receipt_email",
 			"setup_future_usage",
@@ -780,7 +783,7 @@ func validatePaymentIntentCreate(p params) error {
 	}); err != nil {
 		return err
 	}
-	if p.boolDefault("confirm", false) && !p.hasAny("payment_method", "outcome") {
+	if p.boolDefault("confirm", false) && !p.hasAny("payment_method", "outcome") && !hasPaymentIntentDeferredOutcome(p) {
 		return missingParam("payment_method")
 	}
 	return nil
@@ -869,6 +872,23 @@ func validatePaymentIntentCancel(p params) error {
 			"cancellation_reason": {"duplicate", "fraudulent", "requested_by_customer", "abandoned"},
 		},
 	})
+}
+
+func validatePaymentIntentOutcomeUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:  []string{"outcome"},
+		Required: []string{"outcome"},
+	})
+}
+
+func hasPaymentIntentDeferredOutcome(p params) bool {
+	return p.hasAny(
+		"billtap_outcome",
+		"deferred_outcome",
+		"payment_intent_outcome",
+		"metadata["+billing.MetadataPaymentIntentOutcome+"]",
+		"metadata[billtap_outcome]",
+	)
 }
 
 func validateSetupIntentCreate(p params) error {

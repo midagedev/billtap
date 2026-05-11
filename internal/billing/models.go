@@ -33,6 +33,7 @@ const (
 	MetadataDefaultPaymentMethod  = "default_payment_method"
 	MetadataPaymentMethodsFixture = "billtap_payment_methods_fixture"
 	MetadataPaymentMethodIDs      = "billtap_payment_method_ids"
+	MetadataPaymentIntentOutcome  = "billtap_payment_intent_outcome"
 
 	PaymentMethodsFixtureEmpty    = "empty"
 	PaymentMethodsFixtureExplicit = "explicit"
@@ -157,19 +158,20 @@ type ClockAdvanceResult struct {
 }
 
 type PaymentIntent struct {
-	ID              string    `json:"id"`
-	Object          string    `json:"object"`
-	CustomerID      string    `json:"customer"`
-	InvoiceID       string    `json:"invoice,omitempty"`
-	Amount          int64     `json:"amount"`
-	Currency        string    `json:"currency"`
-	Status          string    `json:"status"`
-	CaptureMethod   string    `json:"capture_method,omitempty"`
-	FailureCode     string    `json:"failure_code,omitempty"`
-	DeclineCode     string    `json:"decline_code,omitempty"`
-	FailureMessage  string    `json:"failure_message,omitempty"`
-	PaymentMethodID string    `json:"payment_method,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
+	ID              string            `json:"id"`
+	Object          string            `json:"object"`
+	CustomerID      string            `json:"customer"`
+	InvoiceID       string            `json:"invoice,omitempty"`
+	Amount          int64             `json:"amount"`
+	Currency        string            `json:"currency"`
+	Status          string            `json:"status"`
+	CaptureMethod   string            `json:"capture_method,omitempty"`
+	FailureCode     string            `json:"failure_code,omitempty"`
+	DeclineCode     string            `json:"decline_code,omitempty"`
+	FailureMessage  string            `json:"failure_message,omitempty"`
+	PaymentMethodID string            `json:"payment_method,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 type SetupIntent struct {

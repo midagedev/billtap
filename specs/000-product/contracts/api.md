@@ -130,8 +130,10 @@ deterministic sandbox aliases, manual capture, cancel, timeline evidence, and
 local webhook events. `requires_action` returns a local
 `next_action.use_stripe_sdk` shape that can be completed or canceled through
 Billtap action callbacks, and local bank-transfer intents can move from
-`processing` to `succeeded` when customer cash balance is funded. They do not
-process real cards or claim full Stripe PaymentIntent parameter parity.
+`processing` to `succeeded` when customer cash balance is funded. One-time
+PaymentIntents can store a deferred per-intent outcome with
+`metadata[billtap_payment_intent_outcome]`, `billtap_outcome`, or
+`deferred_outcome`; the stored outcome is applied when the intent is confirmed.
 
 ### Setup Intents
 
@@ -359,6 +361,22 @@ Completes a local `requires_action` PaymentIntent.
 ### `POST /api/payment_intents/{id}/cancel_action`
 
 Cancels a local `requires_action` PaymentIntent.
+
+### `POST /api/payment_intents/{id}/outcome`
+
+Stores a local deferred PaymentIntent outcome before confirmation.
+
+Request:
+
+```json
+{
+  "outcome": "requires_action"
+}
+```
+
+The outcome uses the same deterministic aliases accepted by direct
+PaymentIntent confirmation, including `payment_succeeded`, `card_declined`,
+`requires_action`, `payment_pending`, `bank_transfer`, and `canceled`.
 
 ### `POST /api/disputes`
 
