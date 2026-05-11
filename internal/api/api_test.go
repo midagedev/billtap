@@ -1007,6 +1007,114 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 	}
 }
 
+func TestConnectAccountSmokeCompatibility(t *testing.T) {
+	handler := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
+
+	status, body := postFormStatusWithHeaders(t, handler, "/v1/accounts", url.Values{
+		"type":                                   {"express"},
+		"country":                                {"US"},
+		"email":                                  {"seller@example.test"},
+		"business_type":                          {"company"},
+		"capabilities[card_payments][requested]": {"true"},
+		"capabilities[transfers][requested]":     {"true"},
+		"metadata[platform]":                     {"sample"},
+	}, map[string]string{
+		"Request-Id":     "req_connect_account_create",
+		"Stripe-Account": "acct_platform_trace",
+	})
+	if status != http.StatusOK {
+		t.Fatalf("account create status=%d body=%s", status, body)
+	}
+	var account struct {
+		ID              string            `json:"id"`
+		Object          string            `json:"object"`
+		Type            string            `json:"type"`
+		Country         string            `json:"country"`
+		Email           string            `json:"email"`
+		ChargesEnabled  bool              `json:"charges_enabled"`
+		PayoutsEnabled  bool              `json:"payouts_enabled"`
+		Capabilities    map[string]string `json:"capabilities"`
+		Metadata        map[string]string `json:"metadata"`
+		DefaultCurrency string            `json:"default_currency"`
+	}
+	if err := json.Unmarshal([]byte(body), &account); err != nil {
+		t.Fatalf("decode account: %v", err)
+	}
+	if !strings.HasPrefix(account.ID, "acct_") || account.Object != "account" || account.Type != "express" || account.Country != "US" || !account.ChargesEnabled || !account.PayoutsEnabled {
+		t.Fatalf("account = %#v, want Stripe-shaped connected account", account)
+	}
+	if account.Capabilities["card_payments"] != "active" || account.Capabilities["transfers"] != "active" || account.Metadata["platform"] != "sample" || account.DefaultCurrency != "usd" {
+		t.Fatalf("account capabilities/metadata = %#v/%#v currency=%q", account.Capabilities, account.Metadata, account.DefaultCurrency)
+	}
+
+	retrieved := getJSON[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/accounts/"+account.ID)
+	if retrieved.ID != account.ID {
+		t.Fatalf("retrieved account = %#v, want %s", retrieved, account.ID)
+	}
+
+	updated := postForm[struct {
+		ID           string            `json:"id"`
+		Capabilities map[string]string `json:"capabilities"`
+		Metadata     map[string]string `json:"metadata"`
+	}](t, handler, "/v1/accounts/"+account.ID, url.Values{
+		"capabilities[card_payments][status]": {"pending"},
+		"metadata[stage]":                     {"onboarding"},
+	})
+	if updated.ID != account.ID || updated.Capabilities["card_payments"] != "pending" || updated.Metadata["stage"] != "onboarding" {
+		t.Fatalf("updated account = %#v, want updated capability and metadata", updated)
+	}
+
+	list := getJSON[struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/accounts?country=US&type=express")
+	if list.Object != "list" || len(list.Data) != 1 || list.Data[0].ID != account.ID {
+		t.Fatalf("accounts list = %#v, want created account", list)
+	}
+
+	link := postForm[struct {
+		Object  string `json:"object"`
+		Account string `json:"account"`
+		Type    string `json:"type"`
+		URL     string `json:"url"`
+	}](t, handler, "/v1/account_links", url.Values{
+		"account":     {account.ID},
+		"type":        {"account_onboarding"},
+		"refresh_url": {"http://app.example.test/refresh"},
+		"return_url":  {"http://app.example.test/return"},
+	})
+	if link.Object != "account_link" || link.Account != account.ID || link.Type != "account_onboarding" || !strings.HasPrefix(link.URL, "http://127.0.0.1:18080/connect/accounts/"+account.ID) {
+		t.Fatalf("account link = %#v, want local onboarding link", link)
+	}
+
+	session := postForm[struct {
+		Object       string `json:"object"`
+		Account      string `json:"account"`
+		ClientSecret string `json:"client_secret"`
+		Components   map[string]struct {
+			Enabled bool `json:"enabled"`
+		} `json:"components"`
+	}](t, handler, "/v1/account_sessions", url.Values{
+		"account": {account.ID},
+		"components[account_onboarding][enabled]":  {"true"},
+		"components[notification_banner][enabled]": {"false"},
+	})
+	if session.Object != "account_session" || session.Account != account.ID || session.ClientSecret == "" || !session.Components["account_onboarding"].Enabled || session.Components["notification_banner"].Enabled {
+		t.Fatalf("account session = %#v, want component flags and client secret", session)
+	}
+
+	traces := getJSON[struct {
+		Data []diagnostics.RequestTrace `json:"data"`
+	}](t, handler, "/api/request-traces?requestId=req_connect_account_create")
+	if len(traces.Data) != 1 || traces.Data[0].RequestHeaders["Stripe-Account"] != "acct_platform_trace" || traces.Data[0].ResponseObject != "account" || traces.Data[0].ResponseObjectID != account.ID {
+		t.Fatalf("connect trace = %#v, want Stripe-Account routing evidence", traces.Data)
+	}
+}
+
 func TestSupportedEndpointRequestValidation(t *testing.T) {
 	handler := newTestHandler(t)
 

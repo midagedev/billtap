@@ -65,6 +65,10 @@ type Repository interface {
 	CreateCreditNote(context.Context, CreditNote, []TimelineEntry) (CreditNote, error)
 	GetCreditNote(context.Context, string) (CreditNote, error)
 	ListCreditNotesFiltered(context.Context, CreditNoteFilter) ([]CreditNote, error)
+	CreateAccount(context.Context, Account) (Account, error)
+	GetAccount(context.Context, string) (Account, error)
+	ListAccounts(context.Context) ([]Account, error)
+	UpdateAccount(context.Context, string, Account) (Account, error)
 
 	Timeline(context.Context, TimelineFilter) ([]TimelineEntry, error)
 	RecordTimeline(context.Context, TimelineEntry) error
@@ -166,6 +170,48 @@ func (s *Service) ListPrices(ctx context.Context) ([]Price, error) {
 
 func (s *Service) UpdatePrice(ctx context.Context, id string, in Price) (Price, error) {
 	return s.repo.UpdatePrice(ctx, id, in)
+}
+
+func (s *Service) CreateAccount(ctx context.Context, in Account) (Account, error) {
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = id("acct")
+	}
+	if strings.TrimSpace(in.Type) == "" {
+		in.Type = "express"
+	}
+	if strings.TrimSpace(in.Country) == "" {
+		in.Country = "US"
+	}
+	if strings.TrimSpace(in.DefaultCurrency) == "" {
+		in.DefaultCurrency = "usd"
+	}
+	if in.Capabilities == nil {
+		in.Capabilities = map[string]string{
+			"card_payments": "active",
+			"transfers":     "active",
+		}
+	}
+	in.Object = ObjectAccount
+	now := s.now()
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = now
+	}
+	if in.UpdatedAt.IsZero() {
+		in.UpdatedAt = in.CreatedAt
+	}
+	return s.repo.CreateAccount(ctx, in)
+}
+
+func (s *Service) GetAccount(ctx context.Context, id string) (Account, error) {
+	return s.repo.GetAccount(ctx, id)
+}
+
+func (s *Service) ListAccounts(ctx context.Context) ([]Account, error) {
+	return s.repo.ListAccounts(ctx)
+}
+
+func (s *Service) UpdateAccount(ctx context.Context, id string, in Account) (Account, error) {
+	return s.repo.UpdateAccount(ctx, id, in)
 }
 
 func (s *Service) CreateCheckoutSession(ctx context.Context, in CheckoutSession) (CheckoutSession, error) {

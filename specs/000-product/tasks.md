@@ -261,9 +261,10 @@ Gate:
 - [x] T136 Add direct PaymentIntent and SetupIntent state machines
 - [x] T137 Add renewal/test-clock/retry mutation for subscriptions and invoices
 - [ ] T138 Add coupons, discounts, credit notes, refunds, disputes, and payment-history simulation
-- [ ] T139 Add Connect/platform smoke fixtures and connected-account webhook routing
-- [ ] T140 Add official Stripe SDK matrix for Node, Go, Java, Python, and Ruby
-- [x] T141 Add optional scheduled/manual Stripe OpenAPI inventory workflow artifacts
+- [x] T139 Add Connect account, account-link, account-session smoke and `Stripe-Account` trace evidence
+- [ ] T140 Add application fee, transfer, payout, external-account, and connected-account webhook routing
+- [ ] T141 Add official Stripe SDK matrix for Node, Go, Java, Python, and Ruby
+- [x] T142 Add optional scheduled/manual Stripe OpenAPI inventory workflow artifacts
 
 Suggested agents:
 

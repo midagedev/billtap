@@ -28,23 +28,23 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if inventory.Summary.TotalOperations != 14 {
 		t.Fatalf("total operations = %d, want 14", inventory.Summary.TotalOperations)
 	}
-	if inventory.Summary.ImplementedOperations != 9 {
-		t.Fatalf("implemented operations = %d, want 9", inventory.Summary.ImplementedOperations)
+	if inventory.Summary.ImplementedOperations != 10 {
+		t.Fatalf("implemented operations = %d, want 10", inventory.Summary.ImplementedOperations)
 	}
 	if inventory.Summary.SchemaValidatedOperations != 0 {
 		t.Fatalf("schema validated operations = %d, want 0 because fixture has no parameter/requestBody schemas", inventory.Summary.SchemaValidatedOperations)
 	}
-	if inventory.Summary.InventoryOnlyOperations != 5 {
-		t.Fatalf("inventory-only operations = %d, want 5", inventory.Summary.InventoryOnlyOperations)
+	if inventory.Summary.InventoryOnlyOperations != 4 {
+		t.Fatalf("inventory-only operations = %d, want 4", inventory.Summary.InventoryOnlyOperations)
 	}
-	if inventory.Summary.ImplementedPercent != 64.3 {
-		t.Fatalf("implemented percent = %.1f, want 64.3", inventory.Summary.ImplementedPercent)
+	if inventory.Summary.ImplementedPercent != 71.4 {
+		t.Fatalf("implemented percent = %.1f, want 71.4", inventory.Summary.ImplementedPercent)
 	}
 	if inventory.Summary.BilltapOnlyRoutes != 1 {
 		t.Fatalf("billtap-only routes = %d, want 1", inventory.Summary.BilltapOnlyRoutes)
 	}
-	if inventory.Summary.ByLevel["L0"] != 5 || inventory.Summary.ByLevel["L3"] != 7 || inventory.Summary.ByLevel["L4"] != 1 || inventory.Summary.ByLevel["L5"] != 1 {
-		t.Fatalf("by level = %#v, want L0=5 L3=7 L4=1 L5=1", inventory.Summary.ByLevel)
+	if inventory.Summary.ByLevel["L0"] != 4 || inventory.Summary.ByLevel["L2"] != 1 || inventory.Summary.ByLevel["L3"] != 7 || inventory.Summary.ByLevel["L4"] != 1 || inventory.Summary.ByLevel["L5"] != 1 {
+		t.Fatalf("by level = %#v, want L0=4 L2=1 L3=7 L4=1 L5=1", inventory.Summary.ByLevel)
 	}
 
 	customerCreate := findOperation(t, inventory, http.MethodPost, "/v1/customers")
@@ -88,8 +88,8 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 		t.Fatalf("accounts v2 coverage = %#v, want connect inventory target", accountsV2)
 	}
 	accountSession := findOperation(t, inventory, http.MethodPost, "/v1/account_sessions")
-	if accountSession.Family != "connect" || accountSession.Resource != "account_session" {
-		t.Fatalf("account session coverage = %#v, want connect account_session", accountSession)
+	if accountSession.Family != "connect" || accountSession.Resource != "account_session" || !accountSession.Implemented || accountSession.BilltapLevel != "L2" {
+		t.Fatalf("account session coverage = %#v, want implemented connect account_session L2", accountSession)
 	}
 	account := findOperation(t, inventory, http.MethodGet, "/v1/account")
 	if account.Family != "connect" || account.Resource != "account" {
@@ -104,11 +104,11 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 		t.Fatalf("financial connection account coverage = %#v, want auxiliary financial connection account", financialConnectionAccount)
 	}
 	connect := findFamily(t, inventory, "connect")
-	if connect.Priority != "P1" || connect.TotalOperations != 4 || connect.ImplementedOperations != 0 || connect.ImplementedPercent != 0 {
-		t.Fatalf("connect family = %#v, want P1 0/4 0%%", connect)
+	if connect.Priority != "P1" || connect.TotalOperations != 4 || connect.ImplementedOperations != 1 || connect.ImplementedPercent != 25 {
+		t.Fatalf("connect family = %#v, want P1 1/4 25%%", connect)
 	}
-	if !strings.Contains(connect.NextMilestone, "Stripe-Account") {
-		t.Fatalf("connect milestone = %q, want Stripe-Account tracing", connect.NextMilestone)
+	if !strings.Contains(connect.NextMilestone, "application fee") {
+		t.Fatalf("connect milestone = %q, want application fee follow-up", connect.NextMilestone)
 	}
 
 	jsonPath := filepath.Join(dir, "stripe-api-inventory.json")
@@ -116,7 +116,7 @@ func TestWriteInventoryArtifactsClassifiesOpenAPIOperations(t *testing.T) {
 	if !fileContains(t, jsonPath, `"inventory_version": "stripe-api-inventory-v2"`) {
 		t.Fatalf("JSON inventory missing version")
 	}
-	if !fileContains(t, jsonPath, `"families"`) || !fileContains(t, jsonPath, `"implemented_percent": 64.3`) {
+	if !fileContains(t, jsonPath, `"families"`) || !fileContains(t, jsonPath, `"implemented_percent": 71.4`) {
 		t.Fatalf("JSON inventory missing measurable coverage fields")
 	}
 	if !fileContains(t, jsonPath, `"schema_validated_operations": 0`) || !fileContains(t, mdPath, "OpenAPI validation catalog") {

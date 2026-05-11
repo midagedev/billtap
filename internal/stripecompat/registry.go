@@ -164,6 +164,13 @@ func DefaultClaims() []Claim {
 	}
 	add(http.MethodGet, "/v1/products/search", Claim{Level: "L2", Risks: []string{"metadata equality filters only; no Stripe Search Query Language parity"}})
 
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		add(method, "/v1/accounts", Claim{Level: "L3", Stateful: true, Risks: []string{"local Connect smoke only; onboarding, KYC, external accounts, and platform settlement are not modeled"}})
+		add(method, "/v1/accounts/{id}", Claim{Level: "L3", Stateful: true, Risks: []string{"local Connect smoke only; onboarding, KYC, external accounts, and platform settlement are not modeled"}})
+	}
+	add(http.MethodPost, "/v1/account_links", Claim{Level: "L2", Stateful: false, Risks: []string{"returns local hosted onboarding/update URLs only; no real Connect onboarding session"}})
+	add(http.MethodPost, "/v1/account_sessions", Claim{Level: "L2", Stateful: false, Risks: []string{"returns deterministic local client secrets for embedded-component smoke only"}})
+
 	add(http.MethodPost, "/v1/checkout/sessions", Claim{Level: "L4", Stateful: true, ScorecardCases: []string{"checkout.sessions.create.java_sdk_optional_params"}, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
 	add(http.MethodGet, "/v1/checkout/sessions", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
 	add(http.MethodGet, "/v1/checkout/sessions/{id}", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})

@@ -11,7 +11,7 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `57 / 587` operations, `9.7%`, using Stripe OpenAPI
+- **Current baseline:** `63 / 587` operations, `10.7%`, using Stripe OpenAPI
   `2026-04-22.dahlia` from `stripe/openapi` master on 2026-05-11.
 - **Minimum target count:** `529 / 587` operations at `L1` or higher.
 - **Remaining inventory-only budget:** at most `58 / 587` operations at `L0`.
@@ -63,7 +63,7 @@ Latest measured baseline from `stripe/openapi` master on 2026-05-11:
 | P1 | catalog | 54 | 9 | 16.7% | 49 | Add low-state product/price/coupon/promotion/tax fixtures and validation. |
 | P1 | customers | 31 | 4 | 12.9% | 28 | Add search, sources, tax ids, cash balance, and validation fixtures. |
 | P1 | payments | 41 | 12 | 29.3% | 37 | Add PaymentMethod lifecycle breadth and remaining PaymentIntent/SetupIntent adjunct routes. |
-| P1 | connect | 53 | 0 | 0.0% | 48 | Add accounts, account links/sessions, application fees, transfers, payouts. |
+| P1 | connect | 53 | 6 | 11.3% | 48 | Add application fees, transfers, payouts, external accounts, and connected-account webhook smoke. |
 | P1 | payment_history | 30 | 6 | 20.0% | 27 | Add charges, deeper refunds, balance transactions, disputes, credit history. |
 | P3 | auxiliary | 321 | 4 | 1.2% | 289 | Add generic L1/L2 schema and fixture smoke for safe low-state endpoints. |
 
@@ -98,10 +98,15 @@ for known routes, but it does not by itself increase
 `summary.implemented_operations`. T3-T9 still need to opt specific operations
 into tested `L1+` claims.
 
+T139 adds the first Connect smoke slice: account create/list/retrieve/update,
+account links, account sessions, and `Stripe-Account` request trace evidence.
+This raises the generated inventory from `57 / 587` (`9.7%`) to `63 / 587`
+(`10.7%`), with Connect moving from `0 / 53` to `6 / 53`.
+
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
 coverage must come from T3-T9. The planned T3-T9 delta is intentionally larger
-than the `+472` operations needed to move the current `57 / 587` baseline to
+than the `+466` operations needed to move the current `63 / 587` baseline to
 the `529 / 587` target.
 
 ## Derived Gate Checks
