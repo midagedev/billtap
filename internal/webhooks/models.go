@@ -16,6 +16,7 @@ const (
 
 	SourceAPI      = "api"
 	SourceCheckout = "checkout"
+	SourceFixture  = "fixture"
 	SourcePortal   = "portal"
 	SourceScenario = "scenario"
 	SourceReplay   = "replay"

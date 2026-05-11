@@ -3253,6 +3253,7 @@ func (h *Handler) emitFixtureApplyWebhooks(r *http.Request, result fixtures.Appl
 		if seenSubscriptions[subscription.ID] {
 			continue
 		}
+		emitted = append(emitted, h.ensureFixtureSubscriptionCreatedWebhook(r, subscription)...)
 		emitted = append(emitted, h.emitSubscriptionWebhook(r, "customer.subscription.updated", subscription, webhooks.SourceAPI)...)
 		if subscription.Status == "canceled" {
 			emitted = append(emitted, h.emitSubscriptionWebhook(r, "customer.subscription.deleted", subscription, webhooks.SourceAPI)...)
@@ -3273,6 +3274,32 @@ func (h *Handler) emitFixtureApplyWebhooks(r *http.Request, result fixtures.Appl
 		emitted = append(emitted, h.emitGenericWebhook(r, "credit_note.created", note.ID, stripeCreditNote(note), webhooks.SourceAPI)...)
 	}
 	return emitted
+}
+
+func (h *Handler) ensureFixtureSubscriptionCreatedWebhook(r *http.Request, subscription billing.Subscription) []webhooks.Event {
+	if h.webhooks == nil || subscription.ID == "" || h.webhookEventExistsForObject(r.Context(), "customer.subscription.created", subscription.ID) {
+		return nil
+	}
+	return h.emitSubscriptionWebhook(r, "customer.subscription.created", subscription, webhooks.SourceFixture)
+}
+
+func (h *Handler) webhookEventExistsForObject(ctx context.Context, eventType string, objectID string) bool {
+	if h.webhooks == nil || eventType == "" || objectID == "" {
+		return false
+	}
+	events, err := h.webhooks.ListEvents(ctx, webhooks.EventFilter{Type: eventType})
+	if err != nil {
+		return false
+	}
+	for _, event := range events {
+		var object struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(event.Data.Object, &object); err == nil && object.ID == objectID {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) subscriptionInvoicePaymentEvidence(r *http.Request, subscription billing.Subscription) (billing.Invoice, billing.PaymentIntent) {
