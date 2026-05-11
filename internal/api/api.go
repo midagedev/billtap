@@ -2042,11 +2042,18 @@ func (h *Handler) handlePaymentIntents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		customerID := p.string("customer")
+		var customer billing.Customer
 		if customerID != "" {
-			if err := validateCustomerExists(h.billing.GetCustomer(r.Context(), customerID)); err != nil {
+			var customerErr error
+			customer, customerErr = h.billing.GetCustomer(r.Context(), customerID)
+			if err := validateCustomerExists(customer, customerErr); err != nil {
 				writeResult(w, nil, err)
 				return
 			}
+		}
+		if p.boolDefault("confirm", false) && !p.hasAny("payment_method", "outcome") && !hasPaymentIntentDeferredOutcome(p) && billing.CustomerDefaultPaymentIntentOutcome(customer.Metadata) == "" {
+			writeError(w, http.StatusBadRequest, missingParam("payment_method"))
+			return
 		}
 		metadata := paymentIntentMetadata(p)
 		intent, err := h.billing.CreatePaymentIntent(r.Context(), billing.PaymentIntent{

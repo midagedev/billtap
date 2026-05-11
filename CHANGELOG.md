@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Added customer-level default PaymentIntent outcomes so fixture-seeded
+  customers can drive confirmed one-time payment failures without changing
+  app-created PaymentIntent metadata.
 - Added deferred per-PaymentIntent outcome controls for one-time payment flows
   through `metadata[billtap_payment_intent_outcome]`, local create aliases, and
   `POST /api/payment_intents/{id}/outcome`.

@@ -134,6 +134,9 @@ Billtap action callbacks, and local bank-transfer intents can move from
 PaymentIntents can store a deferred per-intent outcome with
 `metadata[billtap_payment_intent_outcome]`, `billtap_outcome`, or
 `deferred_outcome`; the stored outcome is applied when the intent is confirmed.
+If no per-intent outcome is present, customer metadata
+`billtap_default_payment_intent_outcome` or `default_payment_intent_outcome`
+can provide the default outcome for direct one-time PaymentIntents.
 
 ### Setup Intents
 

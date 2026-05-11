@@ -30,10 +30,11 @@ const (
 )
 
 const (
-	MetadataDefaultPaymentMethod  = "default_payment_method"
-	MetadataPaymentMethodsFixture = "billtap_payment_methods_fixture"
-	MetadataPaymentMethodIDs      = "billtap_payment_method_ids"
-	MetadataPaymentIntentOutcome  = "billtap_payment_intent_outcome"
+	MetadataDefaultPaymentMethod        = "default_payment_method"
+	MetadataPaymentMethodsFixture       = "billtap_payment_methods_fixture"
+	MetadataPaymentMethodIDs            = "billtap_payment_method_ids"
+	MetadataPaymentIntentOutcome        = "billtap_payment_intent_outcome"
+	MetadataDefaultPaymentIntentOutcome = "billtap_default_payment_intent_outcome"
 
 	PaymentMethodsFixtureEmpty    = "empty"
 	PaymentMethodsFixtureExplicit = "explicit"

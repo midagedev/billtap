@@ -497,6 +497,42 @@ func TestDirectPaymentIntentAndSetupIntentStateMachines(t *testing.T) {
 		t.Fatalf("canceled payment intent = %#v, want canceled", canceled)
 	}
 
+	defaultOutcomeCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"customer-default-outcome@example.test"},
+		"metadata[billtap_default_payment_intent_outcome]": {"card_declined"},
+	})
+	customerDefaultDeclined := postForm[struct {
+		Status           string            `json:"status"`
+		Metadata         map[string]string `json:"metadata"`
+		LastPaymentError struct {
+			Code        string `json:"code"`
+			DeclineCode string `json:"decline_code"`
+		} `json:"last_payment_error"`
+	}](t, handler, "/v1/payment_intents", url.Values{
+		"amount":   {"3100"},
+		"currency": {"usd"},
+		"customer": {defaultOutcomeCustomer.ID},
+		"confirm":  {"true"},
+	})
+	if customerDefaultDeclined.Status != "requires_payment_method" || customerDefaultDeclined.Metadata[billing.MetadataPaymentIntentOutcome] != "card_declined" || customerDefaultDeclined.LastPaymentError.Code != "card_declined" {
+		t.Fatalf("customer default declined intent = %#v, want customer default outcome applied", customerDefaultDeclined)
+	}
+	customerDefaultOverride := postForm[struct {
+		Status        string            `json:"status"`
+		Metadata      map[string]string `json:"metadata"`
+		PaymentMethod string            `json:"payment_method"`
+		NextAction    map[string]any    `json:"next_action"`
+	}](t, handler, "/v1/payment_intents", url.Values{
+		"amount":   {"3100"},
+		"currency": {"usd"},
+		"customer": {defaultOutcomeCustomer.ID},
+		"confirm":  {"true"},
+		"metadata[billtap_payment_intent_outcome]": {"requires_action"},
+	})
+	if customerDefaultOverride.Status != "requires_action" || customerDefaultOverride.Metadata[billing.MetadataPaymentIntentOutcome] != "requires_action" || customerDefaultOverride.PaymentMethod != "pm_card_threeDSecure2Required" || customerDefaultOverride.NextAction["type"] != "use_stripe_sdk" {
+		t.Fatalf("customer default override intent = %#v, want per-intent outcome to win", customerDefaultOverride)
+	}
+
 	deferredDecline := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents", url.Values{
 		"amount":   {"2700"},
 		"currency": {"usd"},
@@ -1794,6 +1830,19 @@ func TestSupportedEndpointRequestValidation(t *testing.T) {
 		}
 	})
 
+	t.Run("payment intent create confirm without customer default requires payment method or outcome", func(t *testing.T) {
+		status, body := postFormStatus(t, handler, "/v1/payment_intents", url.Values{
+			"amount":   {"4900"},
+			"currency": {"usd"},
+			"customer": {customer.ID},
+			"confirm":  {"true"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusBadRequest || errBody.Error.Code != "parameter_missing" || errBody.Error.Param != "payment_method" {
+			t.Fatalf("status=%d error=%#v, want missing payment_method", status, errBody.Error)
+		}
+	})
+
 	t.Run("payment intent confirm requires payment method or outcome", func(t *testing.T) {
 		intent := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents", url.Values{
 			"amount":   {"4900"},
@@ -2747,6 +2796,43 @@ func TestFixtureCustomerPaymentMethodsCanBeEmptyUntilPortalSave(t *testing.T) {
 		t.Fatalf("reapply summary = %#v, want four customers", reapplied.Summary)
 	}
 	assertPaymentMethodIDs("cus_fixture_no_payment_methods")
+}
+
+func TestFixtureCustomerDefaultPaymentIntentOutcome(t *testing.T) {
+	handler := newTestHandler(t)
+	pack := map[string]any{
+		"name":      "sample-payment-intent-outcome-fixtures",
+		"runId":     "run-payment-intent-outcomes-1",
+		"namespace": "sample-app",
+		"customers": []map[string]any{
+			{
+				"id":                             "cus_fixture_default_pi_decline",
+				"email":                          "default-pi-decline@example.test",
+				"default_payment_intent_outcome": "card_declined",
+				"metadata":                       map[string]string{"tenantId": "sample"},
+			},
+		},
+	}
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if applied.Summary["customers"] != 1 || applied.Customers[0].Metadata[billing.MetadataDefaultPaymentIntentOutcome] != "card_declined" {
+		t.Fatalf("apply result = %#v, want customer default payment intent outcome metadata", applied)
+	}
+
+	intent := postForm[struct {
+		Status           string            `json:"status"`
+		Metadata         map[string]string `json:"metadata"`
+		LastPaymentError struct {
+			Code string `json:"code"`
+		} `json:"last_payment_error"`
+	}](t, handler, "/v1/payment_intents", url.Values{
+		"amount":   {"4200"},
+		"currency": {"usd"},
+		"customer": {"cus_fixture_default_pi_decline"},
+		"confirm":  {"true"},
+	})
+	if intent.Status != "requires_payment_method" || intent.Metadata[billing.MetadataPaymentIntentOutcome] != "card_declined" || intent.LastPaymentError.Code != "card_declined" {
+		t.Fatalf("intent = %#v, want fixture customer default decline outcome", intent)
+	}
 }
 
 func TestPaymentMethodsStripeLikeShapeFilteringAndValidation(t *testing.T) {
