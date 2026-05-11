@@ -914,8 +914,20 @@ func (s *Service) CreatePaymentIntent(ctx context.Context, in PaymentIntent) (Pa
 	in.Currency = strings.ToLower(strings.TrimSpace(in.Currency))
 	in.CaptureMethod = firstNonEmpty(in.CaptureMethod, "automatic")
 	in.Status = firstNonEmpty(in.Status, "requires_payment_method")
+	if paymentIntentConfiguredOutcome(in.Metadata) == "" && in.CustomerID != "" && strings.TrimSpace(in.InvoiceID) == "" {
+		customer, err := s.repo.GetCustomer(ctx, in.CustomerID)
+		if err != nil {
+			return PaymentIntent{}, err
+		}
+		if outcome := CustomerDefaultPaymentIntentOutcome(customer.Metadata); outcome != "" {
+			if in.Metadata == nil {
+				in.Metadata = map[string]string{}
+			}
+			in.Metadata[MetadataPaymentIntentOutcome] = outcome
+		}
+	}
 	if outcome := paymentIntentConfiguredOutcome(in.Metadata); outcome != "" {
-		if _, ok := intentOutcomeSpec(outcome); !ok {
+		if !IsSupportedPaymentIntentOutcome(outcome) {
 			return PaymentIntent{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
 		}
 	}
@@ -2018,6 +2030,22 @@ func paymentIntentConfiguredOutcome(metadata map[string]string) string {
 		}
 	}
 	return ""
+}
+
+// CustomerDefaultPaymentIntentOutcome returns the default direct PaymentIntent outcome from customer metadata.
+func CustomerDefaultPaymentIntentOutcome(metadata map[string]string) string {
+	for _, key := range []string{MetadataDefaultPaymentIntentOutcome, "default_payment_intent_outcome"} {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+// IsSupportedPaymentIntentOutcome reports whether Billtap can apply outcome to a local PaymentIntent.
+func IsSupportedPaymentIntentOutcome(outcome string) bool {
+	_, ok := intentOutcomeSpec(outcome)
+	return ok
 }
 
 func paymentIntentEvent(status string) string {

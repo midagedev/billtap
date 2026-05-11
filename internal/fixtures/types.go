@@ -34,16 +34,18 @@ type CatalogFixture struct {
 }
 
 type CustomerFixture struct {
-	ID                         string                 `json:"id" yaml:"id"`
-	Email                      string                 `json:"email" yaml:"email"`
-	Name                       string                 `json:"name" yaml:"name"`
-	Ref                        string                 `json:"ref" yaml:"ref"`
-	TestClock                  string                 `json:"test_clock" yaml:"test_clock"`
-	PaymentMethodsFixture      string                 `json:"payment_methods_fixture" yaml:"payment_methods_fixture"`
-	PaymentMethodsFixtureCamel string                 `json:"paymentMethodsFixture" yaml:"paymentMethodsFixture"`
-	PaymentMethods             []PaymentMethodFixture `json:"payment_methods" yaml:"payment_methods"`
-	PaymentMethodsCamel        []PaymentMethodFixture `json:"paymentMethods" yaml:"paymentMethods"`
-	Metadata                   map[string]string      `json:"metadata" yaml:"metadata"`
+	ID                          string                 `json:"id" yaml:"id"`
+	Email                       string                 `json:"email" yaml:"email"`
+	Name                        string                 `json:"name" yaml:"name"`
+	Ref                         string                 `json:"ref" yaml:"ref"`
+	TestClock                   string                 `json:"test_clock" yaml:"test_clock"`
+	PaymentMethodsFixture       string                 `json:"payment_methods_fixture" yaml:"payment_methods_fixture"`
+	PaymentMethodsFixtureCamel  string                 `json:"paymentMethodsFixture" yaml:"paymentMethodsFixture"`
+	PaymentMethods              []PaymentMethodFixture `json:"payment_methods" yaml:"payment_methods"`
+	PaymentMethodsCamel         []PaymentMethodFixture `json:"paymentMethods" yaml:"paymentMethods"`
+	DefaultPaymentIntentOutcome string                 `json:"default_payment_intent_outcome" yaml:"default_payment_intent_outcome"`
+	DefaultPIOutcomeCamel       string                 `json:"defaultPaymentIntentOutcome" yaml:"defaultPaymentIntentOutcome"`
+	Metadata                    map[string]string      `json:"metadata" yaml:"metadata"`
 }
 
 type PaymentMethodFixture struct {

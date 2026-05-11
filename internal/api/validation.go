@@ -783,7 +783,7 @@ func validatePaymentIntentCreate(p params) error {
 	}); err != nil {
 		return err
 	}
-	if p.boolDefault("confirm", false) && !p.hasAny("payment_method", "outcome") && !hasPaymentIntentDeferredOutcome(p) {
+	if p.boolDefault("confirm", false) && !p.hasAny("payment_method", "outcome", "customer") && !hasPaymentIntentDeferredOutcome(p) {
 		return missingParam("payment_method")
 	}
 	return nil

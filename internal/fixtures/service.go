@@ -317,6 +317,7 @@ func (s *Service) upsertCustomer(ctx context.Context, pack Pack, fixture Custome
 	if err != nil {
 		return billing.Customer{}, err
 	}
+	metadata = applyCustomerDefaultPaymentIntentOutcome(metadata, fixture)
 	if fixture.ID != "" {
 		current, err := s.billing.GetCustomer(ctx, fixture.ID)
 		if err == nil {
@@ -325,6 +326,7 @@ func (s *Service) upsertCustomer(ctx context.Context, pack Pack, fixture Custome
 			if err != nil {
 				return billing.Customer{}, err
 			}
+			metadata = applyCustomerDefaultPaymentIntentOutcome(metadata, fixture)
 			return s.billing.UpdateCustomer(ctx, fixture.ID, billing.Customer{
 				Email:    fixture.Email,
 				Name:     fixture.Name,
@@ -669,6 +671,9 @@ func validatePack(pack Pack) error {
 		if _, _, _, configured, err := customerPaymentMethodFixtureConfig(customer); configured && err != nil {
 			problems = append(problems, fmt.Sprintf("customers[%d].payment_methods is invalid: %v", idx, err))
 		}
+		if outcome := customerDefaultPaymentIntentOutcomeFixture(customer); outcome != "" && !billing.IsSupportedPaymentIntentOutcome(outcome) {
+			problems = append(problems, fmt.Sprintf("customers[%d].default_payment_intent_outcome is invalid", idx))
+		}
 	}
 	for idx, product := range pack.Products {
 		if strings.TrimSpace(product.Name) == "" {
@@ -892,6 +897,27 @@ func applyCustomerPaymentMethodFixture(metadata map[string]string, fixture Custo
 		metadata[billing.MetadataDefaultPaymentMethod] = defaultID
 	}
 	return metadata, nil
+}
+
+func applyCustomerDefaultPaymentIntentOutcome(metadata map[string]string, fixture CustomerFixture) map[string]string {
+	outcome := customerDefaultPaymentIntentOutcomeFixture(fixture)
+	if outcome == "" {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata[billing.MetadataDefaultPaymentIntentOutcome] = outcome
+	return metadata
+}
+
+func customerDefaultPaymentIntentOutcomeFixture(fixture CustomerFixture) string {
+	return firstFixtureNonEmpty(
+		fixture.DefaultPaymentIntentOutcome,
+		fixture.DefaultPIOutcomeCamel,
+		fixture.Metadata[billing.MetadataDefaultPaymentIntentOutcome],
+		fixture.Metadata["default_payment_intent_outcome"],
+	)
 }
 
 func customerPaymentMethodFixtureConfig(fixture CustomerFixture) (string, []string, string, bool, error) {
