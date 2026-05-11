@@ -430,6 +430,25 @@ func validateAccountReject(p params) error {
 	})
 }
 
+func validateAccountPersonCreate(p params) error {
+	return validateAccountPerson(p, []string{"id"})
+}
+
+func validateAccountPersonUpdate(p params) error {
+	return validateAccountPerson(p, nil)
+}
+
+func validateAccountPerson(p params, allowed []string) error {
+	return p.validate(paramSpec{
+		Allowed:       allowed,
+		AllowedRegex:  []*regexp.Regexp{personDataParamPattern},
+		BoolParams:    []string{"relationship[owner]", "relationship[director]", "relationship[executive]", "relationship[representative]"},
+		Int64Params:   []string{"dob[day]", "dob[month]", "dob[year]", "relationship[percent_ownership]"},
+		NonNegative:   []string{"relationship[percent_ownership]"},
+		AllowMetadata: true,
+	})
+}
+
 func validateTransferCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:       []string{"id", "amount", "currency", "destination", "source_transaction", "description", "transfer_group"},

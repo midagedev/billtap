@@ -14,6 +14,9 @@
   requirements.
 - Added public compatibility and release process docs for the v0.1.0 release
   path.
+- Expanded Connect compatibility with platform account retrieval, account
+  deletion markers, people/persons evidence, and updated OpenAPI inventory
+  tracking to `110 / 587` operations.
 - Documented the supported Stripe-like subset, Billtap-specific APIs,
   unsupported provider behavior, and fixture/scenario/webhook claim boundaries.
 - Prepared the repository for a public source-only release.

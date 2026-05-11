@@ -74,6 +74,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/products/", h.handleProduct)
 	h.mux.HandleFunc("/v1/prices", h.handlePrices)
 	h.mux.HandleFunc("/v1/prices/", h.handlePrice)
+	h.mux.HandleFunc("/v1/account", h.handlePlatformAccount)
 	h.mux.HandleFunc("/v1/accounts", h.handleAccounts)
 	h.mux.HandleFunc("/v1/accounts/", h.handleAccount)
 	h.mux.HandleFunc("/v1/account_links", h.handleAccountLinks)
@@ -451,6 +452,33 @@ func (h *Handler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) handlePlatformAccount(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/v1/account" {
+		h.notFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	writeJSON(w, http.StatusOK, stripeAccount(billing.Account{
+		ID:               "acct_billtap_platform",
+		Object:           billing.ObjectAccount,
+		Type:             "standard",
+		Country:          "US",
+		Email:            "platform@example.test",
+		BusinessType:     "company",
+		DefaultCurrency:  "usd",
+		ChargesEnabled:   true,
+		PayoutsEnabled:   true,
+		DetailsSubmitted: true,
+		Capabilities:     map[string]string{"card_payments": "active", "transfers": "active"},
+		Metadata:         map[string]string{"billtap_account": "platform"},
+		CreatedAt:        time.Unix(0, 0).UTC(),
+		UpdatedAt:        time.Unix(0, 0).UTC(),
+	}))
+}
+
 func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/accounts/"), "/")
 	if rest == "" {
@@ -485,8 +513,11 @@ func (h *Handler) handleAccount(w http.ResponseWriter, r *http.Request) {
 			Metadata:        p.metadata(),
 		})
 		writeResult(w, stripeAccount(account), err)
+	case http.MethodDelete:
+		_, err := h.billing.GetAccount(r.Context(), id)
+		writeResult(w, stripeDeleted(id, billing.ObjectAccount), err)
 	default:
-		h.methodNotAllowed(w, r, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
 	}
 }
 
@@ -500,6 +531,8 @@ func (h *Handler) handleAccountSubresource(w http.ResponseWriter, r *http.Reques
 		h.handleAccountCapabilities(w, r, accountID, parts[1:])
 	case "external_accounts", "bank_accounts":
 		h.handleAccountExternalAccounts(w, r, accountID, parts[0], parts[1:])
+	case "people", "persons":
+		h.handleAccountPeople(w, r, accountID, parts[0], parts[1:])
 	case "login_links":
 		h.handleAccountLoginLinks(w, r, accountID, parts[1:])
 	case "reject":
@@ -662,6 +695,89 @@ func (h *Handler) handleAccountExternalAccounts(w http.ResponseWriter, r *http.R
 			_, err = h.billing.DeleteConnectResource(r.Context(), billing.ObjectBankAccount, id)
 		}
 		writeResult(w, stripeDeleted(id, billing.ObjectBankAccount), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
+	}
+	_ = collection
+}
+
+func (h *Handler) handleAccountPeople(w http.ResponseWriter, r *http.Request, accountID string, collection string, parts []string) {
+	if _, err := h.billing.GetAccount(r.Context(), accountID); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if len(parts) == 0 {
+		switch r.Method {
+		case http.MethodGet:
+			resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectPerson, AccountID: accountID})
+			writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+		case http.MethodPost:
+			p, err := parseParams(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := validateAccountPersonCreate(p); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			resource, err := h.billing.CreateConnectResource(r.Context(), billing.ConnectResource{
+				ID:        p.string("id"),
+				Object:    billing.ObjectPerson,
+				AccountID: accountID,
+				Metadata:  p.metadata(),
+				Data:      personDataFromParams(p),
+			})
+			writeResult(w, stripePerson(resource), err)
+		default:
+			h.methodNotAllowed(w, r, "GET, POST")
+		}
+		return
+	}
+	if len(parts) != 1 {
+		h.notFound(w, r)
+		return
+	}
+	personID := parts[0]
+	switch r.Method {
+	case http.MethodGet:
+		resource, err := h.billing.GetConnectResource(r.Context(), billing.ObjectPerson, personID)
+		if err == nil && resource.AccountID != accountID {
+			err = billing.ErrNotFound
+		}
+		writeResult(w, stripePerson(resource), err)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateAccountPersonUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		current, err := h.billing.GetConnectResource(r.Context(), billing.ObjectPerson, personID)
+		if err == nil && current.AccountID != accountID {
+			err = billing.ErrNotFound
+		}
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		resource, err := h.billing.UpdateConnectResource(r.Context(), billing.ObjectPerson, personID, billing.ConnectResource{
+			Metadata: p.metadata(),
+			Data:     personDataFromParams(p),
+		})
+		writeResult(w, stripePerson(resource), err)
+	case http.MethodDelete:
+		current, err := h.billing.GetConnectResource(r.Context(), billing.ObjectPerson, personID)
+		if err == nil && current.AccountID != accountID {
+			err = billing.ErrNotFound
+		}
+		if err == nil {
+			_, err = h.billing.DeleteConnectResource(r.Context(), billing.ObjectPerson, personID)
+		}
+		writeResult(w, stripeDeleted(personID, billing.ObjectPerson), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST, DELETE")
 	}
@@ -3139,6 +3255,18 @@ func accountCapabilities(p params) map[string]string {
 	return out
 }
 
+var personDataParamPattern = regexp.MustCompile(`^(first_name|last_name|email|phone|id_number|ssn_last_4|relationship\[(owner|director|executive|representative|title|percent_ownership)\]|dob\[(day|month|year)\]|address\[(line1|line2|city|state|postal_code|country)\])$`)
+
+func personDataFromParams(p params) map[string]string {
+	out := map[string]string{}
+	for key, value := range p.values {
+		if personDataParamPattern.MatchString(key) {
+			out[key] = strings.TrimSpace(value)
+		}
+	}
+	return out
+}
+
 var accountSessionComponentPattern = regexp.MustCompile(`^components\[([^\]]+)\]\[enabled\]$`)
 
 func accountSessionComponents(p params) map[string]any {
@@ -3340,10 +3468,17 @@ func accountRequirements(account billing.Account) map[string]any {
 	if !account.DetailsSubmitted {
 		currentlyDue = append(currentlyDue, "business_profile.url", "external_account")
 	}
+	requirements := emptyRequirements()
+	requirements["currently_due"] = currentlyDue
+	requirements["eventually_due"] = currentlyDue
+	return requirements
+}
+
+func emptyRequirements() map[string]any {
 	return map[string]any{
 		"alternatives":         []map[string]any{},
-		"currently_due":        currentlyDue,
-		"eventually_due":       currentlyDue,
+		"currently_due":        []string{},
+		"eventually_due":       []string{},
 		"past_due":             []string{},
 		"pending_verification": []string{},
 		"disabled_reason":      nil,
@@ -3385,6 +3520,8 @@ func stripeConnectResource(resource billing.ConnectResource) map[string]any {
 	switch resource.Object {
 	case billing.ObjectBankAccount, billing.ObjectCard:
 		return stripeExternalAccount(resource)
+	case billing.ObjectPerson:
+		return stripePerson(resource)
 	case billing.ObjectTransfer:
 		return stripeTransfer(resource)
 	case billing.ObjectTransferReversal:
@@ -3402,6 +3539,51 @@ func stripeConnectResource(resource billing.ConnectResource) map[string]any {
 			"metadata": nonNilMap(resource.Metadata),
 			"livemode": false,
 		}
+	}
+}
+
+func stripePerson(resource billing.ConnectResource) map[string]any {
+	return map[string]any{
+		"id":         resource.ID,
+		"object":     billing.ObjectPerson,
+		"account":    resource.AccountID,
+		"first_name": emptyToNil(resource.Data["first_name"]),
+		"last_name":  emptyToNil(resource.Data["last_name"]),
+		"email":      emptyToNil(resource.Data["email"]),
+		"phone":      emptyToNil(resource.Data["phone"]),
+		"created":    unix(resource.CreatedAt),
+		"dob": map[string]any{
+			"day":   optionalIntString(resource.Data["dob[day]"]),
+			"month": optionalIntString(resource.Data["dob[month]"]),
+			"year":  optionalIntString(resource.Data["dob[year]"]),
+		},
+		"address": map[string]any{
+			"line1":       emptyToNil(resource.Data["address[line1]"]),
+			"line2":       emptyToNil(resource.Data["address[line2]"]),
+			"city":        emptyToNil(resource.Data["address[city]"]),
+			"state":       emptyToNil(resource.Data["address[state]"]),
+			"postal_code": emptyToNil(resource.Data["address[postal_code]"]),
+			"country":     emptyToNil(resource.Data["address[country]"]),
+		},
+		"relationship": map[string]any{
+			"owner":             truthy(resource.Data["relationship[owner]"]),
+			"director":          truthy(resource.Data["relationship[director]"]),
+			"executive":         truthy(resource.Data["relationship[executive]"]),
+			"representative":    truthy(resource.Data["relationship[representative]"]),
+			"title":             emptyToNil(resource.Data["relationship[title]"]),
+			"percent_ownership": optionalIntString(resource.Data["relationship[percent_ownership]"]),
+		},
+		"requirements":        emptyRequirements(),
+		"future_requirements": emptyRequirements(),
+		"verification": map[string]any{
+			"status":              "unverified",
+			"document":            nil,
+			"additional_document": nil,
+			"details":             nil,
+			"details_code":        nil,
+		},
+		"metadata": nonNilMap(resource.Metadata),
+		"livemode": false,
 	}
 }
 
@@ -4119,6 +4301,18 @@ func emptyToNil(value string) any {
 		return nil
 	}
 	return value
+}
+
+func optionalIntString(value string) any {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	return parseInt64(value)
+}
+
+func truthy(value string) bool {
+	return value == "true" || value == "1"
 }
 
 func stringDefault(value string, fallback string) string {

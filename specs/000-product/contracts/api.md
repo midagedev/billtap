@@ -148,9 +148,11 @@ Returns a Billtap hosted portal URL for a known customer.
 ### Connect Platform Evidence
 
 - `POST /v1/accounts`
+- `GET /v1/account`
 - `GET /v1/accounts/{id}`
 - `GET /v1/accounts`
 - `POST /v1/accounts/{id}`
+- `DELETE /v1/accounts/{id}`
 - `POST /v1/accounts/{id}/reject`
 - `POST /v1/account_links`
 - `POST /v1/account_sessions`
@@ -158,6 +160,16 @@ Returns a Billtap hosted portal URL for a known customer.
 - `GET /v1/accounts/{id}/capabilities`
 - `GET /v1/accounts/{id}/capabilities/{capability}`
 - `POST /v1/accounts/{id}/capabilities/{capability}`
+- `POST /v1/accounts/{id}/people`
+- `GET /v1/accounts/{id}/people`
+- `GET /v1/accounts/{id}/people/{person}`
+- `POST /v1/accounts/{id}/people/{person}`
+- `DELETE /v1/accounts/{id}/people/{person}`
+- `POST /v1/accounts/{id}/persons`
+- `GET /v1/accounts/{id}/persons`
+- `GET /v1/accounts/{id}/persons/{person}`
+- `POST /v1/accounts/{id}/persons/{person}`
+- `DELETE /v1/accounts/{id}/persons/{person}`
 - `POST /v1/accounts/{id}/external_accounts`
 - `GET /v1/accounts/{id}/external_accounts`
 - `GET /v1/accounts/{id}/external_accounts/{external_account}`
@@ -189,16 +201,19 @@ Returns a Billtap hosted portal URL for a known customer.
 - `GET /v1/application_fees/{id}/refunds/{refund}`
 - `POST /v1/application_fees/{id}/refunds/{refund}`
 
-Connect APIs are local smoke-test fixtures for platform-style routing. Account
+Connect APIs are local smoke-test fixtures for platform-style routing. Platform
+account retrieval returns deterministic local evidence. Account
 create/list/retrieve/update persist connected-account profiles with metadata and
-basic capability status. Account links, account sessions, and login links
-return local hosted URLs/client secrets for onboarding or embedded-component
-tests. External accounts, bank accounts, transfers, reversals, payouts,
-application fees, and fee refunds are local evidence objects for platform-style
-integration tests. Billtap records `Stripe-Account` request headers in redacted
-request traces and can emit local Connect evidence webhooks, but it does not
-perform real onboarding, KYC, external-account verification, balance movement,
-or settlement.
+basic capability status, while account deletion returns a local marker rather
+than closing a provider account. People/persons persist local representative
+evidence. Account links, account sessions, and login links return local hosted
+URLs/client secrets for onboarding or embedded-component tests. External
+accounts, bank accounts, transfers, reversals, payouts, application fees, and
+fee refunds are local evidence objects for platform-style integration tests.
+Billtap records `Stripe-Account` request headers in redacted request traces and
+can emit local Connect evidence webhooks, but it does not perform real
+onboarding, KYC, identity verification, external-account verification, balance
+movement, account closure, or settlement.
 
 ### Webhook Endpoints
 

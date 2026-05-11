@@ -263,7 +263,7 @@ Gate:
 - [ ] T138 Add coupons, discounts, credit notes, refunds, disputes, and payment-history simulation
 - [x] T139 Add Connect account, account-link, account-session smoke and `Stripe-Account` trace evidence
 - [x] T140 Add application fee, transfer, payout, external-account, and connected-account webhook routing
-- [ ] T141 Add account self/delete and people/person fixtures for remaining Connect inventory routes
+- [x] T141 Add account self/delete and people/person fixtures for remaining Connect inventory routes
 - [ ] T142 Add official Stripe SDK matrix for Node, Go, Java, Python, and Ruby
 - [x] T143 Add optional scheduled/manual Stripe OpenAPI inventory workflow artifacts
 
