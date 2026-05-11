@@ -2681,6 +2681,166 @@ func TestFixtureResolveStatusAndTestClockAdvance(t *testing.T) {
 	}
 }
 
+func TestFixtureSubscriptionStatusAndDatesOverrideOutcome(t *testing.T) {
+	handler := newTestHandler(t)
+	pack := map[string]any{
+		"name":      "sample-status-override",
+		"runId":     "run-status-override-1",
+		"namespace": "sample-e2e",
+		"test_clocks": []map[string]any{{
+			"id":          "clock_fixture_trial",
+			"frozen_time": "2030-01-10T00:00:00Z",
+		}},
+		"customers": []map[string]any{
+			{"id": "cus_fixture_trial", "email": "trial-status@example.test", "test_clock": "clock_fixture_trial"},
+			{"id": "cus_fixture_canceled", "email": "canceled-status@example.test"},
+			{"id": "cus_fixture_past_due", "email": "past-due-status@example.test"},
+			{"id": "cus_fixture_unpaid", "email": "unpaid-status@example.test"},
+			{"id": "cus_fixture_incomplete", "email": "incomplete-status@example.test"},
+		},
+		"products": []map[string]any{{
+			"id":   "prod_fixture_status_plan",
+			"name": "Status Override Plan",
+		}},
+		"prices": []map[string]any{{
+			"id":          "price_fixture_status_monthly",
+			"product":     "prod_fixture_status_plan",
+			"currency":    "usd",
+			"unit_amount": 30000,
+			"interval":    "month",
+		}},
+		"subscriptions": []map[string]any{
+			{
+				"id":                   "sub_fixture_trial",
+				"ref":                  "trial-status-override",
+				"customer":             "cus_fixture_trial",
+				"price":                "price_fixture_status_monthly",
+				"quantity":             1,
+				"outcome":              "payment_succeeded",
+				"status":               "trialing",
+				"current_period_start": "2030-01-10T00:00:00Z",
+				"current_period_end":   "2030-01-15T00:00:00Z",
+				"trial_start":          "2030-01-10T00:00:00Z",
+				"trial_end":            "2030-01-15T00:00:00Z",
+				"test_clock":           "clock_fixture_trial",
+			},
+			{
+				"id":                   "sub_fixture_canceled",
+				"customer":             "cus_fixture_canceled",
+				"price":                "price_fixture_status_monthly",
+				"outcome":              "payment_succeeded",
+				"status":               "canceled",
+				"current_period_start": "2030-01-01T00:00:00Z",
+				"current_period_end":   "2030-01-10T00:00:00Z",
+				"canceled_at":          "2030-01-10T00:00:00Z",
+				"ended_at":             "2030-01-10T00:00:00Z",
+			},
+			{
+				"id":                    "sub_fixture_past_due",
+				"customer":              "cus_fixture_past_due",
+				"price":                 "price_fixture_status_monthly",
+				"outcome":               "payment_succeeded",
+				"status":                "past_due",
+				"current_period_start":  "2030-01-01T00:00:00Z",
+				"current_period_end":    "2030-02-01T00:00:00Z",
+				"latest_invoice_status": "open",
+			},
+			{
+				"id":                    "sub_fixture_unpaid",
+				"customer":              "cus_fixture_unpaid",
+				"price":                 "price_fixture_status_monthly",
+				"outcome":               "payment_succeeded",
+				"status":                "unpaid",
+				"current_period_start":  "2030-01-01T00:00:00Z",
+				"current_period_end":    "2030-02-01T00:00:00Z",
+				"latest_invoice_status": "open",
+			},
+			{
+				"id":                    "sub_fixture_incomplete",
+				"customer":              "cus_fixture_incomplete",
+				"price":                 "price_fixture_status_monthly",
+				"outcome":               "payment_succeeded",
+				"status":                "incomplete",
+				"current_period_start":  "2030-01-01T00:00:00Z",
+				"current_period_end":    "2030-02-01T00:00:00Z",
+				"latest_invoice_status": "open",
+			},
+		},
+	}
+
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if applied.Summary["test_clocks"] != 1 || applied.Summary["subscriptions"] != 5 {
+		t.Fatalf("apply summary = %#v", applied.Summary)
+	}
+
+	trialList := getJSON[struct {
+		Data []struct {
+			ID                 string `json:"id"`
+			Status             string `json:"status"`
+			CurrentPeriodStart int64  `json:"current_period_start"`
+			CurrentPeriodEnd   int64  `json:"current_period_end"`
+			TrialStart         int64  `json:"trial_start"`
+			TrialEnd           int64  `json:"trial_end"`
+		} `json:"data"`
+	}](t, handler, "/v1/subscriptions?customer=cus_fixture_trial&status=all")
+	if len(trialList.Data) != 1 {
+		t.Fatalf("trial list = %#v, want one subscription", trialList.Data)
+	}
+	trial := trialList.Data[0]
+	if trial.ID != "sub_fixture_trial" || trial.Status != "trialing" || trial.CurrentPeriodStart != 1894233600 || trial.CurrentPeriodEnd != 1894665600 || trial.TrialStart != 1894233600 || trial.TrialEnd != 1894665600 {
+		t.Fatalf("trial subscription = %#v, want fixture status and dates preserved", trial)
+	}
+
+	for _, tt := range []struct {
+		id     string
+		status string
+	}{
+		{"sub_fixture_canceled", "canceled"},
+		{"sub_fixture_past_due", "past_due"},
+		{"sub_fixture_unpaid", "unpaid"},
+		{"sub_fixture_incomplete", "incomplete"},
+	} {
+		subscription := getJSON[struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		}](t, handler, "/v1/subscriptions/"+tt.id)
+		if subscription.ID != tt.id || subscription.Status != tt.status {
+			t.Fatalf("%s = %#v, want status %q despite payment_succeeded outcome", tt.id, subscription, tt.status)
+		}
+	}
+
+	if status := subscriptionCreatedEventStatus(t, handler, "sub_fixture_trial"); status != "trialing" {
+		t.Fatalf("created event status = %q, want trialing", status)
+	}
+
+	advance := postForm[struct {
+		Billtap struct {
+			ActivatedCount int `json:"activated_count"`
+		} `json:"billtap_advance_result"`
+	}](t, handler, "/v1/test_helpers/test_clocks/clock_fixture_trial/advance", url.Values{
+		"frozen_time": {"1894752000"},
+	})
+	if advance.Billtap.ActivatedCount != 1 {
+		t.Fatalf("first advance = %#v, want one trial activation", advance)
+	}
+	active := getJSON[struct {
+		Status string `json:"status"`
+	}](t, handler, "/v1/subscriptions/sub_fixture_trial")
+	if active.Status != "active" {
+		t.Fatalf("advanced trial status = %q, want active", active.Status)
+	}
+
+	_ = postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	reset := getJSON[struct {
+		Status           string `json:"status"`
+		CurrentPeriodEnd int64  `json:"current_period_end"`
+		TrialEnd         int64  `json:"trial_end"`
+	}](t, handler, "/v1/subscriptions/sub_fixture_trial")
+	if reset.Status != "trialing" || reset.CurrentPeriodEnd != 1894665600 || reset.TrialEnd != 1894665600 {
+		t.Fatalf("reset trial subscription = %#v, want fixture status and dates restored", reset)
+	}
+}
+
 func TestFixtureApplyBackfillsCreatedEventForExistingSubscriptionSeed(t *testing.T) {
 	ctx := context.Background()
 	store, err := storage.OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
@@ -2774,6 +2934,27 @@ func countSubscriptionCreatedEvents(t *testing.T, handler http.Handler, subscrip
 		}
 	}
 	return count, source
+}
+
+func subscriptionCreatedEventStatus(t *testing.T, handler http.Handler, subscriptionID string) string {
+	t.Helper()
+	events := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=customer.subscription.created")
+	for _, event := range events.Data {
+		var object struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		}
+		if err := json.Unmarshal(event.Data.Object, &object); err != nil {
+			t.Fatalf("decode event object: %v", err)
+		}
+		if object.ID == subscriptionID {
+			return object.Status
+		}
+	}
+	t.Fatalf("missing customer.subscription.created event for %s", subscriptionID)
+	return ""
 }
 
 func TestRefundCreditNoteAPIsAndEvents(t *testing.T) {
