@@ -260,7 +260,7 @@ Gate:
 - [x] T135 Add OpenAPI-backed validation for broad L1 route/parameter/type coverage
 - [x] T136 Add direct PaymentIntent and SetupIntent state machines
 - [x] T137 Add renewal/test-clock/retry mutation for subscriptions and invoices
-- [ ] T138 Add coupons, discounts, credit notes, refunds, disputes, and payment-history simulation
+- [x] T138 Add coupons, promotion-code evidence, credit notes, refunds, disputes, and payment-history simulation
 - [x] T139 Add Connect account, account-link, account-session smoke and `Stripe-Account` trace evidence
 - [x] T140 Add application fee, transfer, payout, external-account, and connected-account webhook routing
 - [x] T141 Add account self/delete and people/person fixtures for remaining Connect inventory routes

@@ -26,8 +26,12 @@ Fixture-backed compatibility tests for the Stripe-like API subset:
 - prices
 - checkout sessions
 - subscriptions
+- subscription schedules
 - invoices
 - payment intents
+- coupons and promotion codes
+- customer cash balance
+- disputes
 - events
 - webhook endpoints
 
@@ -90,6 +94,9 @@ Integration diagnostics for failed app runs:
 - when a fixture emits events before the app registers a webhook endpoint, call
   `POST /api/webhooks/endpoints/{id}/replay-historical` after registration to
   produce deterministic catchup delivery evidence
+- use `GET /v1/webhook_endpoints/{id}/attempts` for endpoint-scoped delivery
+  status, and `POST /api/events/replay-group` when a failure needs multi-event
+  ordering, omission, delay, or signature-mismatch evidence
 
 ### Stripe SDK smoke
 
@@ -153,8 +160,12 @@ Run scenario YAML files end to end:
 - retry after 500
 - idempotency conflict
 - signature mismatch
+- multi-event replay ordering and omission
 - app timeout
 - deterministic payment/card failure simulation
+- SCA-required PaymentIntent completion and abandonment
+- bank-transfer PaymentIntent settlement through local cash-balance funding
+- coupon, promotion-code, subscription-schedule, and dispute evidence paths
 - duplicate entitlement grant prevention
 - out-of-order subscription event does not regress workspace status
 - extra export provision retry does not double-count export quota

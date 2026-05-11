@@ -8,8 +8,8 @@ import (
 func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	registry := DefaultRegistry()
 	claims := registry.Claims()
-	if len(claims) != 111 {
-		t.Fatalf("default claims = %d, want 111", len(claims))
+	if len(claims) != 138 {
+		t.Fatalf("default claims = %d, want 138", len(claims))
 	}
 
 	checkout, ok := registry.Lookup(http.MethodPost, "/v1/checkout/sessions")
@@ -70,6 +70,26 @@ func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	invoicePay, ok := registry.Lookup(http.MethodPost, "/v1/invoices/in_123/pay")
 	if !ok || invoicePay.Level != "L3" || !invoicePay.Stateful {
 		t.Fatalf("invoice pay claim = %#v ok=%t, want L3 stateful", invoicePay, ok)
+	}
+	portal, ok := registry.Lookup(http.MethodPost, "/v1/billing_portal/sessions")
+	if !ok || portal.Level != "L3" || len(portal.WebhookEvents) < 2 {
+		t.Fatalf("portal claim = %#v ok=%t, want webhook-backed L3 portal session", portal, ok)
+	}
+	schedule, ok := registry.Lookup(http.MethodPost, "/v1/subscription_schedules/sub_sched_123/release")
+	if !ok || schedule.Level != "L2" || !schedule.Stateful {
+		t.Fatalf("subscription schedule release claim = %#v ok=%t, want L2 stateful", schedule, ok)
+	}
+	cashBalance, ok := registry.Lookup(http.MethodPost, "/v1/test_helpers/customers/cus_123/fund_cash_balance")
+	if !ok || cashBalance.Level != "L3" || !cashBalance.Stateful {
+		t.Fatalf("cash-balance funding claim = %#v ok=%t, want L3 stateful", cashBalance, ok)
+	}
+	dispute, ok := registry.Lookup(http.MethodPost, "/v1/charges/ch_123/dispute")
+	if !ok || dispute.Level != "L2" || !dispute.Stateful {
+		t.Fatalf("dispute claim = %#v ok=%t, want L2 stateful", dispute, ok)
+	}
+	attempts, ok := registry.Lookup(http.MethodGet, "/v1/webhook_endpoints/we_123/attempts")
+	if !ok || attempts.Level != "L5" || !attempts.Stateful {
+		t.Fatalf("webhook attempts claim = %#v ok=%t, want L5 stateful", attempts, ok)
 	}
 }
 

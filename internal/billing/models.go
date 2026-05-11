@@ -138,11 +138,13 @@ type ClockAdvanceResult struct {
 	Activated      []Subscription         `json:"activated,omitempty"`
 	Renewals       []InvoicePaymentResult `json:"renewals,omitempty"`
 	Canceled       []Subscription         `json:"canceled,omitempty"`
+	Scheduled      []Subscription         `json:"scheduled,omitempty"`
 	Skipped        []string               `json:"skipped,omitempty"`
 	Processed      int                    `json:"processed"`
 	ActivatedCount int                    `json:"activated_count"`
 	Renewed        int                    `json:"renewed"`
 	CanceledCount  int                    `json:"canceled_count"`
+	ScheduledCount int                    `json:"scheduled_count"`
 }
 
 type PaymentIntent struct {

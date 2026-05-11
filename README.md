@@ -18,11 +18,11 @@ sandbox as the high-fidelity fallback lane.
 
 | Surface | What it is for |
 | --- | --- |
-| Stripe-like API | Local customers, products, prices, checkout sessions, subscriptions, invoices, payment intents, refunds, credit notes, test clocks, webhook endpoints, and events for supported billing flows. |
+| Stripe-like API | Local customers, products, prices, coupons, promotion codes, checkout sessions, subscriptions, schedules, invoices, payment intents, cash balance, refunds, credit notes, disputes, test clocks, webhook endpoints, and events for supported billing flows. |
 | Hosted checkout | Browser-visible sandbox checkout for exercising app integration and deterministic payment outcomes. |
 | Billing portal | Local customer portal for plan changes, seats, cancellation, resume, and payment-method update flows. |
 | Developer dashboard | Billing objects, timeline, webhook delivery attempts, app responses, and debug bundle export in one place. |
-| Webhook lab | Signed delivery with retry, duplicate, delay, out-of-order, replay, masking, and delivery evidence. |
+| Webhook lab | Signed delivery with retry, duplicate, delay, out-of-order, grouped replay, masking, and delivery evidence. |
 | Fixtures and scenarios | JSON/YAML setup, structured assertions, SaaS workspace profiles, and CI-readable reports. |
 | Diagnostics | Request traces and bundles that help agents distinguish app misconfiguration, unsupported API calls, webhook failures, and wrong local state. |
 
@@ -58,7 +58,7 @@ gaps instead of mistaking them for app bugs.
 | Use Billtap when... | Use a provider sandbox when... |
 | --- | --- |
 | You need deterministic subscription billing tests in local dev or CI. | You need full Stripe API behavior or hosted Stripe Dashboard parity. |
-| You need to validate webhook idempotency, retries, duplicate delivery, delays, or replay. | You are proving settlement, risk, tax, invoice rendering, account, payout, or dispute behavior. |
+| You need to validate webhook idempotency, retries, duplicate delivery, delays, or replay. | You are proving settlement, risk, tax, invoice rendering, account, payout, or real dispute behavior. |
 | You want fixture-driven setup with easy snapshot/assert APIs. | You need live provider validation for a newly adopted endpoint. |
 | You need a local checkout/portal/dashboard loop for app integration work. | You are handling real card data, live credentials, or production payment paths. |
 
@@ -183,8 +183,8 @@ curl -fsS "http://localhost:8080/api/diagnostics?limit=100" \
 | --- | --- | --- |
 | Runtime | Go server with SQLite local default | In-memory storage exists for tests |
 | Frontend | React checkout, portal, and dashboard apps | Built with Vite into `dist/app` |
-| Stripe-like API | Practical local subset | Customers, products, prices, checkout sessions, subscriptions, invoices, payment intents, refunds, credit notes, test clocks, webhook endpoints, events, search/list projections used by tests |
-| Webhooks | Signed delivery with reliability controls | Retry, duplicate, delay, out-of-order, replay, delivery evidence, redaction |
+| Stripe-like API | Practical local subset | Customers, catalog, checkout, portal sessions, subscriptions, schedules, invoices, payment intents, cash balance, refunds, credit notes, disputes, test clocks, webhook endpoints, events, search/list projections used by tests |
+| Webhooks | Signed delivery with reliability controls | Retry, duplicate, delay, out-of-order, grouped replay, endpoint attempts, delivery evidence, redaction |
 | Scenarios | YAML runner | Local clock, app assertions, JSON/Markdown reports, exit-code policy |
 | Fixtures | Apply/snapshot/assert APIs | JSON/YAML input, fixture metadata isolation, structured pass/fail reports |
 | SaaS profile | Generic workspace billing profile | Plans, seats, members, export quota, extra export, payment history, support bundle, platform/connect-style webhook evidence |

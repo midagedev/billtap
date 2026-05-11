@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Expanded the Stripe-like simulation surface with hosted billing portal
+  sessions/actions, local coupons and promotion codes, subscription schedules,
+  SCA-required PaymentIntent callbacks, customer cash-balance funding for
+  bank-transfer intents, dispute evidence, event filtering, endpoint-scoped
+  delivery attempts, and grouped webhook replay controls.
 - Added endpoint-scoped historical webhook replay so apps can catch up fixture
   events emitted before webhook endpoint registration.
 - Licensed Billtap under Apache-2.0 and added a top-level `NOTICE`.

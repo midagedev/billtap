@@ -124,6 +124,9 @@ function PortalApp() {
       setDraftSeats(result.data.subscription.seats);
       setSource(result.source);
       setActionStatus(result.error ? `${result.message}: ${result.error}` : result.message);
+      if (!result.error && shouldRedirectAfterPortalAction(label)) {
+        window.setTimeout(() => window.location.assign(getPortalReturnUrl()), 0);
+      }
     } catch (error) {
       setActionStatus(error instanceof Error ? error.message : String(error));
     } finally {
@@ -376,6 +379,23 @@ function PortalApp() {
 function getPortalReturnUrl(location: Location = window.location): string {
   const params = new URLSearchParams(location.search);
   return params.get("return_url") ?? params.get("returnUrl") ?? "/app/dashboard/";
+}
+
+function shouldRedirectAfterPortalAction(action: string, location: Location = window.location): boolean {
+  const params = new URLSearchParams(location.search);
+  const redirectOnAction = params.get("redirect_on_action") ?? params.get("redirectOnAction");
+  if (redirectOnAction !== "true" && redirectOnAction !== "1") {
+    return false;
+  }
+  const normalizedAction = action.toLowerCase();
+  const flow = (params.get("flow") ?? params.get("flow_data[type]") ?? "").toLowerCase();
+  if (flow.includes("payment_method")) {
+    return normalizedAction === "payment method";
+  }
+  if (flow.includes("subscription_cancel")) {
+    return normalizedAction === "cancel";
+  }
+  return normalizedAction === "payment method" || normalizedAction === "cancel";
 }
 
 function portalPaymentOutcomeForCard(cardNumber: string): PortalPaymentOutcome {

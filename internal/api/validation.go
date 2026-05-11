@@ -16,20 +16,24 @@ const (
 )
 
 var (
-	metadataParamRE            = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
-	expandParamRE              = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
-	enabledEventsParamRE       = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
-	retryBackoffParamRE        = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
-	checkoutLineItemRE         = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
-	legacyLineItemParamRE      = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
-	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
-	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
-	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
-	paymentMethodTypesRE       = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
-	automaticPaymentMethodsRE  = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
-	paymentMethodOptionsRE     = regexp.MustCompile(`^payment_method_options\[.+\]$`)
-	accountNestedParamRE       = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
-	eventTypeFilterParamRE     = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
+	metadataParamRE             = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
+	expandParamRE               = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
+	enabledEventsParamRE        = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
+	retryBackoffParamRE         = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
+	checkoutLineItemRE          = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
+	legacyLineItemParamRE       = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
+	checkoutSubscriptionDataRE  = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
+	subscriptionItemRE          = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
+	cancellationDetailsRE       = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
+	paymentMethodTypesRE        = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
+	automaticPaymentMethodsRE   = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
+	paymentMethodOptionsRE      = regexp.MustCompile(`^payment_method_options\[.+\]$`)
+	accountNestedParamRE        = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
+	eventTypeFilterParamRE      = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
+	portalFlowDataParamRE       = regexp.MustCompile(`^flow_data(\[[^\]]+\])+$`)
+	couponAppliesToParamRE      = regexp.MustCompile(`^applies_to(\[[^\]]+\])+$`)
+	promotionRestrictionParamRE = regexp.MustCompile(`^restrictions(\[[^\]]+\])+$`)
+	schedulePhaseParamRE        = regexp.MustCompile(`^phases\[\d+\]\[(start_date|end_date|iterations|items|plans)\].*$`)
 )
 
 type validationError struct {
@@ -812,8 +816,99 @@ func validateTestClockAdvance(p params) error {
 
 func validateBillingPortalSessionCreate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:     []string{"customer", "customer_id", "return_url"},
-		RequiredAny: [][]string{{"customer", "customer_id"}},
+		Allowed:      []string{"customer", "customer_id", "return_url", "configuration"},
+		AllowedRegex: []*regexp.Regexp{portalFlowDataParamRE},
+		RequiredAny:  [][]string{{"customer", "customer_id"}},
+	})
+}
+
+func validateCouponCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"name",
+			"duration",
+			"percent_off",
+			"amount_off",
+			"currency",
+			"duration_in_months",
+			"redeem_by",
+			"max_redemptions",
+		},
+		AllowedRegex: []*regexp.Regexp{couponAppliesToParamRE},
+		Int64Params:  []string{"percent_off", "amount_off", "duration_in_months", "redeem_by", "max_redemptions"},
+		Positive:     []string{"percent_off", "amount_off", "duration_in_months", "max_redemptions"},
+		EnumParams: map[string][]string{
+			"duration": {"forever", "once", "repeating"},
+		},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	if !p.hasAny("percent_off", "amount_off") {
+		return missingParam("percent_off")
+	}
+	if p.has("percent_off") && p.int64("percent_off") > 100 {
+		return invalidParam("percent_off", "Must be at most 100.")
+	}
+	if p.has("amount_off") && !p.has("currency") {
+		return missingParam("currency")
+	}
+	return nil
+}
+
+func validatePromotionCodeCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"coupon",
+			"code",
+			"active",
+			"customer",
+			"expires_at",
+			"max_redemptions",
+		},
+		AllowedRegex:  []*regexp.Regexp{promotionRestrictionParamRE},
+		Required:      []string{"coupon"},
+		Int64Params:   []string{"expires_at", "max_redemptions"},
+		Positive:      []string{"max_redemptions"},
+		BoolParams:    []string{"active", "restrictions[first_time_transaction]"},
+		AllowMetadata: true,
+	})
+}
+
+func validateSubscriptionScheduleCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:      []string{"id", "from_subscription", "subscription", "end_behavior"},
+		AllowedRegex: []*regexp.Regexp{schedulePhaseParamRE},
+		RequiredAny:  [][]string{{"from_subscription", "subscription"}},
+		Int64Params:  []string{"phases[0][start_date]", "phases[0][items][0][quantity]"},
+		Positive:     []string{"phases[0][items][0][quantity]"},
+		EnumParams: map[string][]string{
+			"end_behavior": {"release", "cancel", "none", "renew"},
+		},
+		AllowMetadata: true,
+	})
+}
+
+func validateFundCashBalance(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"amount", "currency", "reference"},
+		Required:    []string{"amount"},
+		Int64Params: []string{"amount"},
+		Positive:    []string{"amount"},
+	})
+}
+
+func validateDisputeCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"charge", "charge_id", "amount", "currency", "reason"},
+		Int64Params: []string{"amount"},
+		Positive:    []string{"amount"},
+		EnumParams: map[string][]string{
+			"reason": {"bank_cannot_process", "check_returned", "credit_not_processed", "customer_initiated", "debit_not_authorized", "duplicate", "fraudulent", "general", "incorrect_account_details", "insufficient_funds", "product_not_received", "product_unacceptable", "subscription_canceled", "unrecognized"},
+		},
+		AllowMetadata: true,
 	})
 }
 

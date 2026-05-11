@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +107,7 @@ func TestHostedURLsUseConfiguredPublicBaseURL(t *testing.T) {
 	portal := postForm[struct {
 		URL string `json:"url"`
 	}](t, handler, "/v1/billing_portal/sessions", url.Values{"customer": {customer.ID}})
-	if portal.URL != "http://127.0.0.1:18080/portal?customer_id="+customer.ID {
+	if !strings.HasPrefix(portal.URL, "http://127.0.0.1:18080/portal?") || !strings.Contains(portal.URL, "customer_id="+customer.ID) {
 		t.Fatalf("portal url = %q, want configured public base URL", portal.URL)
 	}
 }
@@ -2350,6 +2351,357 @@ func TestPortalCoverageAPI(t *testing.T) {
 	}
 }
 
+func TestBillingPortalSessionActionsEmitWebhooks(t *testing.T) {
+	handler := newTestHandler(t)
+
+	_ = postForm[map[string]any](t, handler, "/v1/test_helpers/test_clocks", url.Values{
+		"id":          {"clock_portal"},
+		"frozen_time": {"1893456000"},
+	})
+	customer := postForm[struct {
+		ID              string `json:"id"`
+		InvoiceSettings struct {
+			DefaultPaymentMethod *string `json:"default_payment_method"`
+		} `json:"invoice_settings"`
+	}](t, handler, "/v1/customers", url.Values{
+		"id":         {"cus_portal_flow"},
+		"email":      {"portal-flow@example.test"},
+		"test_clock": {"clock_portal"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Portal Flow"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"9900"},
+		"recurring[interval]": {"month"},
+	})
+	subscription := postForm[struct {
+		ID               string `json:"id"`
+		CurrentPeriodEnd int64  `json:"current_period_end"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {customer.ID},
+		"items[0][price]": {price.ID},
+	})
+
+	var receivedTypes []string
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode webhook payload: %v", err)
+		}
+		receivedTypes = append(receivedTypes, payload.Type)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+	postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"payment_method.attached,customer.updated,customer.subscription.updated,customer.subscription.deleted"},
+	})
+
+	portal := postForm[struct {
+		Object        string         `json:"object"`
+		Customer      string         `json:"customer"`
+		Configuration *string        `json:"configuration"`
+		ReturnURL     string         `json:"return_url"`
+		URL           string         `json:"url"`
+		Flow          map[string]any `json:"flow"`
+	}](t, handler, "/v1/billing_portal/sessions", url.Values{
+		"customer":                          {customer.ID},
+		"return_url":                        {"https://app.example.test/billing/return"},
+		"configuration":                     {"bpc_test"},
+		"flow_data[type]":                   {"payment_method_update"},
+		"flow_data[after_completion][type]": {"redirect"},
+		"flow_data[after_completion][redirect][return_url]": {"https://app.example.test/billing/return"},
+	})
+	if portal.Object != "billing_portal.session" || portal.Customer != customer.ID || portal.Configuration == nil || *portal.Configuration != "bpc_test" || portal.Flow["type"] != "payment_method_update" {
+		t.Fatalf("portal session = %#v, want Stripe-like session with flow/configuration", portal)
+	}
+	portalURL, err := url.Parse(portal.URL)
+	if err != nil {
+		t.Fatalf("parse portal URL: %v", err)
+	}
+	if portalURL.Query().Get("customer_id") != customer.ID || portalURL.Query().Get("return_url") != portal.ReturnURL || portalURL.Query().Get("redirect_on_action") != "true" || portalURL.Query().Get("flow") != "payment_method_update" {
+		t.Fatalf("portal URL query = %s, want customer, return URL, action redirect, and flow", portalURL.RawQuery)
+	}
+
+	payment := postJSON[struct {
+		PaymentMethod billing.PaymentMethodSimulation `json:"payment_method"`
+	}](t, handler, "/api/portal/customers/"+customer.ID+"/payment-method", map[string]string{
+		"outcome":        "succeeds",
+		"payment_method": "pm_card_visa",
+	})
+	if payment.PaymentMethod.Status != "succeeded" || payment.PaymentMethod.PaymentMethodID != "pm_card_visa" {
+		t.Fatalf("payment method update = %#v, want saved pm_card_visa", payment.PaymentMethod)
+	}
+	updatedCustomer := getJSON[struct {
+		InvoiceSettings struct {
+			DefaultPaymentMethod string `json:"default_payment_method"`
+		} `json:"invoice_settings"`
+	}](t, handler, "/v1/customers/"+customer.ID)
+	if updatedCustomer.InvoiceSettings.DefaultPaymentMethod != "pm_card_visa" {
+		t.Fatalf("default payment method = %q, want pm_card_visa", updatedCustomer.InvoiceSettings.DefaultPaymentMethod)
+	}
+	methods := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/payment_methods?customer="+customer.ID+"&type=card")
+	if len(methods.Data) != 1 || methods.Data[0].ID != "pm_card_visa" {
+		t.Fatalf("payment methods = %#v, want saved default method", methods.Data)
+	}
+
+	canceled := postJSON[struct {
+		Subscription billing.Subscription `json:"subscription"`
+	}](t, handler, "/api/portal/subscriptions/"+subscription.ID+"/cancel", map[string]string{"mode": "period"})
+	if !canceled.Subscription.CancelAtPeriodEnd {
+		t.Fatalf("portal cancel = %#v, want period-end cancellation", canceled.Subscription)
+	}
+	_ = postForm[map[string]any](t, handler, "/v1/test_helpers/test_clocks/clock_portal/advance", url.Values{
+		"frozen_time": {strconv.FormatInt(subscription.CurrentPeriodEnd+1, 10)},
+	})
+
+	wantTypes := []string{"payment_method.attached", "customer.updated", "customer.subscription.updated", "customer.subscription.deleted"}
+	if strings.Join(receivedTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("received webhook types = %#v, want %#v", receivedTypes, wantTypes)
+	}
+
+	filteredEvents := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?"+url.Values{
+		"type": {"customer.updated"},
+		"data.object.metadata[default_payment_method]": {"pm_card_visa"},
+	}.Encode())
+	if len(filteredEvents.Data) != 1 || filteredEvents.Data[0].Type != "customer.updated" {
+		t.Fatalf("filtered customer.updated events = %#v, want one metadata-filtered event", filteredEvents.Data)
+	}
+}
+
+func TestExpandedStripeSurfaceSimulations(t *testing.T) {
+	handler := newTestHandler(t)
+
+	var receivedTypes []string
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Type string `json:"type"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode webhook payload: %v", err)
+		}
+		receivedTypes = append(receivedTypes, payload.Type)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+	endpoint := postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"payment_intent.*,customer.subscription.updated,charge.dispute.*"},
+	})
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"expanded@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Expanded"}})
+	priceBasic := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"1000"},
+		"recurring[interval]": {"month"},
+	})
+	priceScale := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"2000"},
+		"recurring[interval]": {"month"},
+	})
+
+	coupon := postForm[struct {
+		ID         string `json:"id"`
+		Object     string `json:"object"`
+		PercentOff int64  `json:"percent_off"`
+	}](t, handler, "/v1/coupons", url.Values{
+		"id":          {"coupon_launch"},
+		"percent_off": {"25"},
+		"duration":    {"once"},
+	})
+	if coupon.Object != "coupon" || coupon.ID != "coupon_launch" || coupon.PercentOff != 25 {
+		t.Fatalf("coupon = %#v, want local coupon evidence", coupon)
+	}
+	promo := postForm[struct {
+		Object string `json:"object"`
+		Code   string `json:"code"`
+		Coupon struct {
+			ID string `json:"id"`
+		} `json:"coupon"`
+	}](t, handler, "/v1/promotion_codes", url.Values{
+		"coupon": {coupon.ID},
+		"code":   {"LAUNCH25"},
+	})
+	if promo.Object != "promotion_code" || promo.Code != "LAUNCH25" || promo.Coupon.ID != coupon.ID {
+		t.Fatalf("promotion code = %#v, want coupon-backed promotion", promo)
+	}
+
+	sca := postForm[struct {
+		ID            string         `json:"id"`
+		Status        string         `json:"status"`
+		PaymentMethod string         `json:"payment_method"`
+		NextAction    map[string]any `json:"next_action"`
+	}](t, handler, "/v1/payment_intents", url.Values{
+		"customer": {customer.ID},
+		"amount":   {"3200"},
+		"currency": {"usd"},
+		"outcome":  {"requires_action"},
+	})
+	if sca.Status != "requires_action" || sca.PaymentMethod != "pm_card_threeDSecure2Required" || sca.NextAction["type"] != "use_stripe_sdk" {
+		t.Fatalf("SCA payment intent = %#v, want requires_action with 3DS payment method and next_action", sca)
+	}
+	completedSCA := postJSON[struct {
+		Status string `json:"status"`
+	}](t, handler, "/api/payment_intents/"+sca.ID+"/complete_action", map[string]string{})
+	if completedSCA.Status != "succeeded" {
+		t.Fatalf("completed SCA = %#v, want succeeded", completedSCA)
+	}
+
+	bankTransfer := postForm[struct {
+		ID            string `json:"id"`
+		Status        string `json:"status"`
+		PaymentMethod string `json:"payment_method"`
+	}](t, handler, "/v1/payment_intents", url.Values{
+		"customer": {customer.ID},
+		"amount":   {"4500"},
+		"currency": {"usd"},
+		"outcome":  {"bank_transfer"},
+	})
+	if bankTransfer.Status != "processing" || bankTransfer.PaymentMethod != "pm_bank_transfer" {
+		t.Fatalf("bank transfer intent = %#v, want processing bank transfer", bankTransfer)
+	}
+	_ = postForm[map[string]any](t, handler, "/v1/test_helpers/customers/"+customer.ID+"/fund_cash_balance", url.Values{
+		"amount": {"4500"},
+	})
+	settledBankTransfer := getJSON[struct {
+		Status string `json:"status"`
+	}](t, handler, "/v1/payment_intents/"+bankTransfer.ID)
+	if settledBankTransfer.Status != "succeeded" {
+		t.Fatalf("settled bank transfer = %#v, want succeeded after cash-balance funding", settledBankTransfer)
+	}
+	cashBalance := getJSON[struct {
+		Available map[string]int64 `json:"available"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/cash_balance")
+	if cashBalance.Available["usd"] != 4500 {
+		t.Fatalf("cash balance = %#v, want funded usd balance", cashBalance.Available)
+	}
+
+	clock := postForm[map[string]any](t, handler, "/v1/test_helpers/test_clocks", url.Values{
+		"id":          {"clock_schedule"},
+		"frozen_time": {"1893456000"},
+	})
+	_ = clock
+	clockCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":      {"schedule@example.test"},
+		"test_clock": {"clock_schedule"},
+	})
+	subscription := postForm[struct {
+		ID               string `json:"id"`
+		CurrentPeriodEnd int64  `json:"current_period_end"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {clockCustomer.ID},
+		"items[0][price]": {priceBasic.ID},
+	})
+	schedule := postForm[struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}](t, handler, "/v1/subscription_schedules", url.Values{
+		"from_subscription":             {subscription.ID},
+		"phases[0][start_date]":         {strconv.FormatInt(subscription.CurrentPeriodEnd, 10)},
+		"phases[0][items][0][price]":    {priceScale.ID},
+		"phases[0][items][0][quantity]": {"3"},
+	})
+	if schedule.ID == "" || schedule.Status != "active" {
+		t.Fatalf("subscription schedule = %#v, want active schedule", schedule)
+	}
+	advance := postForm[struct {
+		BilltapAdvanceResult struct {
+			ScheduledCount int `json:"scheduled_count"`
+		} `json:"billtap_advance_result"`
+	}](t, handler, "/v1/test_helpers/test_clocks/clock_schedule/advance", url.Values{
+		"frozen_time": {strconv.FormatInt(subscription.CurrentPeriodEnd+1, 10)},
+	})
+	if advance.BilltapAdvanceResult.ScheduledCount != 1 {
+		t.Fatalf("clock advance = %#v, want scheduled phase applied", advance)
+	}
+	updatedSubscription := getJSON[struct {
+		Items struct {
+			Data []struct {
+				Price struct {
+					ID string `json:"id"`
+				} `json:"price"`
+				Quantity int64 `json:"quantity"`
+			} `json:"data"`
+		} `json:"items"`
+	}](t, handler, "/v1/subscriptions/"+subscription.ID)
+	if len(updatedSubscription.Items.Data) != 1 || updatedSubscription.Items.Data[0].Price.ID != priceScale.ID || updatedSubscription.Items.Data[0].Quantity != 3 {
+		t.Fatalf("updated subscription items = %#v, want scheduled price/quantity", updatedSubscription.Items.Data)
+	}
+
+	dispute := postForm[struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+		Charge string `json:"charge"`
+	}](t, handler, "/v1/charges/ch_test_123/dispute", url.Values{
+		"amount": {"1500"},
+		"reason": {"fraudulent"},
+	})
+	if dispute.ID == "" || dispute.Status != "needs_response" || dispute.Charge != "ch_test_123" {
+		t.Fatalf("dispute = %#v, want charge dispute evidence", dispute)
+	}
+	closedDispute := postForm[struct {
+		Status string `json:"status"`
+	}](t, handler, "/v1/disputes/"+dispute.ID+"/close", url.Values{})
+	if closedDispute.Status != "won" {
+		t.Fatalf("closed dispute = %#v, want won", closedDispute)
+	}
+
+	attempts := getJSON[struct {
+		Data []struct {
+			EventID string `json:"event_id"`
+		} `json:"data"`
+	}](t, handler, "/v1/webhook_endpoints/"+endpoint.ID+"/attempts")
+	if len(attempts.Data) == 0 {
+		t.Fatalf("endpoint attempts = %#v, want delivery attempt evidence", attempts.Data)
+	}
+	eventIDs := make([]string, 0, len(attempts.Data))
+	for _, attempt := range attempts.Data {
+		if attempt.EventID != "" {
+			eventIDs = append(eventIDs, attempt.EventID)
+		}
+		if len(eventIDs) == 2 {
+			break
+		}
+	}
+	group := postForm[struct {
+		Data []struct {
+			Metadata map[string]string `json:"metadata"`
+		} `json:"data"`
+	}](t, handler, "/api/events/replay-group", url.Values{
+		"event_ids":          {strings.Join(eventIDs, ",")},
+		"mode":               {"out_of_order"},
+		"signature_mismatch": {"true"},
+	})
+	if len(group.Data) != len(eventIDs) {
+		t.Fatalf("replay group = %#v, want one replay attempt per event", group.Data)
+	}
+	for _, attempt := range group.Data {
+		if attempt.Metadata["signature_mismatch"] != "true" || attempt.Metadata["out_of_order"] != "true" {
+			t.Fatalf("replay group attempt metadata = %#v, want signature mismatch and out-of-order evidence", attempt.Metadata)
+		}
+	}
+
+	expectedEvents := []string{"payment_intent.created", "payment_intent.requires_action", "payment_intent.succeeded", "payment_intent.created", "payment_intent.processing", "payment_intent.succeeded", "customer.subscription.updated", "charge.dispute.created", "charge.dispute.closed"}
+	for _, eventType := range expectedEvents {
+		if !containsString(receivedTypes, eventType) {
+			t.Fatalf("received webhook types = %#v, missing %s", receivedTypes, eventType)
+		}
+	}
+}
+
 func TestStripeCompatCatalogAndPortalEndpoints(t *testing.T) {
 	handler := newTestHandler(t)
 
@@ -3512,6 +3864,15 @@ func newTestHandlerWithOptions(t *testing.T, opts Options) http.Handler {
 	opts.Webhooks = webhooks.NewService(store)
 	opts.Diagnostics = diagnostics.NewService(store)
 	return New(opts)
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func postForm[T any](t *testing.T, handler http.Handler, path string, values url.Values) T {
