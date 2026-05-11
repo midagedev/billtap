@@ -29,6 +29,15 @@ const (
 	ObjectFeeRefund        = "fee_refund"
 )
 
+const (
+	MetadataDefaultPaymentMethod  = "default_payment_method"
+	MetadataPaymentMethodsFixture = "billtap_payment_methods_fixture"
+	MetadataPaymentMethodIDs      = "billtap_payment_method_ids"
+
+	PaymentMethodsFixtureEmpty    = "empty"
+	PaymentMethodsFixtureExplicit = "explicit"
+)
+
 type Customer struct {
 	ID        string            `json:"id"`
 	Object    string            `json:"object"`

@@ -406,6 +406,13 @@ Supported fixture sections:
 - `credit_notes`
 - `assertions`
 
+Customer fixtures can opt out of Billtap's default sandbox card projection with
+`payment_methods_fixture: empty` or an explicit empty `payment_methods: []`
+field. When either field is present, `GET /v1/payment_methods?customer=...`
+returns an empty list until a portal payment-method update or explicit fixture
+payment method adds a saved method. A `payment_methods` list may also provide
+objects with `id` and optional `default: true` for multi-card local scenarios.
+
 Billtap tags created objects with fixture metadata:
 
 - `billtap_fixture_name`
