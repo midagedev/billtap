@@ -2048,6 +2048,7 @@ func (h *Handler) handlePaymentIntents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+		metadata := paymentIntentMetadata(p)
 		intent, err := h.billing.CreatePaymentIntent(r.Context(), billing.PaymentIntent{
 			ID:              p.string("id"),
 			CustomerID:      customerID,
@@ -2055,6 +2056,7 @@ func (h *Handler) handlePaymentIntents(w http.ResponseWriter, r *http.Request) {
 			Currency:        p.string("currency"),
 			CaptureMethod:   p.stringDefault("capture_method", "automatic"),
 			PaymentMethodID: p.string("payment_method"),
+			Metadata:        metadata,
 		})
 		if err == nil {
 			h.emitPaymentIntentWebhook(r, "payment_intent.created", intent)
@@ -3337,6 +3339,17 @@ func (h *Handler) handlePaymentIntentAction(w http.ResponseWriter, r *http.Reque
 		if err == nil {
 			h.emitPaymentIntentWebhook(r, "payment_intent.canceled", intent)
 		}
+	case "outcome":
+		p, parseErr := parseParams(r)
+		if parseErr != nil {
+			writeError(w, http.StatusBadRequest, parseErr)
+			return
+		}
+		if validateErr := validatePaymentIntentOutcomeUpdate(p); validateErr != nil {
+			writeError(w, http.StatusBadRequest, validateErr)
+			return
+		}
+		intent, err = h.billing.SetPaymentIntentOutcome(r.Context(), id, p.string("outcome"))
 	default:
 		h.notFound(w, r)
 		return
@@ -3660,6 +3673,30 @@ func (p params) metadata() map[string]string {
 		return nil
 	}
 	return out
+}
+
+func paymentIntentMetadata(p params) map[string]string {
+	metadata := p.metadata()
+	outcome := firstNonEmptyString(
+		metadataValue(metadata, billing.MetadataPaymentIntentOutcome),
+		p.first("billtap_outcome", "deferred_outcome", "payment_intent_outcome"),
+		metadataValue(metadata, "billtap_outcome"),
+	)
+	if outcome == "" {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata[billing.MetadataPaymentIntentOutcome] = outcome
+	return metadata
+}
+
+func metadataValue(metadata map[string]string, key string) string {
+	if metadata == nil {
+		return ""
+	}
+	return strings.TrimSpace(metadata[key])
 }
 
 func (p params) list(key string) []string {
@@ -4458,6 +4495,7 @@ func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
 		"status":             intent.Status,
 		"capture_method":     captureMethod,
 		"payment_method":     emptyToNil(intent.PaymentMethodID),
+		"metadata":           nonNilMap(intent.Metadata),
 		"last_payment_error": paymentIntentError(intent),
 		"next_action":        paymentIntentNextAction(intent),
 		"client_secret":      intent.ID + "_secret_billtap",

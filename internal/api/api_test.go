@@ -497,6 +497,56 @@ func TestDirectPaymentIntentAndSetupIntentStateMachines(t *testing.T) {
 		t.Fatalf("canceled payment intent = %#v, want canceled", canceled)
 	}
 
+	deferredDecline := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents", url.Values{
+		"amount":   {"2700"},
+		"currency": {"usd"},
+		"customer": {customer.ID},
+		"metadata[billtap_payment_intent_outcome]": {"card_declined"},
+		"metadata[fixture_ref]":                    {"deferred-decline"},
+	})
+	if deferredDecline.Status != "requires_payment_method" || deferredDecline.Metadata[billing.MetadataPaymentIntentOutcome] != "card_declined" {
+		t.Fatalf("deferred decline intent = %#v, want stored outcome metadata without confirmation", deferredDecline)
+	}
+	deferredDeclined := postForm[struct {
+		Status           string            `json:"status"`
+		PaymentMethod    string            `json:"payment_method"`
+		Metadata         map[string]string `json:"metadata"`
+		LastPaymentError struct {
+			Code        string `json:"code"`
+			DeclineCode string `json:"decline_code"`
+		} `json:"last_payment_error"`
+	}](t, handler, "/v1/payment_intents/"+deferredDecline.ID+"/confirm", url.Values{
+		"payment_method": {"pm_card_visa"},
+	})
+	if deferredDeclined.Status != "requires_payment_method" || deferredDeclined.Metadata[billing.MetadataPaymentIntentOutcome] != "card_declined" || deferredDeclined.LastPaymentError.Code != "card_declined" || deferredDeclined.LastPaymentError.DeclineCode != "generic_decline" {
+		t.Fatalf("deferred declined intent = %#v, want configured card_declined outcome on confirm", deferredDeclined)
+	}
+
+	deferredSCA := postForm[billing.PaymentIntent](t, handler, "/v1/payment_intents", url.Values{
+		"amount":   {"3200"},
+		"currency": {"usd"},
+		"customer": {customer.ID},
+	})
+	configuredSCA := postJSON[struct {
+		Status   string            `json:"status"`
+		Metadata map[string]string `json:"metadata"`
+	}](t, handler, "/api/payment_intents/"+deferredSCA.ID+"/outcome", map[string]string{
+		"outcome": "requires_action",
+	})
+	if configuredSCA.Status != "requires_payment_method" || configuredSCA.Metadata[billing.MetadataPaymentIntentOutcome] != "requires_action" {
+		t.Fatalf("configured SCA intent = %#v, want deferred outcome metadata", configuredSCA)
+	}
+	confirmedSCA := postForm[struct {
+		Status        string         `json:"status"`
+		PaymentMethod string         `json:"payment_method"`
+		NextAction    map[string]any `json:"next_action"`
+	}](t, handler, "/v1/payment_intents/"+deferredSCA.ID+"/confirm", url.Values{
+		"payment_method": {"pm_card_visa"},
+	})
+	if confirmedSCA.Status != "requires_action" || confirmedSCA.PaymentMethod != "pm_card_visa" || confirmedSCA.NextAction["type"] != "use_stripe_sdk" {
+		t.Fatalf("confirmed SCA intent = %#v, want configured requires_action outcome", confirmedSCA)
+	}
+
 	setup := postForm[billing.SetupIntent](t, handler, "/v1/setup_intents", url.Values{
 		"customer":       {customer.ID},
 		"payment_method": {"pm_card_visa"},

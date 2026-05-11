@@ -914,6 +914,11 @@ func (s *Service) CreatePaymentIntent(ctx context.Context, in PaymentIntent) (Pa
 	in.Currency = strings.ToLower(strings.TrimSpace(in.Currency))
 	in.CaptureMethod = firstNonEmpty(in.CaptureMethod, "automatic")
 	in.Status = firstNonEmpty(in.Status, "requires_payment_method")
+	if outcome := paymentIntentConfiguredOutcome(in.Metadata); outcome != "" {
+		if _, ok := intentOutcomeSpec(outcome); !ok {
+			return PaymentIntent{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
+		}
+	}
 	in.CreatedAt = now
 	created, err := s.repo.CreatePaymentIntent(ctx, in)
 	if err != nil {
@@ -930,15 +935,17 @@ func (s *Service) ConfirmPaymentIntent(ctx context.Context, id string, paymentMe
 	if err := ensurePaymentIntentConfirmable(intent); err != nil {
 		return PaymentIntent{}, err
 	}
-	if firstNonEmpty(paymentMethodID, intent.PaymentMethodID, outcome) == "" {
+	configuredOutcome := paymentIntentConfiguredOutcome(intent.Metadata)
+	effectiveOutcome := firstNonEmpty(outcome, configuredOutcome)
+	if firstNonEmpty(paymentMethodID, intent.PaymentMethodID, effectiveOutcome) == "" {
 		return PaymentIntent{}, fmt.Errorf("%w: payment_method is required", ErrInvalidInput)
 	}
 	if paymentMethodID != "" {
 		intent.PaymentMethodID = paymentMethodID
 	}
-	spec, ok := intentOutcomeSpec(firstNonEmpty(outcome, intent.PaymentMethodID))
+	spec, ok := intentOutcomeSpec(firstNonEmpty(effectiveOutcome, intent.PaymentMethodID))
 	if !ok {
-		return PaymentIntent{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
+		return PaymentIntent{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, effectiveOutcome)
 	}
 	intent.PaymentMethodID = firstNonEmpty(intent.PaymentMethodID, spec.PaymentMethodID)
 	intent.Status = spec.PaymentIntentStatus
@@ -956,7 +963,29 @@ func (s *Service) ConfirmPaymentIntent(ctx context.Context, id string, paymentMe
 	}
 	now := s.now()
 	return s.repo.UpdatePaymentIntent(ctx, intent, []TimelineEntry{
-		timelineEntry("pi_"+intent.ID+"_confirmed_"+now.Format(time.RFC3339Nano), paymentIntentEvent(intent.Status), "Payment intent "+intent.Status, ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status}, now),
+		timelineEntry("pi_"+intent.ID+"_confirmed_"+now.Format(time.RFC3339Nano), paymentIntentEvent(intent.Status), "Payment intent "+intent.Status, ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"status": intent.Status, "outcome": firstNonEmpty(effectiveOutcome, intent.PaymentMethodID)}, now),
+	})
+}
+
+func (s *Service) SetPaymentIntentOutcome(ctx context.Context, id string, outcome string) (PaymentIntent, error) {
+	outcome = strings.TrimSpace(outcome)
+	if outcome == "" {
+		return PaymentIntent{}, fmt.Errorf("%w: outcome is required", ErrInvalidInput)
+	}
+	if _, ok := intentOutcomeSpec(outcome); !ok {
+		return PaymentIntent{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
+	}
+	intent, err := s.repo.GetPaymentIntent(ctx, id)
+	if err != nil {
+		return PaymentIntent{}, err
+	}
+	if intent.Metadata == nil {
+		intent.Metadata = map[string]string{}
+	}
+	intent.Metadata[MetadataPaymentIntentOutcome] = outcome
+	now := s.now()
+	return s.repo.UpdatePaymentIntent(ctx, intent, []TimelineEntry{
+		timelineEntry("pi_"+intent.ID+"_outcome_"+now.Format(time.RFC3339Nano), "payment_intent.outcome_configured", "Payment intent outcome configured", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", intent.ID, map[string]string{"outcome": outcome}, now),
 	})
 }
 
@@ -1980,6 +2009,15 @@ func intentOutcomeSpec(outcome string) (checkoutOutcomeSpec, bool) {
 		}, true
 	}
 	return checkoutOutcomeSpec{}, false
+}
+
+func paymentIntentConfiguredOutcome(metadata map[string]string) string {
+	for _, key := range []string{MetadataPaymentIntentOutcome, "billtap_outcome"} {
+		if value := strings.TrimSpace(metadata[key]); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func paymentIntentEvent(status string) string {
