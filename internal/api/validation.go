@@ -23,6 +23,7 @@ var (
 	checkoutLineItemRE          = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
 	legacyLineItemParamRE       = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
 	checkoutSubscriptionDataRE  = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
+	discountParamRE             = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
 	subscriptionItemRE          = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
 	cancellationDetailsRE       = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
 	paymentMethodTypesRE        = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
@@ -334,14 +335,16 @@ func (p params) validateUnixTimestampOrNow(key string) error {
 
 func validateCustomerCreate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:       []string{"id", "email", "name", "test_clock"},
+		Allowed:       []string{"id", "email", "name", "test_clock", "coupon", "promotion_code"},
+		AllowedRegex:  []*regexp.Regexp{discountParamRE},
 		AllowMetadata: true,
 	})
 }
 
 func validateCustomerUpdate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:       []string{"email", "name", "test_clock"},
+		Allowed:       []string{"email", "name", "test_clock", "coupon", "promotion_code"},
+		AllowedRegex:  []*regexp.Regexp{discountParamRE},
 		AllowMetadata: true,
 	})
 }
@@ -638,8 +641,8 @@ func validateApplicationFeeRefundUpdate(p params) error {
 
 func validateCheckoutSessionCreate(p params) error {
 	if err := p.validate(paramSpec{
-		Allowed:      []string{"customer", "customer_id", "mode", "success_url", "cancel_url", "price", "allow_promotion_codes"},
-		AllowedRegex: []*regexp.Regexp{checkoutLineItemRE, legacyLineItemParamRE, checkoutSubscriptionDataRE},
+		Allowed:      []string{"customer", "customer_id", "mode", "success_url", "cancel_url", "price", "allow_promotion_codes", "coupon", "promotion_code"},
+		AllowedRegex: []*regexp.Regexp{checkoutLineItemRE, legacyLineItemParamRE, checkoutSubscriptionDataRE, discountParamRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
 		Int64Params:  []string{"subscription_data[trial_period_days]"},
 		BoolParams:   []string{"allow_promotion_codes"},
@@ -677,8 +680,10 @@ func validateSubscriptionCreate(p params) error {
 			"billing_cycle_anchor",
 			"outcome",
 			"test_clock",
+			"coupon",
+			"promotion_code",
 		},
-		AllowedRegex: []*regexp.Regexp{subscriptionItemRE},
+		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, discountParamRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
 		Int64Params:  []string{"days_until_due", "cancel_at", "billing_cycle_anchor"},
 		Positive:     []string{"days_until_due"},
@@ -707,8 +712,8 @@ func validateSubscriptionCreate(p params) error {
 
 func validateSubscriptionUpdate(p params) error {
 	if err := p.validate(paramSpec{
-		Allowed:      []string{"cancel_at_period_end", "proration_behavior", "payment_behavior", "billing_cycle_anchor", "trial_end"},
-		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE},
+		Allowed:      []string{"cancel_at_period_end", "proration_behavior", "payment_behavior", "billing_cycle_anchor", "trial_end", "coupon", "promotion_code"},
+		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE, discountParamRE},
 		BoolParams:   []string{"cancel_at_period_end"},
 		EnumParams: map[string][]string{
 			"proration_behavior": {"none", "create_prorations", "always_invoice"},
@@ -809,7 +814,7 @@ func validateInvoicePay(p params) error {
 }
 
 func validateInvoicePreview(p params) error {
-	return p.validate(paramSpec{
+	if err := p.validate(paramSpec{
 		Allowed: []string{
 			"customer",
 			"subscription",
@@ -820,11 +825,15 @@ func validateInvoicePreview(p params) error {
 			"proration_date",
 			"subscription_details[proration_behavior]",
 			"subscription_details[proration_date]",
+			"subscription_details[billing_cycle_anchor]",
 			"subscriptionDetails[prorationBehavior]",
 			"subscriptionDetails[prorationDate]",
+			"subscriptionDetails[billingCycleAnchor]",
 			"preview_mode",
+			"coupon",
+			"promotion_code",
 		},
-		AllowedRegex: []*regexp.Regexp{invoicePreviewItemParamRE, expandParamRE},
+		AllowedRegex: []*regexp.Regexp{invoicePreviewItemParamRE, expandParamRE, discountParamRE},
 		Int64Params:  []string{"proration_date", "subscription_details[proration_date]", "subscriptionDetails[prorationDate]"},
 		EnumParams: map[string][]string{
 			"proration_behavior":                       {"always_invoice", "create_prorations", "none"},
@@ -832,7 +841,15 @@ func validateInvoicePreview(p params) error {
 			"subscriptionDetails[prorationBehavior]":   {"always_invoice", "create_prorations", "none"},
 			"preview_mode":                             {"next", "recurring"},
 		},
-	})
+	}); err != nil {
+		return err
+	}
+	for _, key := range []string{"subscription_details[billing_cycle_anchor]", "subscriptionDetails[billingCycleAnchor]"} {
+		if err := p.validateUnixTimestampOrNow(key); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func validateRefundCreate(p params) error {

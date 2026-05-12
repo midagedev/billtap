@@ -522,6 +522,9 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 		metadata = ensureStringMap(metadata)
 		metadata["trial_end"] = strings.TrimSpace(fixture.TrialEnd)
 	}
+	if discount := fixtureDiscount(fixture); len(discount) > 0 {
+		metadata = billing.MergeDiscountMetadata(metadata, discount)
+	}
 	if found {
 		patch, err := subscriptionStatePatch(fixture, metadata, items)
 		if err != nil {
@@ -545,6 +548,7 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 		CustomerID:      fixture.Customer,
 		Mode:            "subscription",
 		LineItems:       items,
+		Discounts:       fixtureDiscount(fixture),
 		TrialPeriodDays: trialDays,
 	})
 	if err != nil {
@@ -782,6 +786,15 @@ func validatePack(pack Pack) error {
 			if strings.TrimSpace(item.Price) == "" {
 				problems = append(problems, fmt.Sprintf("subscriptions[%d].items[%d].price is required", idx, itemIdx))
 			}
+		}
+		if subscription.DiscountPercentOff < 0 || subscription.DiscountPercentOff > 100 {
+			problems = append(problems, fmt.Sprintf("subscriptions[%d].discount_percent_off must be between 0 and 100", idx))
+		}
+		if subscription.DiscountAmountOff < 0 {
+			problems = append(problems, fmt.Sprintf("subscriptions[%d].discount_amount_off must be non-negative", idx))
+		}
+		if subscription.DiscountAmountOff > 0 && strings.TrimSpace(subscription.DiscountCurrency) == "" {
+			problems = append(problems, fmt.Sprintf("subscriptions[%d].discount_currency is required with discount_amount_off", idx))
 		}
 	}
 	for idx, refund := range pack.Refunds {
@@ -1125,6 +1138,21 @@ func subscriptionLineItems(fixture SubscriptionFixture) []billing.LineItem {
 		})
 	}
 	return out
+}
+
+func fixtureDiscount(fixture SubscriptionFixture) []billing.Discount {
+	couponID := strings.TrimSpace(fixture.Coupon)
+	promotionCodeID := strings.TrimSpace(fixture.PromotionCode)
+	if couponID == "" && promotionCodeID == "" && fixture.DiscountPercentOff == 0 && fixture.DiscountAmountOff == 0 {
+		return nil
+	}
+	return []billing.Discount{{
+		CouponID:        couponID,
+		PromotionCodeID: promotionCodeID,
+		PercentOff:      fixture.DiscountPercentOff,
+		AmountOff:       fixture.DiscountAmountOff,
+		Currency:        strings.ToLower(strings.TrimSpace(fixture.DiscountCurrency)),
+	}}
 }
 
 func subscriptionStatePatch(fixture SubscriptionFixture, metadata map[string]string, items []billing.LineItem) (billing.SubscriptionPatch, error) {

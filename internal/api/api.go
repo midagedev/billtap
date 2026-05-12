@@ -232,6 +232,12 @@ func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
 			}
 			metadata["test_clock"] = p.string("test_clock")
 		}
+		if discounts, err := h.discountsFromParams(p); err != nil {
+			writeResult(w, nil, err)
+			return
+		} else if len(discounts) > 0 {
+			metadata = billing.MergeDiscountMetadata(metadata, discounts)
+		}
 		customer, err := h.billing.CreateCustomer(r.Context(), billing.Customer{
 			ID:       p.string("id"),
 			Email:    p.string("email"),
@@ -283,11 +289,29 @@ func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		metadata := p.metadata()
+		if metadata != nil || p.has("test_clock") || hasDiscountParams(p) {
+			current, err := h.billing.GetCustomer(r.Context(), id)
+			if err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			merged := copyStringMap(current.Metadata)
+			for key, value := range metadata {
+				merged[key] = value
+			}
+			metadata = merged
+		}
 		if p.string("test_clock") != "" {
 			if metadata == nil {
 				metadata = map[string]string{}
 			}
 			metadata["test_clock"] = p.string("test_clock")
+		}
+		if discounts, err := h.discountsFromParams(p); err != nil {
+			writeResult(w, nil, err)
+			return
+		} else if len(discounts) > 0 {
+			metadata = billing.MergeDiscountMetadata(metadata, discounts)
 		}
 		customer, err := h.billing.UpdateCustomer(r.Context(), id, billing.Customer{
 			Email:    p.string("email"),
@@ -308,10 +332,20 @@ func (h *Handler) handleCustomerSubresource(w http.ResponseWriter, r *http.Reque
 		h.handleCustomerCashBalanceTransactions(w, r, customerID, "")
 	case "payment_methods":
 		h.handleCustomerPaymentMethods(w, r, customerID)
+	case "discount":
+		h.handleCustomerDiscount(w, r, customerID)
 	default:
 		if strings.HasPrefix(subresource, "cash_balance_transactions/") {
 			h.handleCustomerCashBalanceTransactions(w, r, customerID, strings.TrimPrefix(subresource, "cash_balance_transactions/"))
 			return
+		}
+		if strings.HasPrefix(subresource, "subscriptions/") {
+			rest := strings.TrimPrefix(subresource, "subscriptions/")
+			subscriptionID, nested, ok := strings.Cut(rest, "/")
+			if ok && nested == "discount" && subscriptionID != "" {
+				h.handleSubscriptionDiscount(w, r, subscriptionID)
+				return
+			}
 		}
 		h.notFound(w, r)
 	}
@@ -1416,7 +1450,8 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		if err := validateCustomerExists(h.billing.GetCustomer(r.Context(), p.first("customer", "customer_id"))); err != nil {
+		customer, err := h.billing.GetCustomer(r.Context(), p.first("customer", "customer_id"))
+		if err := validateCustomerExists(customer, err); err != nil {
 			writeResult(w, nil, err)
 			return
 		}
@@ -1426,10 +1461,16 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 				return
 			}
 		}
+		discounts, err := h.discountsFromParamsOrCustomer(r, p, customer)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
 		session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
 			CustomerID:          p.first("customer", "customer_id"),
 			Mode:                p.stringDefault("mode", "subscription"),
 			LineItems:           p.lineItems(),
+			Discounts:           discounts,
 			SuccessURL:          p.string("success_url"),
 			CancelURL:           p.string("cancel_url"),
 			AllowPromotionCodes: p.boolDefault("allow_promotion_codes", false),
@@ -1651,6 +1692,10 @@ func (h *Handler) createSubscriptionFromParams(r *http.Request) (billing.Subscri
 			return billing.Subscription{}, err
 		}
 	}
+	discounts, err := h.discountsFromParamsOrCustomer(r, p, customer)
+	if err != nil {
+		return billing.Subscription{}, err
+	}
 	testClockID := p.string("test_clock")
 	if testClockID == "" {
 		testClockID = customer.Metadata["test_clock"]
@@ -1667,6 +1712,7 @@ func (h *Handler) createSubscriptionFromParams(r *http.Request) (billing.Subscri
 		CustomerID: customerID,
 		Mode:       "subscription",
 		LineItems:  items,
+		Discounts:  discounts,
 	})
 	if err != nil {
 		return billing.Subscription{}, err
@@ -1702,6 +1748,15 @@ func (h *Handler) createSubscriptionFromParams(r *http.Request) (billing.Subscri
 
 func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	id := strings.TrimPrefix(r.URL.Path, "/v1/subscriptions/")
+	if strings.HasSuffix(id, "/discount") {
+		subscriptionID := strings.TrimSuffix(id, "/discount")
+		if subscriptionID == "" || strings.Contains(subscriptionID, "/") {
+			h.notFound(w, r)
+			return
+		}
+		h.handleSubscriptionDiscount(w, r, subscriptionID)
+		return
+	}
 	if id == "" || strings.Contains(id, "/") {
 		h.notFound(w, r)
 		return
@@ -1730,14 +1785,26 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 			}
 			items = subscriptionItemsFromParams(p, current)
 		}
+		metadata := subscriptionUpdateMetadata(p)
+		discounts, err := h.discountsFromParams(p)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		if len(discounts) > 0 {
+			metadata = billing.MergeDiscountMetadata(metadata, discounts)
+		}
 		subscription, err := h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
 			Items:             items,
 			ReplaceItems:      replaceItems,
-			Metadata:          subscriptionUpdateMetadata(p),
+			Metadata:          metadata,
 			CancelAtPeriodEnd: p.boolPtr("cancel_at_period_end"),
 		})
 		if err == nil {
 			h.emitSubscriptionWebhook(r, "customer.subscription.updated", subscription, webhooks.SourceAPI)
+			if len(discounts) > 0 {
+				h.emitGenericWebhook(r, "customer.discount.created", discounts[0].ID, h.stripeDiscount(discounts[0], subscription.CustomerID, subscription.ID, ""), webhooks.SourceAPI)
+			}
 		}
 		writeResult(w, h.stripeSubscription(r, subscription), err)
 	case http.MethodDelete:
@@ -1885,9 +1952,17 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 	if currency == "" {
 		currency = strings.ToLower(p.stringDefault("currency", "usd"))
 	}
+	discounts, err := h.invoicePreviewDiscounts(ctx, p, subscription, customerID)
+	if err != nil {
+		return nil, err
+	}
+	discountedTotal, discountAmount := billing.ApplyDiscounts(newTotal, currency, discounts)
 	behavior := invoicePreviewProrationBehavior(p)
 	createdAt := invoicePreviewProrationDate(p, now)
-	amount := newTotal
+	billingCycleAnchor := invoicePreviewBillingCycleAnchor(p, createdAt)
+	amount := discountedTotal
+	subtotal := newTotal
+	totalDiscountAmount := discountAmount
 	lines := []map[string]any{}
 	description := "Upcoming invoice preview"
 	if subscription.ID != "" {
@@ -1898,12 +1973,20 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		if currency == "" {
 			currency = oldCurrency
 		}
+		oldDiscountedTotal, _ := billing.ApplyDiscounts(oldTotal, currency, discounts)
 		amount = 0
+		subtotal = 0
+		totalDiscountAmount = 0
 		if behavior != "none" && !subscription.CurrentPeriodStart.IsZero() && !subscription.CurrentPeriodEnd.IsZero() && subscription.CurrentPeriodEnd.After(createdAt) && subscription.CurrentPeriodEnd.After(subscription.CurrentPeriodStart) {
 			periodSeconds := subscription.CurrentPeriodEnd.Unix() - subscription.CurrentPeriodStart.Unix()
 			remainingSeconds := subscription.CurrentPeriodEnd.Unix() - createdAt.Unix()
 			if periodSeconds > 0 && remainingSeconds > 0 {
-				amount = (newTotal - oldTotal) * remainingSeconds / periodSeconds
+				subtotal = (newTotal - oldTotal) * remainingSeconds / periodSeconds
+				amount = (discountedTotal - oldDiscountedTotal) * remainingSeconds / periodSeconds
+				totalDiscountAmount = subtotal - amount
+				if totalDiscountAmount < 0 {
+					totalDiscountAmount = 0
+				}
 			}
 		}
 		description = "Subscription update preview"
@@ -1917,12 +2000,13 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 				pricePayload = prices[priceID]
 			}
 			lines = append(lines, map[string]any{
-				"id":           "il_preview_" + sanitizeID(subscription.ID),
-				"object":       "line_item",
-				"amount":       amount,
-				"currency":     currency,
-				"description":  "Proration for subscription update",
-				"discountable": false,
+				"id":               "il_preview_" + sanitizeID(subscription.ID),
+				"object":           "line_item",
+				"amount":           amount,
+				"currency":         currency,
+				"description":      "Proration for subscription update",
+				"discount_amounts": discountAmounts(discounts, totalDiscountAmount),
+				"discountable":     false,
 				"period": map[string]any{
 					"start": createdAt.Unix(),
 					"end":   subscription.CurrentPeriodEnd.Unix(),
@@ -1948,24 +2032,28 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		lines = nil
 	}
 	return map[string]any{
-		"id":               "upcoming_in_" + strconv.FormatInt(now.Unix(), 10),
-		"object":           "invoice",
-		"customer":         emptyToNil(customerID),
-		"subscription":     emptyToNil(subscriptionID),
-		"amount_due":       amount,
-		"amount_paid":      0,
-		"amount_remaining": amount,
-		"subtotal":         amount,
-		"total":            amount,
-		"currency":         currency,
-		"created":          now.Unix(),
-		"status":           "draft",
-		"lines":            stripeList(path+"/lines", lines),
-		"livemode":         false,
-		"description":      description,
+		"id":                     "upcoming_in_" + strconv.FormatInt(now.Unix(), 10),
+		"object":                 "invoice",
+		"customer":               emptyToNil(customerID),
+		"subscription":           emptyToNil(subscriptionID),
+		"amount_due":             amount,
+		"amount_paid":            0,
+		"amount_remaining":       amount,
+		"subtotal":               subtotal,
+		"total":                  amount,
+		"discount":               firstDiscountObject(h, discounts, customerID, subscriptionID, ""),
+		"discounts":              stripeList(path+"/discounts", discountObjects(h, discounts, customerID, subscriptionID, "")),
+		"total_discount_amounts": discountAmounts(discounts, totalDiscountAmount),
+		"currency":               currency,
+		"created":                now.Unix(),
+		"status":                 "draft",
+		"lines":                  stripeList(path+"/lines", lines),
+		"livemode":               false,
+		"description":            description,
 		"billtap_preview": map[string]any{
-			"proration_behavior": behavior,
-			"proration_date":     createdAt.Unix(),
+			"proration_behavior":   behavior,
+			"proration_date":       createdAt.Unix(),
+			"billing_cycle_anchor": billingCycleAnchor.Unix(),
 		},
 	}, nil
 }
@@ -2005,6 +2093,18 @@ func invoicePreviewProrationBehavior(p params) string {
 func invoicePreviewProrationDate(p params, fallback time.Time) time.Time {
 	raw := p.first("subscription_details[proration_date]", "subscriptionDetails[prorationDate]", "proration_date")
 	if raw == "" {
+		return fallback
+	}
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return fallback
+	}
+	return time.Unix(seconds, 0).UTC()
+}
+
+func invoicePreviewBillingCycleAnchor(p params, fallback time.Time) time.Time {
+	raw := p.first("subscription_details[billing_cycle_anchor]", "subscriptionDetails[billingCycleAnchor]")
+	if raw == "" || raw == "now" {
 		return fallback
 	}
 	seconds, err := strconv.ParseInt(raw, 10, 64)
@@ -4205,6 +4305,7 @@ func stripeSearchResult(urlPath string, query string, data any) map[string]any {
 
 func stripeCustomer(customer billing.Customer) map[string]any {
 	defaultPaymentMethod := customer.Metadata[billing.MetadataDefaultPaymentMethod]
+	discounts := billing.DiscountsFromMetadata(customer.Metadata)
 	return map[string]any{
 		"id":         customer.ID,
 		"object":     billing.ObjectCustomer,
@@ -4217,6 +4318,7 @@ func stripeCustomer(customer billing.Customer) map[string]any {
 			"default_payment_method": emptyToNil(defaultPaymentMethod),
 		},
 		"test_clock": emptyToNil(customer.Metadata["test_clock"]),
+		"discount":   firstDiscountObject(nil, discounts, customer.ID, "", ""),
 		"livemode":   false,
 	}
 }
@@ -4744,6 +4846,7 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 	for idx, item := range sub.Items {
 		items = append(items, h.stripeSubscriptionItem(r, sub, item, idx))
 	}
+	discounts := billing.DiscountsFromMetadata(sub.Metadata)
 	return map[string]any{
 		"id":                   sub.ID,
 		"object":               billing.ObjectSubscription,
@@ -4760,6 +4863,8 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		"trial_start":          metadataUnix(sub.Metadata["trial_start"]),
 		"trial_end":            metadataUnix(sub.Metadata["trial_end"]),
 		"latest_invoice":       emptyToNil(sub.LatestInvoiceID),
+		"discount":             firstDiscountObject(h, discounts, sub.CustomerID, sub.ID, ""),
+		"discounts":            stripeList("/v1/subscriptions/"+sub.ID+"/discounts", discountObjects(h, discounts, sub.CustomerID, sub.ID, "")),
 		"test_clock":           emptyToNil(sub.Metadata["test_clock"]),
 		"metadata":             nonNilMap(sub.Metadata),
 		"collection_method":    stringDefault(sub.Metadata["collection_method"], "charge_automatically"),
@@ -4830,24 +4935,27 @@ func subscriptionItemID(sub billing.Subscription, idx int) string {
 
 func stripeInvoice(invoice billing.Invoice) map[string]any {
 	return map[string]any{
-		"id":                   invoice.ID,
-		"object":               billing.ObjectInvoice,
-		"customer":             invoice.CustomerID,
-		"subscription":         emptyToNil(invoice.SubscriptionID),
-		"parent":               map[string]any{"subscription_details": map[string]any{"subscription": emptyToNil(invoice.SubscriptionID)}},
-		"status":               invoice.Status,
-		"currency":             invoice.Currency,
-		"subtotal":             invoice.Subtotal,
-		"total":                invoice.Total,
-		"amount_due":           invoice.AmountDue,
-		"amount_paid":          invoice.AmountPaid,
-		"attempt_count":        invoice.AttemptCount,
-		"next_payment_attempt": optionalUnix(invoice.NextPaymentAttempt),
-		"payment_intent":       emptyToNil(invoice.PaymentIntentID),
-		"payments":             stripeList("/v1/invoices/"+invoice.ID+"/payments", []map[string]any{}),
-		"lines":                stripeList("/v1/invoices/"+invoice.ID+"/lines", []map[string]any{}),
-		"created":              unix(invoice.CreatedAt),
-		"created_at":           invoice.CreatedAt,
+		"id":                     invoice.ID,
+		"object":                 billing.ObjectInvoice,
+		"customer":               invoice.CustomerID,
+		"subscription":           emptyToNil(invoice.SubscriptionID),
+		"parent":                 map[string]any{"subscription_details": map[string]any{"subscription": emptyToNil(invoice.SubscriptionID)}},
+		"status":                 invoice.Status,
+		"currency":               invoice.Currency,
+		"subtotal":               invoice.Subtotal,
+		"discount":               firstDiscountObject(nil, invoice.Discounts, invoice.CustomerID, invoice.SubscriptionID, invoice.ID),
+		"discounts":              stripeList("/v1/invoices/"+invoice.ID+"/discounts", discountObjects(nil, invoice.Discounts, invoice.CustomerID, invoice.SubscriptionID, invoice.ID)),
+		"total_discount_amounts": discountAmounts(invoice.Discounts, invoice.DiscountAmount),
+		"total":                  invoice.Total,
+		"amount_due":             invoice.AmountDue,
+		"amount_paid":            invoice.AmountPaid,
+		"attempt_count":          invoice.AttemptCount,
+		"next_payment_attempt":   optionalUnix(invoice.NextPaymentAttempt),
+		"payment_intent":         emptyToNil(invoice.PaymentIntentID),
+		"payments":               stripeList("/v1/invoices/"+invoice.ID+"/payments", []map[string]any{}),
+		"lines":                  stripeList("/v1/invoices/"+invoice.ID+"/lines", []map[string]any{}),
+		"created":                unix(invoice.CreatedAt),
+		"created_at":             invoice.CreatedAt,
 		"status_transitions": map[string]any{
 			"paid_at": optionalPaidAt(invoice),
 		},
@@ -5957,6 +6065,9 @@ func (h *Handler) checkoutWebhookPayloads(r *http.Request, result map[string]any
 	appendPayload(checkoutSessionEvent(session.Status), session.ID, stripeCheckoutSession(session))
 	if subscription.ID != "" {
 		appendPayload("customer.subscription.created", subscription.ID, h.stripeSubscription(r, subscription))
+		if discounts := billing.DiscountsFromMetadata(subscription.Metadata); len(discounts) > 0 {
+			appendPayload("customer.discount.created", discounts[0].ID, h.stripeDiscount(discounts[0], subscription.CustomerID, subscription.ID, ""))
+		}
 	}
 	if invoice.ID != "" {
 		appendPayload("invoice.created", invoice.ID, stripeInvoice(invoice))

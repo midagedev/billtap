@@ -131,12 +131,20 @@ func (h *Handler) handlePromotionCodes(w http.ResponseWriter, r *http.Request) {
 		if code == "" {
 			code = strings.ToUpper(id)
 		}
+		h.local.mu.Lock()
+		coupon, couponOK := h.local.coupons[p.string("coupon")]
+		h.local.mu.Unlock()
+		if !couponOK {
+			writeResult(w, nil, billing.ErrNotFound)
+			return
+		}
 		promo := map[string]any{
 			"id":       id,
 			"object":   "promotion_code",
 			"code":     code,
-			"coupon":   evidenceCouponRef(p.string("coupon")),
+			"coupon":   cloneEvidence(coupon),
 			"active":   p.boolDefault("active", true),
+			"customer": emptyToNil(p.string("customer")),
 			"metadata": nonNilMap(p.metadata()),
 			"created":  now.Unix(),
 			"livemode": false,
@@ -149,6 +157,7 @@ func (h *Handler) handlePromotionCodes(w http.ResponseWriter, r *http.Request) {
 		h.local.mu.Lock()
 		data := evidenceList(h.local.promotionCodes)
 		h.local.mu.Unlock()
+		data = filterPromotionCodeEvidence(data, r)
 		writeJSON(w, http.StatusOK, stripeList(r.URL.Path, data))
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
@@ -178,6 +187,41 @@ func (h *Handler) handlePromotionCode(w http.ResponseWriter, r *http.Request) {
 
 func evidenceCouponRef(id string) map[string]any {
 	return map[string]any{"id": id, "object": "coupon"}
+}
+
+func filterPromotionCodeEvidence(data []map[string]any, r *http.Request) []map[string]any {
+	query := r.URL.Query()
+	code := strings.TrimSpace(query.Get("code"))
+	couponID := strings.TrimSpace(query.Get("coupon"))
+	customerID := strings.TrimSpace(query.Get("customer"))
+	activeFilter := strings.TrimSpace(query.Get("active"))
+	if code == "" && couponID == "" && customerID == "" && activeFilter == "" {
+		return data
+	}
+	out := make([]map[string]any, 0, len(data))
+	for _, promo := range data {
+		if code != "" && !strings.EqualFold(fmt.Sprint(promo["code"]), code) {
+			continue
+		}
+		if couponID != "" {
+			coupon, _ := promo["coupon"].(map[string]any)
+			if fmt.Sprint(coupon["id"]) != couponID {
+				continue
+			}
+		}
+		if customerID != "" && fmt.Sprint(promo["customer"]) != customerID {
+			continue
+		}
+		if activeFilter != "" {
+			wantActive := activeFilter == "true" || activeFilter == "1"
+			active, _ := promo["active"].(bool)
+			if active != wantActive {
+				continue
+			}
+		}
+		out = append(out, promo)
+	}
+	return out
 }
 
 func (h *Handler) handleSubscriptionSchedules(w http.ResponseWriter, r *http.Request) {

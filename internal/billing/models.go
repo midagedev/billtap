@@ -79,12 +79,26 @@ type LineItem struct {
 	Quantity int64  `json:"quantity"`
 }
 
+type Discount struct {
+	ID              string            `json:"id,omitempty"`
+	Object          string            `json:"object,omitempty"`
+	CouponID        string            `json:"coupon,omitempty"`
+	PromotionCodeID string            `json:"promotion_code,omitempty"`
+	PercentOff      int64             `json:"percent_off,omitempty"`
+	AmountOff       int64             `json:"amount_off,omitempty"`
+	Currency        string            `json:"currency,omitempty"`
+	Duration        string            `json:"duration,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	CreatedAt       time.Time         `json:"created_at,omitempty"`
+}
+
 type CheckoutSession struct {
 	ID                  string     `json:"id"`
 	Object              string     `json:"object"`
 	CustomerID          string     `json:"customer"`
 	Mode                string     `json:"mode"`
 	LineItems           []LineItem `json:"line_items"`
+	Discounts           []Discount `json:"discounts,omitempty"`
 	SuccessURL          string     `json:"success_url,omitempty"`
 	CancelURL           string     `json:"cancel_url,omitempty"`
 	AllowPromotionCodes bool       `json:"allow_promotion_codes,omitempty"`
@@ -121,6 +135,8 @@ type Invoice struct {
 	Status             string     `json:"status"`
 	Currency           string     `json:"currency"`
 	Subtotal           int64      `json:"subtotal"`
+	DiscountAmount     int64      `json:"discount_amount,omitempty"`
+	Discounts          []Discount `json:"discounts,omitempty"`
 	Total              int64      `json:"total"`
 	AmountDue          int64      `json:"amount_due"`
 	AmountPaid         int64      `json:"amount_paid"`
