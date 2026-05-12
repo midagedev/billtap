@@ -3308,9 +3308,10 @@ func TestDiscountApplicationAcrossCheckoutPreviewRenewalAndDelete(t *testing.T) 
 		Subtotal             int64            `json:"subtotal"`
 		Total                int64            `json:"total"`
 		AmountPaid           int64            `json:"amount_paid"`
+		Discounts            []map[string]any `json:"discounts"`
 		TotalDiscountAmounts []map[string]any `json:"total_discount_amounts"`
 	}](t, handler, "/v1/invoices/"+completed.InvoiceID)
-	if invoice.Subtotal != 4000 || invoice.Total != 2000 || invoice.AmountPaid != 2000 || len(invoice.TotalDiscountAmounts) != 1 {
+	if invoice.Subtotal != 4000 || invoice.Total != 2000 || invoice.AmountPaid != 2000 || len(invoice.Discounts) != 1 || len(invoice.TotalDiscountAmounts) != 1 {
 		t.Fatalf("discounted checkout invoice = %#v, want 50%% off 4000", invoice)
 	}
 	discount := getJSON[struct {
@@ -4486,8 +4487,26 @@ func TestInvoicePreviewProrationAndUpcoming(t *testing.T) {
 	}
 	prorationDate := time.Date(2030, 1, 16, 0, 0, 0, 0, time.UTC).Unix()
 	preview := postForm[struct {
-		Object         string `json:"object"`
-		AmountDue      int64  `json:"amount_due"`
+		Object               string            `json:"object"`
+		AmountDue            int64             `json:"amount_due"`
+		AttemptCount         int               `json:"attempt_count"`
+		Attempted            bool              `json:"attempted"`
+		AutoAdvance          bool              `json:"auto_advance"`
+		BillingReason        string            `json:"billing_reason"`
+		CollectionMethod     string            `json:"collection_method"`
+		Discounts            []map[string]any  `json:"discounts"`
+		Metadata             map[string]string `json:"metadata"`
+		Paid                 bool              `json:"paid"`
+		PaymentIntent        *string           `json:"payment_intent"`
+		PeriodStart          int64             `json:"period_start"`
+		PeriodEnd            int64             `json:"period_end"`
+		SubtotalExcludingTax int64             `json:"subtotal_excluding_tax"`
+		TotalExcludingTax    int64             `json:"total_excluding_tax"`
+		TotalTaxAmounts      []map[string]any  `json:"total_tax_amounts"`
+		AutomaticTax         struct {
+			Enabled bool    `json:"enabled"`
+			Status  *string `json:"status"`
+		} `json:"automatic_tax"`
 		BilltapPreview struct {
 			BillingCycleAnchor int64 `json:"billing_cycle_anchor"`
 		} `json:"billtap_preview"`
@@ -4505,6 +4524,12 @@ func TestInvoicePreviewProrationAndUpcoming(t *testing.T) {
 				} `json:"parent"`
 			} `json:"data"`
 		} `json:"lines"`
+		StatusTransitions struct {
+			FinalizedAt           *int64 `json:"finalized_at"`
+			MarkedUncollectibleAt *int64 `json:"marked_uncollectible_at"`
+			PaidAt                *int64 `json:"paid_at"`
+			VoidedAt              *int64 `json:"voided_at"`
+		} `json:"status_transitions"`
 	}](t, handler, "/v1/invoices/create_preview", url.Values{
 		"subscription":                               {"sub_preview_proration"},
 		"subscription_details[items][0][price]":      {pro.ID},
@@ -4515,6 +4540,18 @@ func TestInvoicePreviewProrationAndUpcoming(t *testing.T) {
 	})
 	if preview.Object != "invoice" || preview.AmountDue != 1000 || preview.BilltapPreview.BillingCycleAnchor != prorationDate || len(preview.Lines.Data) != 1 || !preview.Lines.Data[0].Proration || preview.Lines.Data[0].Parent.SubscriptionItemDetails.Price != pro.ID {
 		t.Fatalf("preview = %#v, want one 1000-cent proration line and accepted billing_cycle_anchor", preview)
+	}
+	if preview.AttemptCount != 0 || preview.Attempted || preview.AutoAdvance || preview.BillingReason != "subscription_update" || preview.CollectionMethod != "charge_automatically" || preview.Paid || preview.PaymentIntent != nil {
+		t.Fatalf("preview SDK invoice defaults = %#v, want Stripe invoice defaults", preview)
+	}
+	if preview.Metadata == nil || preview.Discounts == nil || preview.TotalTaxAmounts == nil || preview.AutomaticTax.Enabled || preview.AutomaticTax.Status != nil {
+		t.Fatalf("preview schema collections = %#v, want non-nil metadata/arrays and disabled automatic_tax", preview)
+	}
+	if preview.PeriodStart != time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC).Unix() || preview.PeriodEnd != time.Date(2030, 1, 31, 0, 0, 0, 0, time.UTC).Unix() || preview.SubtotalExcludingTax != 1000 || preview.TotalExcludingTax != 1000 {
+		t.Fatalf("preview period/tax totals = %#v, want subscription period and excluding tax totals", preview)
+	}
+	if preview.StatusTransitions.FinalizedAt != nil || preview.StatusTransitions.MarkedUncollectibleAt != nil || preview.StatusTransitions.PaidAt != nil || preview.StatusTransitions.VoidedAt != nil {
+		t.Fatalf("preview status_transitions = %#v, want nullable transition fields", preview.StatusTransitions)
 	}
 	q := url.Values{}
 	q.Set("subscription", "sub_preview_proration")

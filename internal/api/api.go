@@ -1960,6 +1960,13 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 	behavior := invoicePreviewProrationBehavior(p)
 	createdAt := invoicePreviewProrationDate(p, now)
 	billingCycleAnchor := invoicePreviewBillingCycleAnchor(p, createdAt)
+	periodStart, periodEnd := invoicePreviewPeriod(subscription, createdAt)
+	billingReason := "upcoming"
+	testClock := any(nil)
+	if subscription.ID != "" {
+		billingReason = "subscription_update"
+		testClock = emptyToNil(firstNonEmptyString(metadataValue(subscription.Metadata, "test_clock"), metadataValue(subscription.Metadata, "testClock")))
+	}
 	amount := discountedTotal
 	subtotal := newTotal
 	totalDiscountAmount := discountAmount
@@ -2032,30 +2039,99 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		lines = nil
 	}
 	return map[string]any{
-		"id":                     "upcoming_in_" + strconv.FormatInt(now.Unix(), 10),
-		"object":                 "invoice",
-		"customer":               emptyToNil(customerID),
-		"subscription":           emptyToNil(subscriptionID),
-		"amount_due":             amount,
-		"amount_paid":            0,
-		"amount_remaining":       amount,
-		"subtotal":               subtotal,
-		"total":                  amount,
-		"discount":               firstDiscountObject(h, discounts, customerID, subscriptionID, ""),
-		"discounts":              stripeList(path+"/discounts", discountObjects(h, discounts, customerID, subscriptionID, "")),
-		"total_discount_amounts": discountAmounts(discounts, totalDiscountAmount),
-		"currency":               currency,
-		"created":                now.Unix(),
-		"status":                 "draft",
-		"lines":                  stripeList(path+"/lines", lines),
-		"livemode":               false,
-		"description":            description,
+		"id":                               "upcoming_in_" + strconv.FormatInt(now.Unix(), 10),
+		"object":                           "invoice",
+		"customer":                         emptyToNil(customerID),
+		"subscription":                     emptyToNil(subscriptionID),
+		"parent":                           stripeInvoiceParent(subscriptionID),
+		"amount_due":                       amount,
+		"amount_paid":                      0,
+		"amount_remaining":                 amount,
+		"amount_shipping":                  0,
+		"subtotal":                         subtotal,
+		"subtotal_excluding_tax":           subtotal,
+		"total":                            amount,
+		"total_excluding_tax":              amount,
+		"discount":                         firstDiscountObject(h, discounts, customerID, subscriptionID, ""),
+		"discounts":                        discountObjects(h, discounts, customerID, subscriptionID, ""),
+		"total_discount_amounts":           discountAmounts(discounts, totalDiscountAmount),
+		"currency":                         currency,
+		"created":                          now.Unix(),
+		"effective_at":                     nil,
+		"period_start":                     periodStart,
+		"period_end":                       periodEnd,
+		"status":                           "draft",
+		"lines":                            stripeList(path+"/lines", lines),
+		"payments":                         stripeList(path+"/payments", []map[string]any{}),
+		"livemode":                         false,
+		"description":                      description,
+		"account_country":                  nil,
+		"account_name":                     nil,
+		"account_tax_ids":                  nil,
+		"application":                      nil,
+		"application_fee_amount":           nil,
+		"attempt_count":                    0,
+		"attempted":                        false,
+		"auto_advance":                     false,
+		"automatic_tax":                    stripeAutomaticTax(),
+		"automatically_finalizes_at":       nil,
+		"billing_reason":                   billingReason,
+		"charge":                           nil,
+		"collection_method":                "charge_automatically",
+		"custom_fields":                    nil,
+		"default_payment_method":           nil,
+		"default_source":                   nil,
+		"default_tax_rates":                []map[string]any{},
+		"due_date":                         nil,
+		"ending_balance":                   0,
+		"footer":                           nil,
+		"from_invoice":                     nil,
+		"last_finalization_error":          nil,
+		"metadata":                         map[string]string{},
+		"next_payment_attempt":             nil,
+		"number":                           nil,
+		"on_behalf_of":                     nil,
+		"paid":                             false,
+		"paid_out_of_band":                 false,
+		"payment_intent":                   nil,
+		"payment_settings":                 stripeInvoicePaymentSettings(),
+		"post_payment_credit_notes_amount": 0,
+		"pre_payment_credit_notes_amount":  0,
+		"quote":                            nil,
+		"receipt_number":                   nil,
+		"rendering":                        nil,
+		"rendering_options":                nil,
+		"shipping_cost":                    nil,
+		"shipping_details":                 nil,
+		"starting_balance":                 0,
+		"statement_descriptor":             nil,
+		"status_transitions":               stripeInvoiceStatusTransitions(nil),
+		"tax":                              nil,
+		"test_clock":                       testClock,
+		"total_tax_amounts":                []map[string]any{},
+		"transfer_data":                    nil,
+		"webhooks_delivered_at":            nil,
 		"billtap_preview": map[string]any{
 			"proration_behavior":   behavior,
 			"proration_date":       createdAt.Unix(),
 			"billing_cycle_anchor": billingCycleAnchor.Unix(),
 		},
 	}, nil
+}
+
+func invoicePreviewPeriod(subscription billing.Subscription, createdAt time.Time) (int64, int64) {
+	if subscription.ID == "" {
+		return createdAt.Unix(), createdAt.Unix()
+	}
+	start := createdAt
+	if !subscription.CurrentPeriodStart.IsZero() {
+		start = subscription.CurrentPeriodStart
+	}
+	end := createdAt
+	if !subscription.CurrentPeriodEnd.IsZero() {
+		end = subscription.CurrentPeriodEnd
+	}
+	return start.Unix(), end.Unix()
 }
 
 func (h *Handler) lineItemTotal(ctx context.Context, items []billing.LineItem) (int64, string, map[string]map[string]any, error) {
@@ -4864,7 +4940,7 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		"trial_end":            metadataUnix(sub.Metadata["trial_end"]),
 		"latest_invoice":       emptyToNil(sub.LatestInvoiceID),
 		"discount":             firstDiscountObject(h, discounts, sub.CustomerID, sub.ID, ""),
-		"discounts":            stripeList("/v1/subscriptions/"+sub.ID+"/discounts", discountObjects(h, discounts, sub.CustomerID, sub.ID, "")),
+		"discounts":            discountObjects(h, discounts, sub.CustomerID, sub.ID, ""),
 		"test_clock":           emptyToNil(sub.Metadata["test_clock"]),
 		"metadata":             nonNilMap(sub.Metadata),
 		"collection_method":    stringDefault(sub.Metadata["collection_method"], "charge_automatically"),
@@ -4934,34 +5010,137 @@ func subscriptionItemID(sub billing.Subscription, idx int) string {
 }
 
 func stripeInvoice(invoice billing.Invoice) map[string]any {
+	paidAt := optionalPaidAt(invoice)
+	created := unix(invoice.CreatedAt)
+	discounts := discountObjects(nil, invoice.Discounts, invoice.CustomerID, invoice.SubscriptionID, invoice.ID)
 	return map[string]any{
-		"id":                     invoice.ID,
-		"object":                 billing.ObjectInvoice,
-		"customer":               invoice.CustomerID,
-		"subscription":           emptyToNil(invoice.SubscriptionID),
-		"parent":                 map[string]any{"subscription_details": map[string]any{"subscription": emptyToNil(invoice.SubscriptionID)}},
-		"status":                 invoice.Status,
-		"currency":               invoice.Currency,
-		"subtotal":               invoice.Subtotal,
-		"discount":               firstDiscountObject(nil, invoice.Discounts, invoice.CustomerID, invoice.SubscriptionID, invoice.ID),
-		"discounts":              stripeList("/v1/invoices/"+invoice.ID+"/discounts", discountObjects(nil, invoice.Discounts, invoice.CustomerID, invoice.SubscriptionID, invoice.ID)),
-		"total_discount_amounts": discountAmounts(invoice.Discounts, invoice.DiscountAmount),
-		"total":                  invoice.Total,
-		"amount_due":             invoice.AmountDue,
-		"amount_paid":            invoice.AmountPaid,
-		"attempt_count":          invoice.AttemptCount,
-		"next_payment_attempt":   optionalUnix(invoice.NextPaymentAttempt),
-		"payment_intent":         emptyToNil(invoice.PaymentIntentID),
-		"payments":               stripeList("/v1/invoices/"+invoice.ID+"/payments", []map[string]any{}),
-		"lines":                  stripeList("/v1/invoices/"+invoice.ID+"/lines", []map[string]any{}),
-		"created":                unix(invoice.CreatedAt),
-		"created_at":             invoice.CreatedAt,
-		"status_transitions": map[string]any{
-			"paid_at": optionalPaidAt(invoice),
-		},
-		"hosted_invoice_url": "",
-		"livemode":           false,
+		"id":                               invoice.ID,
+		"object":                           billing.ObjectInvoice,
+		"customer":                         invoice.CustomerID,
+		"subscription":                     emptyToNil(invoice.SubscriptionID),
+		"parent":                           stripeInvoiceParent(invoice.SubscriptionID),
+		"status":                           invoice.Status,
+		"currency":                         invoice.Currency,
+		"subtotal":                         invoice.Subtotal,
+		"subtotal_excluding_tax":           invoice.Subtotal,
+		"discount":                         firstDiscountObject(nil, invoice.Discounts, invoice.CustomerID, invoice.SubscriptionID, invoice.ID),
+		"discounts":                        discounts,
+		"total_discount_amounts":           discountAmounts(invoice.Discounts, invoice.DiscountAmount),
+		"total":                            invoice.Total,
+		"total_excluding_tax":              invoice.Total,
+		"amount_due":                       invoice.AmountDue,
+		"amount_paid":                      invoice.AmountPaid,
+		"amount_remaining":                 invoice.AmountDue,
+		"amount_shipping":                  0,
+		"attempt_count":                    invoice.AttemptCount,
+		"attempted":                        invoice.AttemptCount > 0,
+		"auto_advance":                     false,
+		"automatic_tax":                    stripeAutomaticTax(),
+		"automatically_finalizes_at":       nil,
+		"billing_reason":                   stripeInvoiceBillingReason(invoice),
+		"collection_method":                "charge_automatically",
+		"next_payment_attempt":             optionalUnix(invoice.NextPaymentAttempt),
+		"payment_intent":                   emptyToNil(invoice.PaymentIntentID),
+		"payment_settings":                 stripeInvoicePaymentSettings(),
+		"payments":                         stripeList("/v1/invoices/"+invoice.ID+"/payments", []map[string]any{}),
+		"lines":                            stripeList("/v1/invoices/"+invoice.ID+"/lines", []map[string]any{}),
+		"created":                          created,
+		"created_at":                       invoice.CreatedAt,
+		"effective_at":                     nil,
+		"period_start":                     created,
+		"period_end":                       created,
+		"status_transitions":               stripeInvoiceStatusTransitions(paidAt),
+		"account_country":                  nil,
+		"account_name":                     nil,
+		"account_tax_ids":                  nil,
+		"application":                      nil,
+		"application_fee_amount":           nil,
+		"charge":                           nil,
+		"custom_fields":                    nil,
+		"default_payment_method":           nil,
+		"default_source":                   nil,
+		"default_tax_rates":                []map[string]any{},
+		"due_date":                         nil,
+		"ending_balance":                   0,
+		"footer":                           nil,
+		"from_invoice":                     nil,
+		"hosted_invoice_url":               "",
+		"invoice_pdf":                      nil,
+		"last_finalization_error":          nil,
+		"metadata":                         map[string]string{},
+		"number":                           nil,
+		"on_behalf_of":                     nil,
+		"paid":                             invoice.Status == "paid",
+		"paid_out_of_band":                 false,
+		"post_payment_credit_notes_amount": 0,
+		"pre_payment_credit_notes_amount":  0,
+		"quote":                            nil,
+		"receipt_number":                   nil,
+		"rendering":                        nil,
+		"rendering_options":                nil,
+		"shipping_cost":                    nil,
+		"shipping_details":                 nil,
+		"starting_balance":                 0,
+		"statement_descriptor":             nil,
+		"tax":                              nil,
+		"test_clock":                       nil,
+		"total_tax_amounts":                []map[string]any{},
+		"transfer_data":                    nil,
+		"webhooks_delivered_at":            nil,
+		"livemode":                         false,
 	}
+}
+
+func stripeInvoiceParent(subscriptionID string) map[string]any {
+	return map[string]any{
+		"type": "subscription_details",
+		"subscription_details": map[string]any{
+			"subscription": emptyToNil(subscriptionID),
+			"metadata":     map[string]string{},
+		},
+	}
+}
+
+func stripeInvoiceStatusTransitions(paidAt any) map[string]any {
+	return map[string]any{
+		"finalized_at":            nil,
+		"marked_uncollectible_at": nil,
+		"paid_at":                 paidAt,
+		"voided_at":               nil,
+	}
+}
+
+func stripeAutomaticTax() map[string]any {
+	return map[string]any{
+		"enabled": false,
+		"status":  nil,
+	}
+}
+
+func stripeInvoicePaymentSettings() map[string]any {
+	return map[string]any{
+		"default_mandate": nil,
+		"payment_method_options": map[string]any{
+			"acss_debit":       nil,
+			"bancontact":       nil,
+			"card":             nil,
+			"customer_balance": nil,
+			"konbini":          nil,
+			"sepa_debit":       nil,
+			"us_bank_account":  nil,
+		},
+		"payment_method_types": nil,
+	}
+}
+
+func stripeInvoiceBillingReason(invoice billing.Invoice) string {
+	if invoice.SubscriptionID == "" {
+		return "manual"
+	}
+	if strings.HasPrefix(invoice.ID, "in_renewal_") {
+		return "subscription_cycle"
+	}
+	return "subscription_create"
 }
 
 func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
