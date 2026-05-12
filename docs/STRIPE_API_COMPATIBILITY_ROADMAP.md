@@ -1,12 +1,11 @@
 # Stripe API Compatibility Roadmap
 
-Status date: 2026-05-11
+Status date: 2026-05-12
 
-This roadmap extends Billtap beyond one SaaS adoption path. The goal is not to
-be a real payment processor or a complete Stripe clone. The goal is to make
-Stripe compatibility measurable, versioned, and progressively useful across
-common integration shapes while keeping Billtap's stateful local billing-lab
-strength.
+This roadmap extends Billtap beyond one SaaS adoption path. The goal is to make
+Billtap progressively Stripe-compatible across a measured, versioned API
+surface while keeping its stateful local billing-lab strength and never
+processing real payments.
 
 ## Reference Model
 
@@ -64,7 +63,7 @@ The concrete expansion target is defined in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
 
 - reach at least `90.0%` OpenAPI operation coverage at `L1+`
-- move from the current `110 / 587` baseline to at least `529 / 587`
+- move from the current `144 / 587` baseline to at least `529 / 587`
 - keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
   matters
 - use broad `L1-L2` validation/fixture coverage for safe low-state and
@@ -275,12 +274,12 @@ questions quickly.
   "openapi_version": "3.0.0",
   "stripe_api_version": "2026-04-22.dahlia",
   "source": "stripe/openapi master",
-  "generated_at": "2026-05-11T00:00:00Z",
+  "generated_at": "2026-05-12T00:00:00Z",
   "summary": {
     "total_operations": 587,
-    "implemented_operations": 110,
-    "inventory_only_operations": 477,
-    "implemented_percent": 18.7,
+    "implemented_operations": 144,
+    "inventory_only_operations": 443,
+    "implemented_percent": 24.5,
     "families": [
       {
         "family": "connect",
@@ -314,7 +313,7 @@ questions quickly.
       "scorecard_cases": ["subscription.update.items.price"],
       "sdk_smoke": ["stripe-node"],
       "docs": "docs/COMPATIBILITY.md#supported-stripe-like-api-subset",
-      "risks": ["no proration invoice yet"]
+      "risks": ["proration invoice creation remains bounded to local preview/update paths"]
     }
   ]
 }

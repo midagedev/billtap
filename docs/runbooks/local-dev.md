@@ -5,7 +5,7 @@ This runbook covers the local runtime shell and Docker image.
 ## Start Billtap
 
 ```bash
-npm install
+npm ci
 npm run build
 go run ./cmd/billtap
 ```

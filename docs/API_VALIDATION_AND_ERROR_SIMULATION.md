@@ -25,6 +25,12 @@ Current release status:
 - Prices search now has focused tests for the documented search subset used by
   one-time price lookup paths: `active`, `type`, `lookup_key`, metadata
   equality, `limit`, and unsupported-clause validation.
+- Invoice preview responses include the common Stripe Invoice default fields
+  needed by generated SDK models, including status transitions, automatic tax,
+  payment settings, tax totals, period bounds, and array-shaped `discounts`.
+- The `stripe-node` SDK smoke lane remains the automated CI adoption check; a
+  local `stripe-java` 31.1.0 smoke confirmed `Invoice` deserialization for
+  `/v1/invoices/create_preview` after the preview schema update.
 - Live Stripe calls and the external `stripe-mock` oracle lane remain optional
   outside normal CI.
 
