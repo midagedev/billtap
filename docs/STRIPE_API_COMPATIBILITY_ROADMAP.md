@@ -380,8 +380,9 @@ Before a family moves beyond inventory:
 
 Keep the broad Stripe surface as the long-term direction, but promote endpoints
 only when they have a measured compatibility level and a documented boundary.
-After the current inventory/protocol baseline, the highest-value implementation
-order is:
+`SIMULATION_CAPACITY_BACKLOG.md` tracks the broader regression-driven fixture
+and simulation queue. After the current inventory/protocol baseline, the
+highest-value implementation order is:
 
 1. Coupons, discounts, credit notes, refunds, and payment history.
 2. Connect SDK/adoption smoke and connected-account webhook routing.

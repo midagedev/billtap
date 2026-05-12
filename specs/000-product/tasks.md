@@ -266,6 +266,7 @@ Gate:
 - [x] T141 Add account self/delete and people/person fixtures for remaining Connect inventory routes
 - [ ] T142 Add official Stripe SDK matrix for Node, Go, Java, Python, and Ruby
 - [x] T143 Add optional scheduled/manual Stripe OpenAPI inventory workflow artifacts
+- [x] T144 Capture the public simulation capacity backlog for regression-driven fixture and scenario expansion
 
 Suggested agents:
 

@@ -148,6 +148,8 @@ through `STRIPE_API_COMPATIBILITY_ROADMAP.md`:
 - OpenAPI-backed validation and fixture-shaped responses
 - deeper subscription, invoice, payment-intent, setup-intent, refund, dispute,
   entitlement, metering, and Connect simulation
+- regression-driven simulation capacity tracked in
+  `SIMULATION_CAPACITY_BACKLOG.md`
 - official Stripe SDK smoke lanes and optional `stripe-mock`/live-testmode
   oracle jobs
 
