@@ -8,8 +8,8 @@ import (
 func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	registry := DefaultRegistry()
 	claims := registry.Claims()
-	if len(claims) != 149 {
-		t.Fatalf("default claims = %d, want 149", len(claims))
+	if len(claims) != 165 {
+		t.Fatalf("default claims = %d, want 165", len(claims))
 	}
 
 	checkout, ok := registry.Lookup(http.MethodPost, "/v1/checkout/sessions")
@@ -28,6 +28,22 @@ func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	concreteSubscription, ok := registry.Lookup(http.MethodGet, "/v1/subscriptions/sub_123")
 	if !ok || concreteSubscription.Level != "L3" {
 		t.Fatalf("subscription concrete lookup = %#v ok=%t, want L3", concreteSubscription, ok)
+	}
+	customerSearch, ok := registry.Lookup(http.MethodGet, "/v1/customers/search")
+	if !ok || customerSearch.Level != "L3" || !customerSearch.Stateful {
+		t.Fatalf("customer search claim = %#v ok=%t, want L3 stateful", customerSearch, ok)
+	}
+	nestedSubscription, ok := registry.Lookup(http.MethodGet, "/v1/customers/cus_123/subscriptions")
+	if !ok || nestedSubscription.Level != "L3" || !nestedSubscription.Stateful {
+		t.Fatalf("nested subscription claim = %#v ok=%t, want L3 stateful", nestedSubscription, ok)
+	}
+	paymentMethodAttach, ok := registry.Lookup(http.MethodPost, "/v1/payment_methods/pm_123/attach")
+	if !ok || paymentMethodAttach.Level != "L3" || !paymentMethodAttach.Stateful {
+		t.Fatalf("payment method attach claim = %#v ok=%t, want L3 stateful", paymentMethodAttach, ok)
+	}
+	intentSearch, ok := registry.Lookup(http.MethodGet, "/v1/payment_intents/search")
+	if !ok || intentSearch.Level != "L3" || !intentSearch.Stateful {
+		t.Fatalf("payment intent search claim = %#v ok=%t, want L3 stateful", intentSearch, ok)
 	}
 
 	account, ok := registry.Lookup(http.MethodGet, "/v1/accounts/{account}")

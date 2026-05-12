@@ -267,6 +267,7 @@ Gate:
 - [ ] T142 Add official Stripe SDK matrix for Node, Go, Java, Python, and Ruby
 - [x] T143 Add optional scheduled/manual Stripe OpenAPI inventory workflow artifacts
 - [x] T144 Capture the public simulation capacity backlog for regression-driven fixture and scenario expansion
+- [x] T145 Expand customer history, subscription pause/resume, and payment-method attach/detach simulation routes
 
 Suggested agents:
 

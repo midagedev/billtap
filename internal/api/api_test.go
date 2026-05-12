@@ -1081,13 +1081,13 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 		t.Fatalf("message=%q, want normalized known Stripe route", errBody.Error.Message)
 	}
 
-	searchReq := httptest.NewRequest(http.MethodGet, "/v1/customers/search?query=email:'buyer@example.test'", nil)
+	searchReq := httptest.NewRequest(http.MethodGet, "/v1/charges/search?query=metadata['case']:'known'", nil)
 	searchReq.Header.Set("Request-Id", "req_known_search_unsupported")
 	searchRec := httptest.NewRecorder()
 	handler.ServeHTTP(searchRec, searchReq)
 	searchErr := decodeErrorBody(t, searchRec.Body.String())
 	if searchRec.Code != http.StatusBadRequest || searchErr.Error.Code != "unsupported_endpoint" {
-		t.Fatalf("customer search status=%d error=%#v, want known-route unsupported", searchRec.Code, searchErr.Error)
+		t.Fatalf("charges search status=%d error=%#v, want known-route unsupported", searchRec.Code, searchErr.Error)
 	}
 
 	v2Status, v2Body := postFormStatusWithHeaders(t, handler, "/v2/core/accounts", url.Values{}, map[string]string{
@@ -1200,7 +1200,7 @@ func TestKnownStripeRouteUnsupportedFallback(t *testing.T) {
 	if searchTraces.Object != "list" || len(searchTraces.Data) != 1 {
 		t.Fatalf("search request traces = %#v, want unsupported request trace", searchTraces)
 	}
-	if searchTraces.Data[0].Path != "/v1/customers/search" || searchTraces.Data[0].ErrorCode != "unsupported_endpoint" {
+	if searchTraces.Data[0].Path != "/v1/charges/search" || searchTraces.Data[0].ErrorCode != "unsupported_endpoint" {
 		t.Fatalf("search trace = %#v, want unsupported search route evidence", searchTraces.Data[0])
 	}
 
@@ -3618,6 +3618,199 @@ func TestSubscriptionUpdatePreservesItemsAndSupportsAdditiveSeatItems(t *testing
 	}
 	if withSeats.Items.Data[1].Price.ID != seatYearly.ID || withSeats.Items.Data[1].Quantity != 2 {
 		t.Fatalf("seat item = %#v, want additive seat item quantity 2", withSeats.Items.Data[1])
+	}
+}
+
+func TestCustomerSearchAndNestedSubscriptionRoutes(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":             {"history@example.test"},
+		"name":              {"History Tenant"},
+		"metadata[segment]": {"history"},
+	})
+	other := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":             {"other@example.test"},
+		"metadata[segment]": {"other"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"History Plan"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"2000"},
+		"recurring[interval]": {"month"},
+	})
+
+	type subscriptionResponse struct {
+		ID            string  `json:"id"`
+		Customer      string  `json:"customer"`
+		Status        string  `json:"status"`
+		LatestInvoice *string `json:"latest_invoice"`
+	}
+	active := postForm[subscriptionResponse](t, handler, "/v1/customers/"+customer.ID+"/subscriptions", url.Values{
+		"items[0][price]": {price.ID},
+	})
+	if active.Customer != customer.ID || active.Status != "active" {
+		t.Fatalf("nested subscription = %#v, want active subscription for customer", active)
+	}
+	subscriptionSearchQuery := url.QueryEscape("customer:'" + customer.ID + "' AND status:'active'")
+	subscriptionSearch := getJSON[struct {
+		Object string                 `json:"object"`
+		Data   []subscriptionResponse `json:"data"`
+	}](t, handler, "/v1/subscriptions/search?query="+subscriptionSearchQuery)
+	if subscriptionSearch.Object != "search_result" || len(subscriptionSearch.Data) != 1 || subscriptionSearch.Data[0].ID != active.ID {
+		t.Fatalf("subscription search = %#v, want active subscription", subscriptionSearch)
+	}
+	invoiceSearchQuery := url.QueryEscape("customer:'" + customer.ID + "' AND status:'paid'")
+	invoiceSearch := getJSON[struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID       string `json:"id"`
+			Customer string `json:"customer"`
+			Status   string `json:"status"`
+		} `json:"data"`
+	}](t, handler, "/v1/invoices/search?query="+invoiceSearchQuery)
+	if invoiceSearch.Object != "search_result" || len(invoiceSearch.Data) != 1 || invoiceSearch.Data[0].Customer != customer.ID {
+		t.Fatalf("invoice search = %#v, want paid customer invoice", invoiceSearch)
+	}
+	intentSearchQuery := url.QueryEscape("customer:'" + customer.ID + "' AND status:'succeeded'")
+	intentSearch := getJSON[struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID       string `json:"id"`
+			Customer string `json:"customer"`
+			Status   string `json:"status"`
+		} `json:"data"`
+	}](t, handler, "/v1/payment_intents/search?query="+intentSearchQuery)
+	if intentSearch.Object != "search_result" || len(intentSearch.Data) != 1 || intentSearch.Data[0].Customer != customer.ID {
+		t.Fatalf("payment_intent search = %#v, want succeeded customer intent", intentSearch)
+	}
+	otherSub := postForm[subscriptionResponse](t, handler, "/v1/customers/"+other.ID+"/subscriptions", url.Values{
+		"items[0][price]": {price.ID},
+	})
+	_ = deleteJSON[subscriptionResponse](t, handler, "/v1/customers/"+customer.ID+"/subscriptions/"+active.ID)
+
+	searchQuery := url.QueryEscape("email:'history@example.test' AND metadata['segment']:'history'")
+	search := getJSON[struct {
+		Object string             `json:"object"`
+		Data   []billing.Customer `json:"data"`
+	}](t, handler, "/v1/customers/search?query="+searchQuery)
+	if search.Object != "search_result" || len(search.Data) != 1 || search.Data[0].ID != customer.ID {
+		t.Fatalf("customer search = %#v, want only history customer", search)
+	}
+
+	canceled := getJSON[struct {
+		Object string                 `json:"object"`
+		Data   []subscriptionResponse `json:"data"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/subscriptions?status=canceled")
+	if len(canceled.Data) != 1 || canceled.Data[0].ID != active.ID {
+		t.Fatalf("nested canceled subscriptions = %#v, want canceled history", canceled.Data)
+	}
+	all := getJSON[struct {
+		Data []subscriptionResponse `json:"data"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/subscriptions?status=all")
+	if len(all.Data) != 1 || all.Data[0].Customer != customer.ID {
+		t.Fatalf("nested all subscriptions = %#v, want only requested customer", all.Data)
+	}
+	wrongStatus, _ := getStatus(t, handler, "/v1/customers/"+customer.ID+"/subscriptions/"+otherSub.ID)
+	if wrongStatus != http.StatusNotFound {
+		t.Fatalf("wrong nested customer status = %d, want 404", wrongStatus)
+	}
+}
+
+func TestSubscriptionPauseCollectionAndResume(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"pause@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Pause Plan"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"2000"},
+		"recurring[interval]": {"month"},
+	})
+	subscription := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {customer.ID},
+		"items[0][price]": {price.ID},
+	})
+	resumesAt := strconv.FormatInt(time.Now().UTC().Add(24*time.Hour).Unix(), 10)
+	paused := postForm[struct {
+		PauseCollection map[string]any `json:"pause_collection"`
+	}](t, handler, "/v1/subscriptions/"+subscription.ID, url.Values{
+		"pause_collection[behavior]":   {"void"},
+		"pause_collection[resumes_at]": {resumesAt},
+	})
+	if paused.PauseCollection["behavior"] != "void" || int64(paused.PauseCollection["resumes_at"].(float64)) == 0 {
+		t.Fatalf("pause_collection = %#v, want void with resumes_at", paused.PauseCollection)
+	}
+
+	resumed := postForm[struct {
+		PauseCollection any `json:"pause_collection"`
+	}](t, handler, "/v1/subscriptions/"+subscription.ID+"/resume", url.Values{"billing_cycle_anchor": {"unchanged"}})
+	if resumed.PauseCollection != nil {
+		t.Fatalf("resumed pause_collection = %#v, want nil", resumed.PauseCollection)
+	}
+}
+
+func TestPaymentMethodAttachDetach(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"cards@example.test"},
+		"metadata[" + billing.MetadataPaymentMethodsFixture + "]": {billing.PaymentMethodsFixtureEmpty},
+	})
+	initial := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/payment_methods?customer="+customer.ID+"&type=card")
+	if len(initial.Data) != 0 {
+		t.Fatalf("initial payment methods = %#v, want empty fixture", initial.Data)
+	}
+
+	attached := postForm[struct {
+		ID       string `json:"id"`
+		Customer string `json:"customer"`
+	}](t, handler, "/v1/payment_methods/pm_card_visa/attach", url.Values{"customer": {customer.ID}})
+	if attached.ID != "pm_card_visa" || attached.Customer != customer.ID {
+		t.Fatalf("attached payment method = %#v", attached)
+	}
+	listed := getJSON[struct {
+		Data []struct {
+			ID       string `json:"id"`
+			Customer string `json:"customer"`
+		} `json:"data"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/payment_methods?type=card")
+	if len(listed.Data) != 1 || listed.Data[0].ID != "pm_card_visa" {
+		t.Fatalf("listed payment methods = %#v, want attached card", listed.Data)
+	}
+	retrieved := getJSON[struct {
+		ID       string `json:"id"`
+		Customer string `json:"customer"`
+	}](t, handler, "/v1/payment_methods/pm_card_visa")
+	if retrieved.Customer != customer.ID {
+		t.Fatalf("retrieved payment method = %#v, want attached customer", retrieved)
+	}
+	nestedRetrieved := getJSON[struct {
+		ID       string `json:"id"`
+		Customer string `json:"customer"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/payment_methods/pm_card_visa")
+	if nestedRetrieved.ID != "pm_card_visa" || nestedRetrieved.Customer != customer.ID {
+		t.Fatalf("nested payment method = %#v, want attached customer card", nestedRetrieved)
+	}
+
+	detached := postForm[struct {
+		ID       string  `json:"id"`
+		Customer *string `json:"customer"`
+	}](t, handler, "/v1/payment_methods/pm_card_visa/detach", url.Values{})
+	if detached.ID != "pm_card_visa" || detached.Customer != nil {
+		t.Fatalf("detached payment method = %#v, want null customer", detached)
+	}
+	after := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/payment_methods?customer="+customer.ID+"&type=card")
+	if len(after.Data) != 0 {
+		t.Fatalf("after detach payment methods = %#v, want empty", after.Data)
 	}
 }
 

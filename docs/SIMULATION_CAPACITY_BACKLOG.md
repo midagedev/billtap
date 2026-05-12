@@ -25,8 +25,9 @@ these public capability rows in their own private docs.
 
 Billtap currently has a stateful Stripe-like local subset with:
 
-- customers, products, prices, price search, coupons, promotion codes, checkout
-  sessions, subscriptions, subscription schedules, invoices, invoice preview,
+- customers, products, prices, customer/product/price/subscription/invoice/
+  payment-intent search, coupons, promotion codes, checkout sessions,
+  subscriptions, subscription schedules, invoices, invoice preview,
   payment intents, setup intents, payment methods, refunds, credit notes,
   disputes, cash balance, test clocks, Connect evidence, webhook endpoints, and
   events
@@ -35,7 +36,7 @@ Billtap currently has a stateful Stripe-like local subset with:
 - webhook retry, duplicate, delay, out-of-order, replay, historical replay, and
   delivery attempt evidence
 - diagnostic bundles, request traces, timeline evidence, and dashboard views
-- OpenAPI inventory baseline: `144 / 587` implemented operations, `24.5%`
+- OpenAPI inventory baseline: `160 / 587` implemented operations, `27.3%`
 
 ## P0 Regression-Paired Backlog
 
@@ -48,7 +49,7 @@ regression specs easier to close with deterministic Billtap evidence.
 | Trial to cancel history | Immediate cancellation and period-end cancellation exist; trial cancellation history needs a direct scenario contract. | Add scenario action/fixture pattern that creates trialing subscription, cancels it before activation, and leaves retrievable canceled history. | Scenario report and webhook sequence assertions. |
 | Proration invariant matrix | Subscription-update invoice preview calculates bounded proration and Stripe SDK-friendly invoice fields. | Add a matrix of small positive, large positive, negative/downgrade, zero, and full-credit preview cases. | API tests for exact `amount_due`, `subtotal`, line periods, and discount/tax-neutral totals. |
 | Renewal failure depth | Renewal failure can move subscriptions to `past_due` with invoice/payment-intent evidence. | Add configurable retry/dunning phases: first failure, retry failure, unpaid, grace window, and final cancellation. | Test-clock scenario reports and event ordering assertions. |
-| Customer subscription history filters | Top-level subscription listing exists; customer nested subscription routes remain inventory-only. | Add `/v1/customers/{customer}/subscriptions` list with `status` filter coverage for `trialing`, `active`, `past_due`, `canceled`, `incomplete`, `unpaid`, and `all`. | Stripe-shaped list response tests and fixture history scenarios. |
+| Customer subscription history filters | Implemented for nested customer subscription list/retrieve/update/delete routes with `status=...` and metadata equality filters. | Extend fixture examples to cover dedicated trial-history-only customers and mixed status catalogs. | Stripe-shaped list response tests exist; add scenario-level fixture history assertions. |
 
 ## Capability Matrix
 
@@ -59,7 +60,7 @@ regression specs easier to close with deterministic Billtap evidence.
 | trial to active | Implemented with test clocks and fixture dates. | Done |
 | trial to cancel history | Partial through cancellation APIs; needs dedicated scenario pattern. | P0 |
 | past_due and unpaid transitions | Partial renewal failure; needs retry/dunning phases. | P0 |
-| pause and resume API | Not modeled. | P1 |
+| pause and resume API | Implemented as local `pause_collection` evidence plus `POST /v1/subscriptions/{id}/resume`; billing-cycle side effects remain bounded. | P1 |
 | subscription schedule plan change | One due phase can replace items; full scheduled downgrade/proration remains bounded. | P1 |
 | proration behavior `always_invoice`, `create_prorations`, `none` | Preview supports the three values; invoice creation side effects remain bounded. | P0 |
 | cancel at period end vs immediate cancel | Implemented through API/portal/test-clock paths. | Done |
@@ -69,9 +70,9 @@ regression specs easier to close with deterministic Billtap evidence.
 
 | Capability | Current state | Priority |
 | --- | --- | --- |
-| customer subscription list status filter | Nested route inventory exists; implementation needed. | P0 |
+| customer subscription list status filter | Implemented for `/v1/customers/{customer}/subscriptions` and top-level subscription lists. | Done |
 | arbitrary customer metadata seed | Implemented through fixtures and customer APIs. | Done |
-| customer search by email/metadata | Inventory-only. | P1 |
+| customer search by email/metadata | Implemented for `id`, `email`, `name`, and metadata equality clauses joined by `AND`. | Done |
 | customer delete and recreate history policy | Not modeled. | P1 |
 | cross-merchant customer migration | Connect evidence exists; migration policy not modeled. | P2 |
 | tax IDs, shipping, preferred locale | Partially represented in validation inventory; stateful coverage needed. | P2 |
@@ -95,7 +96,7 @@ regression specs easier to close with deterministic Billtap evidence.
 | Capability | Current state | Priority |
 | --- | --- | --- |
 | 3D Secure / requires_action | Direct PaymentIntent and SetupIntent require-action simulation exists. | Done |
-| saved card vs new card | Customer payment-method fixtures and portal save exist; create/attach/detach breadth remains. | P1 |
+| saved card vs new card | Customer payment-method fixtures, portal save, and local create/attach/detach projection are implemented. | Done |
 | wallet token simulation | Not modeled. | P2 |
 | decline reason breadth | Common aliases exist; complete card-decline catalog remains. | P1 |
 | provider outage mode | Not modeled. | P2 |

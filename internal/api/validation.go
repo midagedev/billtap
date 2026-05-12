@@ -349,6 +349,19 @@ func validateCustomerUpdate(p params) error {
 	})
 }
 
+func validateCustomerSearch(p params) error {
+	return validateSearch(p)
+}
+
+func validateSearch(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"query", "limit", "page"},
+		Required:    []string{"query"},
+		Int64Params: []string{"limit"},
+		Positive:    []string{"limit"},
+	})
+}
+
 func validateProductCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:       []string{"id", "name", "description", "active"},
@@ -712,12 +725,25 @@ func validateSubscriptionCreate(p params) error {
 
 func validateSubscriptionUpdate(p params) error {
 	if err := p.validate(paramSpec{
-		Allowed:      []string{"cancel_at_period_end", "proration_behavior", "payment_behavior", "billing_cycle_anchor", "trial_end", "coupon", "promotion_code"},
+		Allowed: []string{
+			"cancel_at_period_end",
+			"pause_collection",
+			"pause_collection[behavior]",
+			"pause_collection[resumes_at]",
+			"proration_behavior",
+			"payment_behavior",
+			"billing_cycle_anchor",
+			"trial_end",
+			"coupon",
+			"promotion_code",
+		},
 		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE, discountParamRE},
 		BoolParams:   []string{"cancel_at_period_end"},
+		Int64Params:  []string{"pause_collection[resumes_at]"},
 		EnumParams: map[string][]string{
-			"proration_behavior": {"none", "create_prorations", "always_invoice"},
-			"payment_behavior":   {"allow_incomplete", "error_if_incomplete", "pending_if_incomplete"},
+			"pause_collection[behavior]": {"void", "keep_as_draft", "mark_uncollectible"},
+			"proration_behavior":         {"none", "create_prorations", "always_invoice"},
+			"payment_behavior":           {"allow_incomplete", "error_if_incomplete", "pending_if_incomplete"},
 			"cancellation_details[feedback]": {
 				"customer_service",
 				"low_quality",
@@ -744,6 +770,21 @@ func validateSubscriptionUpdate(p params) error {
 		}
 	}
 	return nil
+}
+
+func validateSubscriptionResume(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"billing_cycle_anchor",
+			"proration_behavior",
+			"proration_date",
+		},
+		Int64Params: []string{"proration_date"},
+		EnumParams: map[string][]string{
+			"billing_cycle_anchor": {"now", "unchanged"},
+			"proration_behavior":   {"none", "create_prorations", "always_invoice"},
+		},
+	})
 }
 
 func validateSubscriptionItemCreate(p params) error {
@@ -1079,6 +1120,39 @@ func validatePaymentMethodList(p params) error {
 			"allow_redisplay": {"always", "limited", "unspecified"},
 			"type":            stripePaymentMethodTypes,
 		},
+	})
+}
+
+func validatePaymentMethodCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"type",
+			"customer",
+			"billing_details[email]",
+			"billing_details[name]",
+			"card[token]",
+		},
+		EnumParams: map[string][]string{
+			"type": {"card"},
+		},
+		AllowMetadata: true,
+	})
+}
+
+func validatePaymentMethodAttach(p params) error {
+	return p.validate(paramSpec{
+		Allowed:  []string{"customer"},
+		Required: []string{"customer"},
+	})
+}
+
+func validatePaymentMethodUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"billing_details[email]",
+			"billing_details[name]",
+		},
+		AllowMetadata: true,
 	})
 }
 
