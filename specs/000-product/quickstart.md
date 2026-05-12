@@ -5,7 +5,7 @@ Billtap can run as a local binary or Docker image.
 ## Build Locally
 
 ```bash
-npm install
+npm ci
 npm run build
 go build -o /tmp/billtap ./cmd/billtap
 ```
@@ -38,7 +38,7 @@ http://localhost:8080
 ## Configure App
 
 ```bash
-export STRIPE_API_BASE=http://localhost:8080/v1
+export STRIPE_API_BASE_URL=http://localhost:8080/v1
 export STRIPE_WEBHOOK_SECRET=webhook_secret_local
 ```
 
@@ -76,7 +76,7 @@ PORT=3300 npm --prefix examples/sample-app start
 Run the scenario in another terminal:
 
 ```bash
-billtap scenario run examples/subscription-payment-retry.yml \
+/tmp/billtap scenario run examples/subscription-payment-retry.yml \
   --report-json billtap-report.json \
   --report-md billtap-report.md
 ```

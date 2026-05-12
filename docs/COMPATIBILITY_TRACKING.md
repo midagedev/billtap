@@ -1,6 +1,6 @@
 # Compatibility Tracking
 
-Status date: 2026-05-11
+Status date: 2026-05-12
 
 This document defines how Billtap tracks Stripe API compatibility as a
 measurable, long-running body of work. The public claim is the generated
@@ -84,7 +84,7 @@ The long-running expansion goal is at least 90% OpenAPI operation coverage at
 The concrete target and chunk plan live in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`. In short:
 
-- current baseline: `110 / 587`, `18.7%`
+- current baseline: `144 / 587`, `24.5%`
 - target: at least `529 / 587`, `90.0%`
 - maximum remaining `L0`: `58 / 587`
 - P0/P1 billing-lab flows still need deeper `L3-L6` evidence, not just broad

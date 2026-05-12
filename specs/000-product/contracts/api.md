@@ -133,8 +133,14 @@ Preview endpoints accept Stripe SDK-style `subscription`,
 `subscription_details[billing_cycle_anchor]`. Billtap calculates a local
 subscription-update proration line from the current period bounds and old/new
 price totals. The bounded single-discount subset updates preview `subtotal`,
-`total`, and `total_discount_amounts`. Taxes, pending invoice items, and
-collection behavior are outside the modeled subset.
+`total`, and `total_discount_amounts`. Preview responses include the common
+Stripe Invoice defaults needed by generated SDK models, including
+`attempt_count`, `attempted`, `auto_advance`, `automatic_tax`,
+`billing_reason`, `collection_method`, `metadata`, `paid`, `payment_settings`,
+`period_start`, `period_end`, `status_transitions`, `subtotal_excluding_tax`,
+`total_excluding_tax`, `total_tax_amounts`, and array-shaped `discounts`.
+Taxes, pending invoice items, and collection behavior are outside the modeled
+subset.
 
 ### Payment Intents
 

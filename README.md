@@ -8,9 +8,10 @@ Stripe-like API subset, React checkout/portal/dashboard surfaces, signed webhook
 delivery controls, YAML scenario runs, fixture apply/snapshot/assert APIs, and
 diagnostic bundles that explain what happened when a billing test failed.
 
-It is **not** a payment processor and it is **not** full Stripe parity. Use it as
-the fast deterministic lane, then keep Stripe testmode or the real provider
-sandbox as the high-fidelity fallback lane.
+It is **not** a payment processor. Billtap's goal is practical Stripe
+compatibility for the documented local-test subset: use it as the fast
+deterministic lane, then keep Stripe testmode or the real provider sandbox for
+behavior outside the published contract.
 
 ![Billtap dashboard showing billing objects, timeline, webhook attempts, and debug bundle export](docs/assets/dashboard-screenshot.png)
 
@@ -189,6 +190,7 @@ curl -fsS "http://localhost:8080/api/diagnostics?limit=100" \
 | Fixtures | Apply/snapshot/assert APIs | JSON/YAML input, fixture metadata isolation, structured pass/fail reports |
 | SaaS profile | Generic workspace billing profile | Plans, seats, members, export quota, extra export, payment history, support bundle, platform/connect-style webhook evidence |
 | Release state | Source plus GHCR image | Local Docker image builds and GHCR image workflow; no package/Homebrew/signed binary yet |
+| Stripe API inventory | `144 / 587` operations, `24.5%` L1+ | OpenAPI route inventory is schema-visible for all `587` operations; implemented coverage is tracked in `docs/STRIPE_COMPATIBILITY_90_TARGET.md` |
 
 Detailed compatibility matrix: `docs/COMPATIBILITY.md`.
 

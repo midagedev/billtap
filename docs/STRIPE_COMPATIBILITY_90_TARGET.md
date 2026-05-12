@@ -1,6 +1,6 @@
 # Stripe Compatibility 90% Target
 
-Status date: 2026-05-11
+Status date: 2026-05-12
 
 Billtap's long-running Stripe API compatibility target is measurable coverage
 of at least 90% of the public Stripe OpenAPI operation inventory, without
@@ -11,8 +11,8 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `110 / 587` operations, `18.7%`, using Stripe OpenAPI
-  `2026-04-22.dahlia` from `stripe/openapi` master on 2026-05-11.
+- **Current baseline:** `144 / 587` operations, `24.5%`, using Stripe OpenAPI
+  `2026-04-22.dahlia` from the local OpenAPI snapshot on 2026-05-12.
 - **Minimum target count:** `529 / 587` operations at `L1` or higher.
 - **Remaining inventory-only budget:** at most `58 / 587` operations at `L0`.
 
@@ -52,20 +52,20 @@ toward the 90% target after it has an explicit tested claim at `L1+`.
 
 ## Baseline By Family
 
-Latest measured baseline from `stripe/openapi` master on 2026-05-11:
+Latest measured baseline from the local Stripe OpenAPI snapshot on 2026-05-12:
 
 | Priority | Family | Total | Implemented | Coverage | 90% target count | First target |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | P0 | webhooks | 7 | 7 | 100.0% | 7 | Expand connected-account routing, thin event fixtures, and replay evidence. |
 | P0 | checkout | 6 | 3 | 50.0% | 6 | Close checkout route gaps and SDK smoke. |
-| P0 | billing | 39 | 11 | 28.2% | 36 | Add remaining invoice, schedule, coupon, discount, and deeper credit-note/test-clock behavior. |
+| P0 | billing | 39 | 12 | 30.8% | 36 | Add renewal, trial, dunning, subscription schedule, coupon, and credit-note scenarios. |
 | P0 | billing_portal | 5 | 1 | 20.0% | 5 | Add portal configurations and session retrieval fixtures. |
-| P1 | catalog | 54 | 9 | 16.7% | 49 | Add coupon, promotion code, tax-rate, and product/price search validation. |
-| P1 | customers | 31 | 4 | 12.9% | 28 | Add search, sources, tax ids, cash balance, and validation fixtures. |
-| P1 | payments | 41 | 12 | 29.3% | 37 | Add PaymentMethod lifecycle breadth and remaining PaymentIntent/SetupIntent adjunct routes. |
+| P1 | catalog | 54 | 19 | 35.2% | 49 | Add coupon, promotion code, tax-rate, and product/price search validation. |
+| P1 | customers | 31 | 11 | 35.5% | 28 | Add OpenAPI-backed validation, search/list parity, and payment source fixtures. |
+| P1 | payments | 41 | 15 | 36.6% | 37 | Add PaymentIntent and SetupIntent create/confirm/capture/cancel state machines. |
 | P1 | connect | 53 | 53 | 100.0% | 48 | Deepen Connect SDK/adoption smoke, connected-account webhook routing, and v2 Core account inventory evidence. |
-| P1 | payment_history | 30 | 6 | 20.0% | 27 | Add charges, deeper refunds, balance transactions, disputes, credit history. |
-| P3 | auxiliary | 321 | 4 | 1.2% | 289 | Add generic L1/L2 schema and fixture smoke for safe low-state endpoints. |
+| P1 | payment_history | 30 | 13 | 43.3% | 27 | Add charge, refund, balance transaction, dispute, and payment history evidence. |
+| P3 | auxiliary | 321 | 10 | 3.1% | 289 | Keep inventory visible and add schema/fixture smoke only when adoption requires it. |
 
 ## PR Chunk Plan
 
@@ -114,10 +114,18 @@ retrieval, local account deletion markers, and people/persons stateful evidence.
 This raises the generated inventory from `98 / 587` (`16.7%`) to `110 / 587`
 (`18.7%`), with Connect moving from `41 / 53` to `53 / 53`.
 
+The post-Connect billing, catalog, customer, payments, and payment-history
+chunks raised the generated inventory from `110 / 587` (`18.7%`) to
+`144 / 587` (`24.5%`). The most recent visible changes include coupon and
+promotion-code application, price search, direct PaymentIntent outcomes,
+invoice payment failure evidence, dispute/refund/credit-note coverage,
+subscription-update proration previews, and Stripe SDK-friendly invoice preview
+response shape.
+
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
 coverage must come from T3-T9. The planned T3-T9 delta is intentionally larger
-than the `+419` operations needed to move the current `110 / 587` baseline to
+than the `+385` operations needed to move the current `144 / 587` baseline to
 the `529 / 587` target.
 
 ## Derived Gate Checks

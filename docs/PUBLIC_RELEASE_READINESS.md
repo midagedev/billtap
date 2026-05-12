@@ -1,6 +1,6 @@
 # Public Release Readiness
 
-Status date: 2026-05-09
+Status date: 2026-05-12
 
 Billtap has a clear community-facing strength: it is a stateful local billing
 lab for deterministic subscription, fixture, scenario, and webhook reliability
@@ -39,6 +39,11 @@ Do not describe Billtap as:
 - Direct intent state machines: PaymentIntent and SetupIntent create, confirm,
   capture/cancel, and deterministic failure aliases can run without Stripe
   testmode or real card data.
+- Invoice preview compatibility: subscription-update previews calculate local
+  proration amounts and return Stripe SDK-friendly Invoice response fields.
+- Discount coverage: coupons and promotion codes can be applied as a bounded
+  single-discount subset to customer defaults, checkout sessions,
+  subscriptions, invoice previews, and renewal invoices.
 - Webhook lab: delivery attempts record signature evidence, retry scheduling,
   duplicate delivery, delay, out-of-order metadata, replay, endpoint failure,
   timeout, and signature-mismatch evidence.
@@ -79,7 +84,7 @@ The scorecard evidence should state:
 - imported/skipped/unsupported/mismatch/error counts
 - whether `passed` is `true`
 
-Current scorecard evidence on 2026-05-11:
+Current scorecard evidence on 2026-05-12:
 
 - Scorecard version: `l3-public-readiness-v7`
 - Scorecard result: `imported=49 skipped=1 unsupported=1 mismatch=0 error=0`
