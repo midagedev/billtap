@@ -3248,6 +3248,146 @@ func TestExpandedStripeSurfaceSimulations(t *testing.T) {
 	}
 }
 
+func TestDiscountApplicationAcrossCheckoutPreviewRenewalAndDelete(t *testing.T) {
+	handler := newTestHandler(t)
+	_ = postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {"http://example.test/webhook"},
+		"enabled_events": {"customer.discount.*,invoice.paid,payment_intent.succeeded,customer.subscription.updated"},
+	})
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"discounts@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Discount Team"}})
+	basic := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"2000"},
+		"recurring[interval]": {"month"},
+	})
+	pro := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"4000"},
+		"recurring[interval]": {"month"},
+	})
+	coupon := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/coupons", url.Values{
+		"id":          {"coupon_half"},
+		"percent_off": {"50"},
+		"duration":    {"forever"},
+	})
+	promo := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/promotion_codes", url.Values{
+		"coupon": {coupon.ID},
+		"code":   {"HALFPRICE"},
+	})
+	filteredPromos := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/promotion_codes?code=halfprice&coupon="+coupon.ID)
+	if len(filteredPromos.Data) != 1 || filteredPromos.Data[0].ID != promo.ID {
+		t.Fatalf("filtered promotion codes = %#v, want code/coupon match", filteredPromos.Data)
+	}
+
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                     {customer.ID},
+		"line_items[0][price]":         {basic.ID},
+		"line_items[0][quantity]":      {"2"},
+		"discounts[0][promotion_code]": {promo.ID},
+		"success_url":                  {"http://app.test/success"},
+		"cancel_url":                   {"http://app.test/cancel"},
+	})
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+	var completed billing.CheckoutSession
+	if err := json.Unmarshal(completion["session"], &completed); err != nil {
+		t.Fatalf("decode completed session: %v", err)
+	}
+	invoice := getJSON[struct {
+		Subtotal             int64            `json:"subtotal"`
+		Total                int64            `json:"total"`
+		AmountPaid           int64            `json:"amount_paid"`
+		TotalDiscountAmounts []map[string]any `json:"total_discount_amounts"`
+	}](t, handler, "/v1/invoices/"+completed.InvoiceID)
+	if invoice.Subtotal != 4000 || invoice.Total != 2000 || invoice.AmountPaid != 2000 || len(invoice.TotalDiscountAmounts) != 1 {
+		t.Fatalf("discounted checkout invoice = %#v, want 50%% off 4000", invoice)
+	}
+	discount := getJSON[struct {
+		Object       string `json:"object"`
+		Customer     string `json:"customer"`
+		Subscription string `json:"subscription"`
+	}](t, handler, "/v1/subscriptions/"+completed.SubscriptionID+"/discount")
+	if discount.Object != "discount" || discount.Customer != customer.ID || discount.Subscription != completed.SubscriptionID {
+		t.Fatalf("subscription discount = %#v, want Stripe-shaped discount", discount)
+	}
+	events := getJSON[struct {
+		Data []struct {
+			Type string `json:"type"`
+		} `json:"data"`
+	}](t, handler, "/v1/events?type=customer.discount.created")
+	if len(events.Data) == 0 {
+		t.Fatalf("discount events = %#v, want customer.discount.created", events.Data)
+	}
+
+	previewDate := time.Date(2030, 1, 16, 0, 0, 0, 0, time.UTC).Unix()
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", map[string]any{
+		"name": "discount-renewal",
+		"test_clocks": []map[string]any{{
+			"id":          "clock_discount",
+			"frozen_time": "2030-01-01T00:00:00Z",
+		}},
+		"subscriptions": []map[string]any{{
+			"id":                   "sub_discount_fixture",
+			"customer":             customer.ID,
+			"price":                basic.ID,
+			"status":               "active",
+			"test_clock":           "clock_discount",
+			"current_period_start": "2030-01-01T00:00:00Z",
+			"current_period_end":   "2030-01-31T00:00:00Z",
+			"coupon":               coupon.ID,
+			"promotion_code":       promo.ID,
+			"discount_percent_off": 50,
+		}},
+	})
+	if len(applied.Subscriptions) != 1 {
+		t.Fatalf("fixture apply = %#v, want discounted subscription", applied)
+	}
+	preview := postForm[struct {
+		AmountDue            int64            `json:"amount_due"`
+		Subtotal             int64            `json:"subtotal"`
+		TotalDiscountAmounts []map[string]any `json:"total_discount_amounts"`
+	}](t, handler, "/v1/invoices/create_preview", url.Values{
+		"subscription":                             {"sub_discount_fixture"},
+		"subscription_details[items][0][price]":    {pro.ID},
+		"subscription_details[items][0][quantity]": {"1"},
+		"subscription_details[proration_date]":     {strconv.FormatInt(previewDate, 10)},
+	})
+	if preview.Subtotal != 1000 || preview.AmountDue != 500 || len(preview.TotalDiscountAmounts) != 1 {
+		t.Fatalf("discounted preview = %#v, want half-off proration", preview)
+	}
+	advance := postForm[struct {
+		BilltapAdvanceResult struct {
+			Renewals []struct {
+				Invoice struct {
+					Subtotal int64 `json:"subtotal"`
+					Total    int64 `json:"total"`
+				} `json:"invoice"`
+			} `json:"renewals"`
+		} `json:"billtap_advance_result"`
+	}](t, handler, "/v1/test_helpers/test_clocks/clock_discount/advance", url.Values{"frozen_time": {strconv.FormatInt(time.Date(2030, 2, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)}})
+	if len(advance.BilltapAdvanceResult.Renewals) != 1 || advance.BilltapAdvanceResult.Renewals[0].Invoice.Subtotal != 2000 || advance.BilltapAdvanceResult.Renewals[0].Invoice.Total != 1000 {
+		t.Fatalf("discounted renewal = %#v, want half-off renewal invoice", advance.BilltapAdvanceResult.Renewals)
+	}
+	deleted := deleteJSON[struct {
+		Object  string `json:"object"`
+		Deleted bool   `json:"deleted"`
+	}](t, handler, "/v1/subscriptions/sub_discount_fixture/discount")
+	if deleted.Object != "discount" || !deleted.Deleted {
+		t.Fatalf("deleted discount = %#v, want deleted discount marker", deleted)
+	}
+}
+
 func TestStripeCompatCatalogAndPortalEndpoints(t *testing.T) {
 	handler := newTestHandler(t)
 
@@ -4346,9 +4486,12 @@ func TestInvoicePreviewProrationAndUpcoming(t *testing.T) {
 	}
 	prorationDate := time.Date(2030, 1, 16, 0, 0, 0, 0, time.UTC).Unix()
 	preview := postForm[struct {
-		Object    string `json:"object"`
-		AmountDue int64  `json:"amount_due"`
-		Lines     struct {
+		Object         string `json:"object"`
+		AmountDue      int64  `json:"amount_due"`
+		BilltapPreview struct {
+			BillingCycleAnchor int64 `json:"billing_cycle_anchor"`
+		} `json:"billtap_preview"`
+		Lines struct {
 			Object string `json:"object"`
 			Data   []struct {
 				Amount    int64 `json:"amount"`
@@ -4363,14 +4506,15 @@ func TestInvoicePreviewProrationAndUpcoming(t *testing.T) {
 			} `json:"data"`
 		} `json:"lines"`
 	}](t, handler, "/v1/invoices/create_preview", url.Values{
-		"subscription":                             {"sub_preview_proration"},
-		"subscription_details[items][0][price]":    {pro.ID},
-		"subscription_details[items][0][quantity]": {"1"},
-		"subscription_details[proration_behavior]": {"create_prorations"},
-		"subscription_details[proration_date]":     {strconv.FormatInt(prorationDate, 10)},
+		"subscription":                               {"sub_preview_proration"},
+		"subscription_details[items][0][price]":      {pro.ID},
+		"subscription_details[items][0][quantity]":   {"1"},
+		"subscription_details[proration_behavior]":   {"create_prorations"},
+		"subscription_details[proration_date]":       {strconv.FormatInt(prorationDate, 10)},
+		"subscription_details[billing_cycle_anchor]": {"now"},
 	})
-	if preview.Object != "invoice" || preview.AmountDue != 1000 || len(preview.Lines.Data) != 1 || !preview.Lines.Data[0].Proration || preview.Lines.Data[0].Parent.SubscriptionItemDetails.Price != pro.ID {
-		t.Fatalf("preview = %#v, want one 1000-cent proration line for pro price", preview)
+	if preview.Object != "invoice" || preview.AmountDue != 1000 || preview.BilltapPreview.BillingCycleAnchor != prorationDate || len(preview.Lines.Data) != 1 || !preview.Lines.Data[0].Proration || preview.Lines.Data[0].Parent.SubscriptionItemDetails.Price != pro.ID {
+		t.Fatalf("preview = %#v, want one 1000-cent proration line and accepted billing_cycle_anchor", preview)
 	}
 	q := url.Values{}
 	q.Set("subscription", "sub_preview_proration")

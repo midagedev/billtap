@@ -425,8 +425,8 @@ func (s *SQLiteStore) DeleteConnectResource(ctx context.Context, object string, 
 }
 
 func (s *SQLiteStore) CreateCheckoutSession(ctx context.Context, cs billing.CheckoutSession) (billing.CheckoutSession, error) {
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO checkout_sessions (id, customer_id, mode, line_items, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, cs.ID, cs.CustomerID, cs.Mode, encodeLineItems(cs.LineItems), cs.SuccessURL, cs.CancelURL, cs.Status, cs.PaymentStatus, boolInt(cs.AllowPromotionCodes), cs.TrialPeriodDays, encodeTime(cs.CreatedAt)); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO checkout_sessions (id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, cs.ID, cs.CustomerID, cs.Mode, encodeLineItems(cs.LineItems), encodeDiscounts(cs.Discounts), cs.SuccessURL, cs.CancelURL, cs.Status, cs.PaymentStatus, boolInt(cs.AllowPromotionCodes), cs.TrialPeriodDays, encodeTime(cs.CreatedAt)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
 	if err := s.insertTimeline(ctx, nil, timelineCreate(cs.ID, "checkout_session.created", "Checkout session created", billing.ObjectCheckoutSession, cs.ID, cs.CustomerID, cs.ID, "", "", "", nil, cs.CreatedAt)); err != nil {
@@ -436,7 +436,7 @@ func (s *SQLiteStore) CreateCheckoutSession(ctx context.Context, cs billing.Chec
 }
 
 func (s *SQLiteStore) GetCheckoutSession(ctx context.Context, id string) (billing.CheckoutSession, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, mode, line_items, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, subscription_id, invoice_id, payment_intent_id, created_at, completed_at FROM checkout_sessions WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, subscription_id, invoice_id, payment_intent_id, created_at, completed_at FROM checkout_sessions WHERE id = ?`, id)
 	cs, err := scanCheckoutSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.CheckoutSession{}, billing.ErrNotFound
@@ -445,7 +445,7 @@ func (s *SQLiteStore) GetCheckoutSession(ctx context.Context, id string) (billin
 }
 
 func (s *SQLiteStore) ListCheckoutSessions(ctx context.Context) ([]billing.CheckoutSession, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, mode, line_items, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, subscription_id, invoice_id, payment_intent_id, created_at, completed_at FROM checkout_sessions ORDER BY created_at DESC, id DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, subscription_id, invoice_id, payment_intent_id, created_at, completed_at FROM checkout_sessions ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -473,9 +473,9 @@ func (s *SQLiteStore) RecordCheckoutCompletion(ctx context.Context, c billing.Ch
 		c.Subscription.ID, c.Subscription.CustomerID, c.Subscription.Status, encodeLineItems(c.Subscription.Items), encodeTime(c.Subscription.CurrentPeriodStart), encodeTime(c.Subscription.CurrentPeriodEnd), boolInt(c.Subscription.CancelAtPeriodEnd), encodeOptionalTime(c.Subscription.CanceledAt), c.Subscription.LatestInvoiceID, encodeMap(c.Subscription.Metadata)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, subscription_id, status, currency, subtotal, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		c.Invoice.ID, c.Invoice.CustomerID, c.Invoice.SubscriptionID, c.Invoice.Status, c.Invoice.Currency, c.Invoice.Subtotal, c.Invoice.Total, c.Invoice.AmountDue, c.Invoice.AmountPaid, c.Invoice.AttemptCount, encodeOptionalTime(c.Invoice.NextPaymentAttempt), c.Invoice.PaymentIntentID, encodeTime(c.Invoice.CreatedAt)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, subscription_id, status, currency, subtotal, discount_amount, discounts, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		c.Invoice.ID, c.Invoice.CustomerID, c.Invoice.SubscriptionID, c.Invoice.Status, c.Invoice.Currency, c.Invoice.Subtotal, c.Invoice.DiscountAmount, encodeDiscounts(c.Invoice.Discounts), c.Invoice.Total, c.Invoice.AmountDue, c.Invoice.AmountPaid, c.Invoice.AttemptCount, encodeOptionalTime(c.Invoice.NextPaymentAttempt), c.Invoice.PaymentIntentID, encodeTime(c.Invoice.CreatedAt)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO payment_intents (id, customer_id, invoice_id, amount, currency, status, failure_code, failure_decline_code, failure_message, payment_method_id, metadata, created_at)
@@ -659,7 +659,7 @@ func updatePaymentIntentTx(ctx context.Context, tx *sql.Tx, pi billing.PaymentIn
 }
 
 func (s *SQLiteStore) GetInvoice(ctx context.Context, id string) (billing.Invoice, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, subscription_id, status, currency, subtotal, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at FROM invoices WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, subscription_id, status, currency, subtotal, discount_amount, discounts, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at FROM invoices WHERE id = ?`, id)
 	inv, err := scanInvoice(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.Invoice{}, billing.ErrNotFound
@@ -668,7 +668,7 @@ func (s *SQLiteStore) GetInvoice(ctx context.Context, id string) (billing.Invoic
 }
 
 func (s *SQLiteStore) ListInvoices(ctx context.Context) ([]billing.Invoice, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, subscription_id, status, currency, subtotal, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at FROM invoices ORDER BY created_at DESC, id DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, subscription_id, status, currency, subtotal, discount_amount, discounts, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at FROM invoices ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -695,7 +695,7 @@ func (s *SQLiteStore) ListInvoicesFiltered(ctx context.Context, filter billing.I
 		clauses = append(clauses, "subscription_id = ?")
 		args = append(args, filter.SubscriptionID)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, subscription_id, status, currency, subtotal, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, subscription_id, status, currency, subtotal, discount_amount, discounts, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at
 		FROM invoices WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at DESC, id DESC`, args...)
 	if err != nil {
 		return nil, err
@@ -761,9 +761,9 @@ func (s *SQLiteStore) RecordSubscriptionRenewal(ctx context.Context, sub billing
 	if err := updateSubscriptionTx(ctx, tx, sub); err != nil {
 		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, subscription_id, status, currency, subtotal, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		invoice.ID, invoice.CustomerID, invoice.SubscriptionID, invoice.Status, invoice.Currency, invoice.Subtotal, invoice.Total, invoice.AmountDue, invoice.AmountPaid, invoice.AttemptCount, encodeOptionalTime(invoice.NextPaymentAttempt), invoice.PaymentIntentID, encodeTime(invoice.CreatedAt)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO invoices (id, customer_id, subscription_id, status, currency, subtotal, discount_amount, discounts, total, amount_due, amount_paid, attempt_count, next_payment_attempt, payment_intent_id, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		invoice.ID, invoice.CustomerID, invoice.SubscriptionID, invoice.Status, invoice.Currency, invoice.Subtotal, invoice.DiscountAmount, encodeDiscounts(invoice.Discounts), invoice.Total, invoice.AmountDue, invoice.AmountPaid, invoice.AttemptCount, encodeOptionalTime(invoice.NextPaymentAttempt), invoice.PaymentIntentID, encodeTime(invoice.CreatedAt)); err != nil {
 		return billing.Subscription{}, billing.Invoice{}, billing.PaymentIntent{}, err
 	}
 	if _, err := tx.ExecContext(ctx, `INSERT INTO payment_intents (id, customer_id, invoice_id, amount, currency, status, capture_method, failure_code, failure_decline_code, failure_message, payment_method_id, metadata, created_at)
@@ -1318,14 +1318,15 @@ func scanConnectResource(row scanner) (billing.ConnectResource, error) {
 
 func scanCheckoutSession(row scanner) (billing.CheckoutSession, error) {
 	var cs billing.CheckoutSession
-	var items, createdAt string
+	var items, discounts, createdAt string
 	var allowPromotionCodes int
 	var completedAt, subscriptionID, invoiceID, paymentIntentID sql.NullString
-	if err := row.Scan(&cs.ID, &cs.CustomerID, &cs.Mode, &items, &cs.SuccessURL, &cs.CancelURL, &cs.Status, &cs.PaymentStatus, &allowPromotionCodes, &cs.TrialPeriodDays, &subscriptionID, &invoiceID, &paymentIntentID, &createdAt, &completedAt); err != nil {
+	if err := row.Scan(&cs.ID, &cs.CustomerID, &cs.Mode, &items, &discounts, &cs.SuccessURL, &cs.CancelURL, &cs.Status, &cs.PaymentStatus, &allowPromotionCodes, &cs.TrialPeriodDays, &subscriptionID, &invoiceID, &paymentIntentID, &createdAt, &completedAt); err != nil {
 		return cs, err
 	}
 	cs.Object = billing.ObjectCheckoutSession
 	cs.LineItems = decodeLineItems(items)
+	cs.Discounts = decodeDiscounts(discounts)
 	cs.URL = "/checkout/" + cs.ID
 	cs.AllowPromotionCodes = allowPromotionCodes != 0
 	cs.SubscriptionID = subscriptionID.String
@@ -1363,11 +1364,12 @@ func scanSubscription(row scanner) (billing.Subscription, error) {
 func scanInvoice(row scanner) (billing.Invoice, error) {
 	var inv billing.Invoice
 	var nextPaymentAttempt sql.NullString
-	var createdAt string
-	if err := row.Scan(&inv.ID, &inv.CustomerID, &inv.SubscriptionID, &inv.Status, &inv.Currency, &inv.Subtotal, &inv.Total, &inv.AmountDue, &inv.AmountPaid, &inv.AttemptCount, &nextPaymentAttempt, &inv.PaymentIntentID, &createdAt); err != nil {
+	var discounts, createdAt string
+	if err := row.Scan(&inv.ID, &inv.CustomerID, &inv.SubscriptionID, &inv.Status, &inv.Currency, &inv.Subtotal, &inv.DiscountAmount, &discounts, &inv.Total, &inv.AmountDue, &inv.AmountPaid, &inv.AttemptCount, &nextPaymentAttempt, &inv.PaymentIntentID, &createdAt); err != nil {
 		return inv, err
 	}
 	inv.Object = billing.ObjectInvoice
+	inv.Discounts = decodeDiscounts(discounts)
 	if nextPaymentAttempt.Valid {
 		t := decodeTime(nextPaymentAttempt.String)
 		inv.NextPaymentAttempt = &t
@@ -1521,6 +1523,25 @@ func encodeLineItems(items []billing.LineItem) string {
 
 func decodeLineItems(raw string) []billing.LineItem {
 	var out []billing.LineItem
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return nil
+	}
+	return out
+}
+
+func encodeDiscounts(discounts []billing.Discount) string {
+	if discounts == nil {
+		return "[]"
+	}
+	b, err := json.Marshal(discounts)
+	if err != nil {
+		return "[]"
+	}
+	return string(b)
+}
+
+func decodeDiscounts(raw string) []billing.Discount {
+	var out []billing.Discount
 	if err := json.Unmarshal([]byte(raw), &out); err != nil {
 		return nil
 	}

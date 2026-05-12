@@ -54,8 +54,9 @@ clauses explicit validation errors.
 - `DELETE /v1/coupons/{id}`
 
 Coupons are local discount evidence. They support basic percent-off or
-amount-off fields, metadata, and deletion markers, but do not apply discounts
-to invoices or subscriptions.
+amount-off fields, metadata, and deletion markers. Billtap applies a bounded
+single-discount subset to customer defaults, checkout sessions, subscriptions,
+invoice previews, and renewal invoices.
 
 ### Promotion Codes
 
@@ -64,8 +65,10 @@ to invoices or subscriptions.
 - `GET /v1/promotion_codes`
 - `POST /v1/promotion_codes/{id}`
 
-Promotion codes are local coupon-linked evidence only. Redemption, customer
-discount state, expiration, and promotion-code analytics are not modeled.
+Promotion codes are local coupon-linked evidence. They can be listed by
+`code`, `coupon`, `customer`, and `active`, and can be applied through
+`discounts[0][promotion_code]`. Redemption limits, expiration rules, and
+promotion-code analytics are not modeled.
 
 ### Checkout Sessions
 
@@ -87,6 +90,10 @@ Response includes:
 - `GET /v1/subscriptions`
 - `POST /v1/subscriptions/{id}`
 - `DELETE /v1/subscriptions/{id}`
+- `GET /v1/customers/{id}/discount`
+- `DELETE /v1/customers/{id}/discount`
+- `GET /v1/subscriptions/{id}/discount`
+- `DELETE /v1/subscriptions/{id}/discount`
 
 ### Subscription Schedules
 
@@ -122,10 +129,12 @@ Preview endpoints accept Stripe SDK-style `subscription`,
 `subscription_details[items][0][price]`,
 `subscription_details[items][0][quantity]`,
 `subscription_details[proration_date]`, and
-`subscription_details[proration_behavior]`. Billtap calculates a local
+`subscription_details[proration_behavior]`, and
+`subscription_details[billing_cycle_anchor]`. Billtap calculates a local
 subscription-update proration line from the current period bounds and old/new
-price totals. Taxes, discounts, pending invoice items, and collection behavior
-are outside the modeled subset.
+price totals. The bounded single-discount subset updates preview `subtotal`,
+`total`, and `total_discount_amounts`. Taxes, pending invoice items, and
+collection behavior are outside the modeled subset.
 
 ### Payment Intents
 
