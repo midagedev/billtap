@@ -1,19 +1,22 @@
-const appBase = normalizeBase(import.meta.env.BASE_URL || "/app/");
-const publicBasePath = appBase.endsWith("/app/") ? appBase.slice(0, -"/app/".length) : appBase.replace(/\/$/, "");
-
 export function appHref(path = ""): string {
-  return joinBase(appBase, path);
+  return joinBase(joinBase(publicBasePath(), "/app/"), path);
 }
 
 export function apiHref(path: string): string {
-  return joinBase(publicBasePath, path);
+  return joinBase(publicBasePath(), path);
 }
 
-function normalizeBase(value: string): string {
+function publicBasePath(pathname = globalThis.location?.pathname ?? "/"): string {
+  const match = pathname.match(/^(.*?)(?:\/app(?:\/|$)|\/checkout(?:\/|$)|\/portal(?:\/|$))/);
+  if (!match) return "";
+  return normalizeBasePath(match[1]);
+}
+
+function normalizeBasePath(value: string): string {
   const trimmed = value.trim();
-  if (!trimmed || trimmed === "/") return "/app/";
+  if (!trimmed || trimmed === "/") return "";
   const withLeading = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
-  return withLeading.endsWith("/") ? withLeading : `${withLeading}/`;
+  return withLeading.replace(/\/+$/, "");
 }
 
 function joinBase(base: string, path: string): string {

@@ -168,9 +168,6 @@ func (s *Server) handleHostedCheckout(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	if s.cfg.StaticDir != "" && serveFileIfExists(w, r, filepath.Join(s.cfg.StaticDir, "checkout", "index.html")) {
-		return
-	}
 	sessionID := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/checkout"), "/"), "/")
 	target := s.prefixedPath(r, "/app/checkout/")
 	if sessionID != "" {
@@ -184,9 +181,6 @@ func (s *Server) handleHostedCheckout(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleHostedPortal(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w)
-		return
-	}
-	if s.cfg.StaticDir != "" && serveFileIfExists(w, r, filepath.Join(s.cfg.StaticDir, "portal", "index.html")) {
 		return
 	}
 	customerID := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/portal"), "/"), "/")
