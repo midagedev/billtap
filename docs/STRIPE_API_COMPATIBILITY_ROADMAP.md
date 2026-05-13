@@ -63,7 +63,7 @@ The concrete expansion target is defined in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
 
 - reach at least `90.0%` OpenAPI operation coverage at `L1+`
-- move from the current `144 / 587` baseline to at least `529 / 587`
+- move from the current `160 / 587` baseline to at least `529 / 587`
 - keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
   matters
 - use broad `L1-L2` validation/fixture coverage for safe low-state and
@@ -277,9 +277,9 @@ questions quickly.
   "generated_at": "2026-05-12T00:00:00Z",
   "summary": {
     "total_operations": 587,
-    "implemented_operations": 144,
-    "inventory_only_operations": 443,
-    "implemented_percent": 24.5,
+    "implemented_operations": 160,
+    "inventory_only_operations": 427,
+    "implemented_percent": 27.3,
     "families": [
       {
         "family": "connect",
@@ -380,8 +380,9 @@ Before a family moves beyond inventory:
 
 Keep the broad Stripe surface as the long-term direction, but promote endpoints
 only when they have a measured compatibility level and a documented boundary.
-After the current inventory/protocol baseline, the highest-value implementation
-order is:
+`SIMULATION_CAPACITY_BACKLOG.md` tracks the broader regression-driven fixture
+and simulation queue. After the current inventory/protocol baseline, the
+highest-value implementation order is:
 
 1. Coupons, discounts, credit notes, refunds, and payment history.
 2. Connect SDK/adoption smoke and connected-account webhook routing.

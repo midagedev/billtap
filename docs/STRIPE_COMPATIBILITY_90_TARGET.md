@@ -11,7 +11,7 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `144 / 587` operations, `24.5%`, using Stripe OpenAPI
+- **Current baseline:** `160 / 587` operations, `27.3%`, using Stripe OpenAPI
   `2026-04-22.dahlia` from the local OpenAPI snapshot on 2026-05-12.
 - **Minimum target count:** `529 / 587` operations at `L1` or higher.
 - **Remaining inventory-only budget:** at most `58 / 587` operations at `L0`.
@@ -116,16 +116,18 @@ This raises the generated inventory from `98 / 587` (`16.7%`) to `110 / 587`
 
 The post-Connect billing, catalog, customer, payments, and payment-history
 chunks raised the generated inventory from `110 / 587` (`18.7%`) to
-`144 / 587` (`24.5%`). The most recent visible changes include coupon and
-promotion-code application, price search, direct PaymentIntent outcomes,
-invoice payment failure evidence, dispute/refund/credit-note coverage,
-subscription-update proration previews, and Stripe SDK-friendly invoice preview
-response shape.
+`160 / 587` (`27.3%`). The most recent visible changes include coupon and
+promotion-code application, customer/catalog/billing-object search, direct
+PaymentIntent outcomes, invoice payment failure evidence, dispute/refund/
+credit-note coverage, subscription-update proration previews,
+Stripe SDK-friendly invoice preview response shape, nested customer
+subscription history routes, subscription pause/resume evidence, and
+payment-method attach/detach.
 
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
 coverage must come from T3-T9. The planned T3-T9 delta is intentionally larger
-than the `+385` operations needed to move the current `144 / 587` baseline to
+than the `+369` operations needed to move the current `160 / 587` baseline to
 the `529 / 587` target.
 
 ## Derived Gate Checks

@@ -70,6 +70,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/customers", h.handleCustomers)
+	h.mux.HandleFunc("/v1/customers/search", h.handleCustomerSearch)
 	h.mux.HandleFunc("/v1/customers/", h.handleCustomer)
 	h.mux.HandleFunc("/v1/products", h.handleProducts)
 	h.mux.HandleFunc("/v1/products/search", h.handleProductSearch)
@@ -96,6 +97,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/checkout/sessions/", h.handleCheckoutSession)
 	h.mux.HandleFunc("/v1/billing_portal/sessions", h.handleBillingPortalSessions)
 	h.mux.HandleFunc("/v1/subscriptions", h.handleSubscriptions)
+	h.mux.HandleFunc("/v1/subscriptions/search", h.handleSubscriptionSearch)
 	h.mux.HandleFunc("/v1/subscriptions/", h.handleSubscription)
 	h.mux.HandleFunc("/v1/subscription_schedules", h.handleSubscriptionSchedules)
 	h.mux.HandleFunc("/v1/subscription_schedules/", h.handleSubscriptionSchedule)
@@ -104,12 +106,14 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/invoices/create_preview", h.handleInvoicePreview)
 	h.mux.HandleFunc("/v1/invoices/upcoming", h.handleInvoicePreview)
 	h.mux.HandleFunc("/v1/invoices", h.handleInvoices)
+	h.mux.HandleFunc("/v1/invoices/search", h.handleInvoiceSearch)
 	h.mux.HandleFunc("/v1/invoices/", h.handleInvoice)
 	h.mux.HandleFunc("/v1/refunds", h.handleRefunds)
 	h.mux.HandleFunc("/v1/refunds/", h.handleRefund)
 	h.mux.HandleFunc("/v1/credit_notes", h.handleCreditNotes)
 	h.mux.HandleFunc("/v1/credit_notes/", h.handleCreditNote)
 	h.mux.HandleFunc("/v1/payment_intents", h.handlePaymentIntents)
+	h.mux.HandleFunc("/v1/payment_intents/search", h.handlePaymentIntentSearch)
 	h.mux.HandleFunc("/v1/payment_intents/", h.handlePaymentIntent)
 	h.mux.HandleFunc("/v1/setup_intents", h.handleSetupIntents)
 	h.mux.HandleFunc("/v1/setup_intents/", h.handleSetupIntent)
@@ -120,6 +124,7 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/test_helpers/test_clocks", h.handleTestClocks)
 	h.mux.HandleFunc("/v1/test_helpers/test_clocks/", h.handleTestClock)
 	h.mux.HandleFunc("/v1/payment_methods", h.handlePaymentMethods)
+	h.mux.HandleFunc("/v1/payment_methods/", h.handlePaymentMethod)
 	h.mux.HandleFunc("/v1/webhook_endpoints", h.handleWebhookEndpoints)
 	h.mux.HandleFunc("/v1/webhook_endpoints/", h.handleWebhookEndpoint)
 	h.mux.HandleFunc("/v1/events", h.handleEvents)
@@ -263,6 +268,37 @@ func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) handleCustomerSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	p := paramsFromValues(r.URL.Query())
+	if err := validateCustomerSearch(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	criteria, err := parseCustomerSearchQuery(p.string("query"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	customers, err := h.billing.ListCustomers(r.Context())
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	filtered := filterCustomerSearchResults(customers, criteria)
+	if limit := queryInt(r, "limit"); limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	data := make([]map[string]any, 0, len(filtered))
+	for _, customer := range filtered {
+		data = append(data, stripeCustomer(customer))
+	}
+	writeResult(w, stripeSearchResult(r.URL.Path, p.string("query"), data), nil)
+}
+
 func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/customers/")
 	id, subresource, hasSubresource := strings.Cut(rest, "/")
@@ -332,6 +368,8 @@ func (h *Handler) handleCustomerSubresource(w http.ResponseWriter, r *http.Reque
 		h.handleCustomerCashBalanceTransactions(w, r, customerID, "")
 	case "payment_methods":
 		h.handleCustomerPaymentMethods(w, r, customerID)
+	case "subscriptions":
+		h.handleCustomerSubscriptions(w, r, customerID)
 	case "discount":
 		h.handleCustomerDiscount(w, r, customerID)
 	default:
@@ -339,16 +377,75 @@ func (h *Handler) handleCustomerSubresource(w http.ResponseWriter, r *http.Reque
 			h.handleCustomerCashBalanceTransactions(w, r, customerID, strings.TrimPrefix(subresource, "cash_balance_transactions/"))
 			return
 		}
+		if strings.HasPrefix(subresource, "payment_methods/") {
+			h.handleCustomerPaymentMethod(w, r, customerID, strings.TrimPrefix(subresource, "payment_methods/"))
+			return
+		}
 		if strings.HasPrefix(subresource, "subscriptions/") {
-			rest := strings.TrimPrefix(subresource, "subscriptions/")
-			subscriptionID, nested, ok := strings.Cut(rest, "/")
-			if ok && nested == "discount" && subscriptionID != "" {
-				h.handleSubscriptionDiscount(w, r, subscriptionID)
-				return
-			}
+			h.handleCustomerSubscription(w, r, customerID, strings.TrimPrefix(subresource, "subscriptions/"))
+			return
 		}
 		h.notFound(w, r)
 	}
+}
+
+func (h *Handler) handleCustomerSubscriptions(w http.ResponseWriter, r *http.Request, customerID string) {
+	if _, err := h.billing.GetCustomer(r.Context(), customerID); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		items, err := h.billing.ListSubscriptions(r.Context())
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		filtered := filterSubscriptionsForCustomer(items, r, customerID)
+		data := make([]map[string]any, 0, len(filtered))
+		for _, item := range filtered {
+			data = append(data, h.stripeSubscription(r, item))
+			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
+				break
+			}
+		}
+		writeResult(w, stripeList(r.URL.Path, data), nil)
+	case http.MethodPost:
+		subscription, err := h.createSubscriptionFromParamsWithCustomer(r, customerID)
+		writeResult(w, h.stripeSubscription(r, subscription), err)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleCustomerSubscription(w http.ResponseWriter, r *http.Request, customerID string, rest string) {
+	subscriptionID, nested, hasNested := strings.Cut(strings.Trim(rest, "/"), "/")
+	if subscriptionID == "" {
+		h.notFound(w, r)
+		return
+	}
+	if hasNested {
+		if nested == "discount" {
+			h.handleSubscriptionDiscount(w, r, subscriptionID)
+			return
+		}
+		h.notFound(w, r)
+		return
+	}
+	subscription, err := h.billing.GetSubscription(r.Context(), subscriptionID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if subscription.CustomerID != customerID {
+		writeResult(w, nil, billing.ErrNotFound)
+		return
+	}
+	r2 := r.Clone(r.Context())
+	u := *r.URL
+	u.Path = "/v1/subscriptions/" + subscriptionID
+	r2.URL = &u
+	h.handleSubscription(w, r2)
 }
 
 func (h *Handler) handleProducts(w http.ResponseWriter, r *http.Request) {
@@ -1667,10 +1764,48 @@ func (h *Handler) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) handleSubscriptionSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	p := paramsFromValues(r.URL.Query())
+	if err := validateSearch(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	criteria, err := parseObjectSearchQuery(p.string("query"), true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	items, err := h.billing.ListSubscriptions(r.Context())
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	filtered := filterSubscriptionSearchResults(items, criteria)
+	if limit := queryInt(r, "limit"); limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	data := make([]map[string]any, 0, len(filtered))
+	for _, item := range filtered {
+		data = append(data, h.stripeSubscription(r, item))
+	}
+	writeResult(w, stripeSearchResult(r.URL.Path, p.string("query"), data), nil)
+}
+
 func (h *Handler) createSubscriptionFromParams(r *http.Request) (billing.Subscription, error) {
+	return h.createSubscriptionFromParamsWithCustomer(r, "")
+}
+
+func (h *Handler) createSubscriptionFromParamsWithCustomer(r *http.Request, defaultCustomerID string) (billing.Subscription, error) {
 	p, err := parseParams(r)
 	if err != nil {
 		return billing.Subscription{}, err
+	}
+	if defaultCustomerID != "" && p.first("customer", "customer_id") == "" {
+		p.values["customer"] = defaultCustomerID
 	}
 	if err := validateSubscriptionCreate(p); err != nil {
 		return billing.Subscription{}, err
@@ -1757,6 +1892,15 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		h.handleSubscriptionDiscount(w, r, subscriptionID)
 		return
 	}
+	if strings.HasSuffix(id, "/resume") {
+		subscriptionID := strings.TrimSuffix(id, "/resume")
+		if subscriptionID == "" || strings.Contains(subscriptionID, "/") {
+			h.notFound(w, r)
+			return
+		}
+		h.handleSubscriptionResume(w, r, subscriptionID)
+		return
+	}
 	if id == "" || strings.Contains(id, "/") {
 		h.notFound(w, r)
 		return
@@ -1816,6 +1960,36 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.methodNotAllowed(w, r, "GET, POST, DELETE")
 	}
+}
+
+func (h *Handler) handleSubscriptionResume(w http.ResponseWriter, r *http.Request, subscriptionID string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateSubscriptionResume(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	metadata := map[string]string{
+		"pause_collection_behavior":   "",
+		"pause_collection_resumes_at": "",
+	}
+	subscription, err := h.billing.PatchSubscription(r.Context(), subscriptionID, billing.SubscriptionPatch{
+		Metadata:        metadata,
+		TimelineAction:  "customer.subscription.resumed",
+		TimelineMessage: "Stripe-compatible subscription resumed",
+		TimelineSource:  "stripe_compat_resume",
+	})
+	if err == nil {
+		h.emitSubscriptionWebhook(r, "customer.subscription.updated", subscription, webhooks.SourceAPI)
+	}
+	writeResult(w, h.stripeSubscription(r, subscription), err)
 }
 
 func (h *Handler) handleSubscriptionItems(w http.ResponseWriter, r *http.Request) {
@@ -2235,6 +2409,37 @@ func (h *Handler) handleInvoices(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, stripeList(r.URL.Path, data), nil)
 }
 
+func (h *Handler) handleInvoiceSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	p := paramsFromValues(r.URL.Query())
+	if err := validateSearch(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	criteria, err := parseObjectSearchQuery(p.string("query"), false)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	items, err := h.billing.ListInvoices(r.Context())
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	filtered := filterInvoiceSearchResults(items, criteria)
+	if limit := queryInt(r, "limit"); limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	data := make([]map[string]any, 0, len(filtered))
+	for _, item := range filtered {
+		data = append(data, stripeInvoice(item))
+	}
+	writeResult(w, stripeSearchResult(r.URL.Path, p.string("query"), data), nil)
+}
+
 func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/invoices/"), "/")
 	if rest == "" {
@@ -2516,6 +2721,37 @@ func (h *Handler) handlePaymentIntents(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *Handler) handlePaymentIntentSearch(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	p := paramsFromValues(r.URL.Query())
+	if err := validateSearch(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	criteria, err := parseObjectSearchQuery(p.string("query"), true)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	items, err := h.billing.ListPaymentIntents(r.Context())
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	filtered := filterPaymentIntentSearchResults(items, criteria)
+	if limit := queryInt(r, "limit"); limit > 0 && len(filtered) > limit {
+		filtered = filtered[:limit]
+	}
+	data := make([]map[string]any, 0, len(filtered))
+	for _, item := range filtered {
+		data = append(data, stripePaymentIntent(item))
+	}
+	writeResult(w, stripeSearchResult(r.URL.Path, p.string("query"), data), nil)
+}
+
 func (h *Handler) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/v1/payment_intents/")
 	id, action, hasAction := strings.Cut(rest, "/")
@@ -2780,12 +3016,146 @@ func (h *Handler) handleTestClock(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) handlePaymentMethods(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		h.methodNotAllowed(w, r, "GET")
+	switch r.Method {
+	case http.MethodGet:
+		customerID := r.URL.Query().Get("customer")
+		h.writeCustomerPaymentMethods(w, r, customerID)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validatePaymentMethodCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		paymentMethodID := p.stringDefault("id", "pm_"+sanitizeID(strconv.FormatInt(time.Now().UTC().UnixNano(), 36)))
+		customerID := p.string("customer")
+		if customerID != "" {
+			customer, err := h.attachPaymentMethod(r.Context(), customerID, paymentMethodID)
+			if err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			result := stripePaymentMethod(customer.ID, paymentMethodID)
+			h.emitGenericWebhook(r, "payment_method.attached", paymentMethodID, result, webhooks.SourceAPI)
+			writeResult(w, result, nil)
+			return
+		}
+		writeResult(w, stripeDetachedPaymentMethod(paymentMethodID), nil)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handlePaymentMethod(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/v1/payment_methods/")
+	paymentMethodID, action, hasAction := strings.Cut(strings.Trim(rest, "/"), "/")
+	if paymentMethodID == "" {
+		h.notFound(w, r)
 		return
 	}
-	customerID := r.URL.Query().Get("customer")
-	h.writeCustomerPaymentMethods(w, r, customerID)
+	if hasAction {
+		switch action {
+		case "attach":
+			h.handlePaymentMethodAttach(w, r, paymentMethodID)
+		case "detach":
+			h.handlePaymentMethodDetach(w, r, paymentMethodID)
+		default:
+			h.notFound(w, r)
+		}
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		customer, ok, err := h.findPaymentMethodCustomer(r.Context(), paymentMethodID)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		if ok {
+			writeResult(w, stripePaymentMethod(customer.ID, paymentMethodID), nil)
+			return
+		}
+		if strings.HasPrefix(paymentMethodID, "pm_") {
+			writeResult(w, stripeDetachedPaymentMethod(paymentMethodID), nil)
+			return
+		}
+		writeResult(w, nil, billing.ErrNotFound)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validatePaymentMethodUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		customer, ok, err := h.findPaymentMethodCustomer(r.Context(), paymentMethodID)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		if ok {
+			writeResult(w, stripePaymentMethod(customer.ID, paymentMethodID), nil)
+			return
+		}
+		writeResult(w, stripeDetachedPaymentMethod(paymentMethodID), nil)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handlePaymentMethodAttach(w http.ResponseWriter, r *http.Request, paymentMethodID string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validatePaymentMethodAttach(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	customer, err := h.attachPaymentMethod(r.Context(), p.string("customer"), paymentMethodID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	result := stripePaymentMethod(customer.ID, paymentMethodID)
+	h.emitGenericWebhook(r, "payment_method.attached", paymentMethodID, result, webhooks.SourceAPI)
+	writeResult(w, result, nil)
+}
+
+func (h *Handler) handlePaymentMethodDetach(w http.ResponseWriter, r *http.Request, paymentMethodID string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	customer, ok, err := h.findPaymentMethodCustomer(r.Context(), paymentMethodID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if !ok {
+		writeResult(w, nil, billing.ErrNotFound)
+		return
+	}
+	metadata := copyStringMap(customer.Metadata)
+	metadata[billing.MetadataPaymentMethodIDs] = strings.Join(removePaymentMethodID(splitPaymentMethodIDs(metadata[billing.MetadataPaymentMethodIDs]), paymentMethodID), ",")
+	if metadata[billing.MetadataDefaultPaymentMethod] == paymentMethodID {
+		delete(metadata, billing.MetadataDefaultPaymentMethod)
+	}
+	if _, err := h.billing.UpdateCustomer(r.Context(), customer.ID, billing.Customer{Metadata: metadata}); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	writeResult(w, stripeDetachedPaymentMethod(paymentMethodID), nil)
 }
 
 func (h *Handler) handleCustomerPaymentMethods(w http.ResponseWriter, r *http.Request, customerID string) {
@@ -2794,6 +3164,25 @@ func (h *Handler) handleCustomerPaymentMethods(w http.ResponseWriter, r *http.Re
 		return
 	}
 	h.writeCustomerPaymentMethods(w, r, customerID)
+}
+
+func (h *Handler) handleCustomerPaymentMethod(w http.ResponseWriter, r *http.Request, customerID string, paymentMethodID string) {
+	if r.Method != http.MethodGet {
+		h.methodNotAllowed(w, r, "GET")
+		return
+	}
+	customer, err := h.billing.GetCustomer(r.Context(), customerID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	for _, id := range customerPaymentMethodIDs(customer) {
+		if id == paymentMethodID {
+			writeResult(w, stripePaymentMethod(customer.ID, paymentMethodID), nil)
+			return
+		}
+	}
+	writeResult(w, nil, billing.ErrNotFound)
 }
 
 func (h *Handler) writeCustomerPaymentMethods(w http.ResponseWriter, r *http.Request, customerID string) {
@@ -2816,6 +3205,33 @@ func (h *Handler) writeCustomerPaymentMethods(w http.ResponseWriter, r *http.Req
 		return
 	}
 	writeResult(w, stripeList(r.URL.Path, stripePaymentMethods(customer)), nil)
+}
+
+func (h *Handler) attachPaymentMethod(ctx context.Context, customerID string, paymentMethodID string) (billing.Customer, error) {
+	customer, err := h.billing.GetCustomer(ctx, customerID)
+	if err != nil {
+		return billing.Customer{}, err
+	}
+	metadata := copyStringMap(customer.Metadata)
+	ids := append(splitPaymentMethodIDs(metadata[billing.MetadataPaymentMethodIDs]), paymentMethodID)
+	metadata[billing.MetadataPaymentMethodIDs] = strings.Join(uniquePaymentMethodIDs(ids), ",")
+	metadata[billing.MetadataPaymentMethodsFixture] = billing.PaymentMethodsFixtureExplicit
+	return h.billing.UpdateCustomer(ctx, customer.ID, billing.Customer{Metadata: metadata})
+}
+
+func (h *Handler) findPaymentMethodCustomer(ctx context.Context, paymentMethodID string) (billing.Customer, bool, error) {
+	customers, err := h.billing.ListCustomers(ctx)
+	if err != nil {
+		return billing.Customer{}, false, err
+	}
+	for _, customer := range customers {
+		for _, id := range customerPaymentMethodIDs(customer) {
+			if id == paymentMethodID {
+				return customer, true, nil
+			}
+		}
+	}
+	return billing.Customer{}, false, nil
 }
 
 func (h *Handler) handleObjects(w http.ResponseWriter, r *http.Request) {
@@ -4446,6 +4862,12 @@ func stripePaymentMethod(customerID string, paymentMethodID string) map[string]a
 	}
 }
 
+func stripeDetachedPaymentMethod(paymentMethodID string) map[string]any {
+	out := stripePaymentMethod("", paymentMethodID)
+	out["customer"] = nil
+	return out
+}
+
 func stripePaymentMethods(customer billing.Customer) []map[string]any {
 	ids := customerPaymentMethodIDs(customer)
 	data := make([]map[string]any, 0, len(ids))
@@ -4503,6 +4925,16 @@ func uniquePaymentMethodIDs(ids []string) []string {
 		}
 		seen[id] = true
 		out = append(out, id)
+	}
+	return out
+}
+
+func removePaymentMethodID(ids []string, paymentMethodID string) []string {
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != paymentMethodID {
+			out = append(out, id)
+		}
 	}
 	return out
 }
@@ -4947,9 +5379,20 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		"billing_cycle_anchor": unix(sub.CurrentPeriodStart),
 		"currency":             "usd",
 		"livemode":             false,
-		"pause_collection":     nil,
+		"pause_collection":     subscriptionPauseCollection(sub),
 		"pending_update":       nil,
 		"cancellation_details": subscriptionCancellationDetails(sub),
+	}
+}
+
+func subscriptionPauseCollection(sub billing.Subscription) any {
+	behavior := strings.TrimSpace(sub.Metadata["pause_collection_behavior"])
+	if behavior == "" {
+		return nil
+	}
+	return map[string]any{
+		"behavior":   behavior,
+		"resumes_at": metadataUnix(sub.Metadata["pause_collection_resumes_at"]),
 	}
 }
 
@@ -5351,6 +5794,26 @@ func filterSubscriptions(items []billing.Subscription, r *http.Request) []billin
 	return out
 }
 
+func filterSubscriptionsForCustomer(items []billing.Subscription, r *http.Request, customerID string) []billing.Subscription {
+	query := r.URL.Query()
+	metadataFilters := queryMetadataFilters(query)
+	out := make([]billing.Subscription, 0, len(items))
+	for _, item := range items {
+		if item.CustomerID != customerID {
+			continue
+		}
+		status := strings.ToLower(query.Get("status"))
+		if status != "" && status != "all" && item.Status != status {
+			continue
+		}
+		if !metadataMatches(item.Metadata, metadataFilters) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
 func queryMetadataFilters(query url.Values) map[string]string {
 	out := map[string]string{}
 	for key, values := range query {
@@ -5405,13 +5868,185 @@ type priceSearchCriteria struct {
 	Metadata  map[string]string
 }
 
+type customerSearchCriteria struct {
+	ID       string
+	Email    string
+	Name     string
+	Metadata map[string]string
+}
+
+type objectSearchCriteria struct {
+	ID           string
+	CustomerID   string
+	Subscription string
+	Status       string
+	Metadata     map[string]string
+}
+
 var (
-	priceSearchActiveClause   = regexp.MustCompile(`^active:'(true|false)'$`)
-	priceSearchTypeClause     = regexp.MustCompile(`^type:'(one_time|recurring)'$`)
-	priceSearchLookupClause   = regexp.MustCompile(`^lookup_key:'([^']*)'$`)
-	priceSearchMetadataClause = regexp.MustCompile(`^metadata\['([^']+)'\]:'([^']*)'$`)
-	priceSearchANDPattern     = regexp.MustCompile(`(?i)\s+AND\s+`)
+	priceSearchActiveClause        = regexp.MustCompile(`^active:'(true|false)'$`)
+	priceSearchTypeClause          = regexp.MustCompile(`^type:'(one_time|recurring)'$`)
+	priceSearchLookupClause        = regexp.MustCompile(`^lookup_key:'([^']*)'$`)
+	priceSearchMetadataClause      = regexp.MustCompile(`^metadata\['([^']+)'\]:'([^']*)'$`)
+	customerSearchIDClause         = regexp.MustCompile(`^id:'([^']*)'$`)
+	customerSearchEmailClause      = regexp.MustCompile(`^email:'([^']*)'$`)
+	customerSearchNameClause       = regexp.MustCompile(`^name:'([^']*)'$`)
+	objectSearchCustomerClause     = regexp.MustCompile(`^customer:'([^']*)'$`)
+	objectSearchStatusClause       = regexp.MustCompile(`^status:'([^']*)'$`)
+	objectSearchSubscriptionClause = regexp.MustCompile(`^subscription:'([^']*)'$`)
+	priceSearchANDPattern          = regexp.MustCompile(`(?i)\s+AND\s+`)
 )
+
+func parseCustomerSearchQuery(query string) (customerSearchCriteria, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return customerSearchCriteria{}, missingParam("query")
+	}
+	criteria := customerSearchCriteria{Metadata: map[string]string{}}
+	for _, rawClause := range priceSearchANDPattern.Split(query, -1) {
+		clause := strings.TrimSpace(rawClause)
+		if clause == "" {
+			return customerSearchCriteria{}, invalidParam("query", "Expected field:'value' clauses joined by AND.")
+		}
+		switch {
+		case customerSearchIDClause.MatchString(clause):
+			match := customerSearchIDClause.FindStringSubmatch(clause)
+			criteria.ID = match[1]
+		case customerSearchEmailClause.MatchString(clause):
+			match := customerSearchEmailClause.FindStringSubmatch(clause)
+			criteria.Email = match[1]
+		case customerSearchNameClause.MatchString(clause):
+			match := customerSearchNameClause.FindStringSubmatch(clause)
+			criteria.Name = match[1]
+		case priceSearchMetadataClause.MatchString(clause):
+			match := priceSearchMetadataClause.FindStringSubmatch(clause)
+			criteria.Metadata[match[1]] = match[2]
+		default:
+			return customerSearchCriteria{}, invalidParam("query", "Unsupported customers search clause: "+clause+".")
+		}
+	}
+	if len(criteria.Metadata) == 0 {
+		criteria.Metadata = nil
+	}
+	return criteria, nil
+}
+
+func filterCustomerSearchResults(customers []billing.Customer, criteria customerSearchCriteria) []billing.Customer {
+	out := make([]billing.Customer, 0, len(customers))
+	for _, customer := range customers {
+		if criteria.ID != "" && customer.ID != criteria.ID {
+			continue
+		}
+		if criteria.Email != "" && customer.Email != criteria.Email {
+			continue
+		}
+		if criteria.Name != "" && customer.Name != criteria.Name {
+			continue
+		}
+		if !metadataMatches(customer.Metadata, criteria.Metadata) {
+			continue
+		}
+		out = append(out, customer)
+	}
+	return out
+}
+
+func parseObjectSearchQuery(query string, allowMetadata bool) (objectSearchCriteria, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return objectSearchCriteria{}, missingParam("query")
+	}
+	criteria := objectSearchCriteria{Metadata: map[string]string{}}
+	for _, rawClause := range priceSearchANDPattern.Split(query, -1) {
+		clause := strings.TrimSpace(rawClause)
+		if clause == "" {
+			return objectSearchCriteria{}, invalidParam("query", "Expected field:'value' clauses joined by AND.")
+		}
+		switch {
+		case customerSearchIDClause.MatchString(clause):
+			match := customerSearchIDClause.FindStringSubmatch(clause)
+			criteria.ID = match[1]
+		case objectSearchCustomerClause.MatchString(clause):
+			match := objectSearchCustomerClause.FindStringSubmatch(clause)
+			criteria.CustomerID = match[1]
+		case objectSearchStatusClause.MatchString(clause):
+			match := objectSearchStatusClause.FindStringSubmatch(clause)
+			criteria.Status = match[1]
+		case objectSearchSubscriptionClause.MatchString(clause):
+			match := objectSearchSubscriptionClause.FindStringSubmatch(clause)
+			criteria.Subscription = match[1]
+		case allowMetadata && priceSearchMetadataClause.MatchString(clause):
+			match := priceSearchMetadataClause.FindStringSubmatch(clause)
+			criteria.Metadata[match[1]] = match[2]
+		default:
+			return objectSearchCriteria{}, invalidParam("query", "Unsupported search clause: "+clause+".")
+		}
+	}
+	if len(criteria.Metadata) == 0 {
+		criteria.Metadata = nil
+	}
+	return criteria, nil
+}
+
+func filterSubscriptionSearchResults(items []billing.Subscription, criteria objectSearchCriteria) []billing.Subscription {
+	out := make([]billing.Subscription, 0, len(items))
+	for _, item := range items {
+		if criteria.ID != "" && item.ID != criteria.ID {
+			continue
+		}
+		if criteria.CustomerID != "" && item.CustomerID != criteria.CustomerID {
+			continue
+		}
+		if criteria.Status != "" && item.Status != criteria.Status {
+			continue
+		}
+		if !metadataMatches(item.Metadata, criteria.Metadata) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func filterInvoiceSearchResults(items []billing.Invoice, criteria objectSearchCriteria) []billing.Invoice {
+	out := make([]billing.Invoice, 0, len(items))
+	for _, item := range items {
+		if criteria.ID != "" && item.ID != criteria.ID {
+			continue
+		}
+		if criteria.CustomerID != "" && item.CustomerID != criteria.CustomerID {
+			continue
+		}
+		if criteria.Subscription != "" && item.SubscriptionID != criteria.Subscription {
+			continue
+		}
+		if criteria.Status != "" && item.Status != criteria.Status {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func filterPaymentIntentSearchResults(items []billing.PaymentIntent, criteria objectSearchCriteria) []billing.PaymentIntent {
+	out := make([]billing.PaymentIntent, 0, len(items))
+	for _, item := range items {
+		if criteria.ID != "" && item.ID != criteria.ID {
+			continue
+		}
+		if criteria.CustomerID != "" && item.CustomerID != criteria.CustomerID {
+			continue
+		}
+		if criteria.Status != "" && item.Status != criteria.Status {
+			continue
+		}
+		if !metadataMatches(item.Metadata, criteria.Metadata) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
 
 func parsePriceSearchQuery(query string) (priceSearchCriteria, error) {
 	query = strings.TrimSpace(query)
@@ -5599,6 +6234,21 @@ func subscriptionUpdateMetadata(p params) map[string]string {
 			metadata[item.key] = value
 		}
 	}
+	if value := p.string("pause_collection[behavior]"); value != "" {
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata["pause_collection_behavior"] = value
+		if resumesAt := p.string("pause_collection[resumes_at]"); resumesAt != "" {
+			metadata["pause_collection_resumes_at"] = resumesAt
+		}
+	} else if _, ok := p.values["pause_collection"]; ok {
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata["pause_collection_behavior"] = ""
+		metadata["pause_collection_resumes_at"] = ""
+	}
 	return metadata
 }
 
@@ -5651,6 +6301,9 @@ func optionalUnix(t *time.Time) any {
 func metadataUnix(value string) any {
 	if strings.TrimSpace(value) == "" {
 		return nil
+	}
+	if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+		return seconds
 	}
 	parsed, err := time.Parse(time.RFC3339Nano, value)
 	if err != nil || parsed.IsZero() {

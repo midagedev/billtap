@@ -84,7 +84,7 @@ The long-running expansion goal is at least 90% OpenAPI operation coverage at
 The concrete target and chunk plan live in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`. In short:
 
-- current baseline: `144 / 587`, `24.5%`
+- current baseline: `160 / 587`, `27.3%`
 - target: at least `529 / 587`, `90.0%`
 - maximum remaining `L0`: `58 / 587`
 - P0/P1 billing-lab flows still need deeper `L3-L6` evidence, not just broad
