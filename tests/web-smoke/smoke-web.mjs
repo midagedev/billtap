@@ -10,6 +10,7 @@ const repoRoot = resolve(testDir, "../..");
 const smokeDir = resolve(repoRoot, ".billtap/web-smoke");
 const binaryPath = resolve(smokeDir, "billtap");
 const timeoutMs = Number(process.env.BILLTAP_WEB_SMOKE_TIMEOUT_MS ?? 30_000);
+const publicBasePath = normalizePublicBasePath(process.env.BILLTAP_PUBLIC_BASE_PATH || process.env.PUBLIC_BASE_PATH || "");
 
 async function main() {
   await mkdir(smokeDir, { recursive: true });
@@ -59,20 +60,32 @@ function smokeChecks(seed) {
   return [
     {
       name: "dashboard",
-      path: "/app/dashboard/",
+      path: withPublicBasePath("/app/dashboard/"),
       texts: ["Debug workspace", "Billing objects", "Object timeline"],
     },
     {
       name: "checkout",
-      path: `/app/checkout/?session_id=${encodeURIComponent(seed.checkoutSession.id)}`,
+      path: withPublicBasePath(`/app/checkout/?session_id=${encodeURIComponent(seed.checkoutSession.id)}`),
       texts: ["Checkout session", "Outcome selector", "Complete checkout"],
     },
     {
       name: "portal",
-      path: `/app/portal/?customer_id=${encodeURIComponent(seed.customer.id)}`,
+      path: withPublicBasePath(`/app/portal/?customer_id=${encodeURIComponent(seed.customer.id)}`),
       texts: ["Subscription management", "Current subscription", "Cancellation"],
     },
   ];
+}
+
+function normalizePublicBasePath(value) {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "/") return "";
+  const withLeading = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
+  return withLeading.replace(/\/+$/, "");
+}
+
+function withPublicBasePath(path) {
+  if (!publicBasePath) return path;
+  return `${publicBasePath}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
 async function seedBillingData(baseURL) {

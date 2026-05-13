@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 const (
@@ -13,6 +14,8 @@ const (
 	envAddr                   = "BILLTAP_ADDR"
 	envDatabaseURL            = "BILLTAP_DATABASE_URL"
 	envStaticDir              = "BILLTAP_STATIC_DIR"
+	envPublicBasePath         = "PUBLIC_BASE_PATH"
+	envBilltapPublicBasePath  = "BILLTAP_PUBLIC_BASE_PATH"
 	envPublicBaseURL          = "BILLTAP_PUBLIC_BASE_URL"
 	envEnvironment            = "BILLTAP_ENV"
 	envRelayMode              = "BILLTAP_RELAY_MODE"
@@ -34,6 +37,7 @@ type Config struct {
 	Addr                   string `json:"addr"`
 	DatabaseURL            string `json:"database_url"`
 	StaticDir              string `json:"static_dir"`
+	PublicBasePath         string `json:"public_base_path"`
 	PublicBaseURL          string `json:"public_base_url"`
 	Environment            string `json:"environment"`
 	RelayMode              bool   `json:"relay_mode"`
@@ -90,6 +94,12 @@ func LoadWithLookup(path string, lookup LookupFunc) (Config, error) {
 	if value, ok := lookup(envStaticDir); ok {
 		cfg.StaticDir = value
 	}
+	if value, ok := lookup(envPublicBasePath); ok {
+		cfg.PublicBasePath = value
+	}
+	if value, ok := lookup(envBilltapPublicBasePath); ok {
+		cfg.PublicBasePath = value
+	}
 	if value, ok := lookup(envPublicBaseURL); ok {
 		cfg.PublicBaseURL = value
 	}
@@ -118,6 +128,11 @@ func LoadWithLookup(path string, lookup LookupFunc) (Config, error) {
 	if cfg.RelayMode {
 		cfg.RawPayloadStorage = RawPayloadMetadataOnly
 	}
+	publicBasePath, err := ValidatePublicBasePath(cfg.PublicBasePath)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.PublicBasePath = publicBasePath
 
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -134,6 +149,9 @@ func (c Config) Validate() error {
 	}
 	if c.StaticDir == "" {
 		return errors.New("static_dir is required")
+	}
+	if _, err := ValidatePublicBasePath(c.PublicBasePath); err != nil {
+		return err
 	}
 	if c.Environment == "" {
 		return errors.New("environment is required")
@@ -181,6 +199,9 @@ func merge(base Config, override Config) Config {
 	if override.StaticDir != "" {
 		base.StaticDir = override.StaticDir
 	}
+	if override.PublicBasePath != "" {
+		base.PublicBasePath = override.PublicBasePath
+	}
 	if override.PublicBaseURL != "" {
 		base.PublicBaseURL = override.PublicBaseURL
 	}
@@ -203,6 +224,34 @@ func merge(base Config, override Config) Config {
 		base.WebhookAPIVersion = override.WebhookAPIVersion
 	}
 	return base
+}
+
+func NormalizePublicBasePath(value string) string {
+	normalized, _ := ValidatePublicBasePath(value)
+	return normalized
+}
+
+func ValidatePublicBasePath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" || value == "/" {
+		return "", nil
+	}
+	if strings.Contains(value, "://") || strings.ContainsAny(value, "?#") {
+		return "", errors.New("public_base_path must be a URL path, not a full URL")
+	}
+	if !strings.HasPrefix(value, "/") {
+		value = "/" + value
+	}
+	value = strings.TrimRight(value, "/")
+	for _, part := range strings.Split(value, "/") {
+		if part == ".." || part == "." {
+			return "", errors.New("public_base_path cannot contain dot path segments")
+		}
+	}
+	if strings.Contains(value, "//") {
+		return "", errors.New("public_base_path cannot contain empty path segments")
+	}
+	return value, nil
 }
 
 func parseBool(value string) bool {

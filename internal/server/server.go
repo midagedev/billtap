@@ -32,12 +32,29 @@ func New(opts Options) http.Handler {
 		store: opts.Store,
 		mux:   http.NewServeMux(),
 	}
+	s.cfg.PublicBasePath = config.NormalizePublicBasePath(s.cfg.PublicBasePath)
 	s.routes()
 	return s
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	s.mux.ServeHTTP(w, r)
+	basePath := s.requestBasePath(r)
+	if basePath == "" {
+		s.mux.ServeHTTP(w, r)
+		return
+	}
+	r2 := r.Clone(r.Context())
+	r2.Header = r.Header.Clone()
+	if r2.Header.Get("X-Forwarded-Prefix") == "" {
+		r2.Header.Set("X-Forwarded-Prefix", basePath)
+	}
+	u := *r.URL
+	if stripped, ok := stripBasePath(u.Path, basePath); ok {
+		u.Path = stripped
+		u.RawPath = ""
+	}
+	r2.URL = &u
+	s.mux.ServeHTTP(w, r2)
 }
 
 func (s *Server) routes() {
@@ -59,7 +76,7 @@ func (s *Server) routes() {
 			Billing:       billing.NewService(repo),
 			Webhooks:      webhookService,
 			Diagnostics:   diagnosticsService,
-			PublicBaseURL: s.cfg.PublicBaseURL,
+			PublicBaseURL: publicBaseURLWithPath(s.cfg.PublicBaseURL, s.cfg.PublicBasePath),
 		})
 		s.mux.Handle("/v1/", handler)
 		s.mux.Handle("/api/", handler)
@@ -85,7 +102,7 @@ func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	http.Redirect(w, r, "/app/dashboard/", http.StatusFound)
+	http.Redirect(w, r, s.prefixedPath(r, "/app/dashboard/"), http.StatusFound)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -142,7 +159,8 @@ func (s *Server) handleApp(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodHead {
 		return
 	}
-	_, _ = w.Write([]byte(`<!doctype html><html><head><title>Billtap</title></head><body><div id="root" data-billtap-app="stub"></div><script type="module" src="/assets/app.js"></script></body></html>`))
+	assetPath := s.prefixedPath(r, "/assets/app.js")
+	_, _ = w.Write([]byte(`<!doctype html><html><head><title>Billtap</title></head><body><div id="root" data-billtap-app="stub"></div><script type="module" src="` + assetPath + `"></script></body></html>`))
 }
 
 func (s *Server) handleHostedCheckout(w http.ResponseWriter, r *http.Request) {
@@ -154,7 +172,7 @@ func (s *Server) handleHostedCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/checkout"), "/"), "/")
-	target := "/app/checkout/"
+	target := s.prefixedPath(r, "/app/checkout/")
 	if sessionID != "" {
 		target += "?session_id=" + sessionID
 	} else if r.URL.RawQuery != "" {
@@ -172,13 +190,69 @@ func (s *Server) handleHostedPortal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	customerID := strings.Trim(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/portal"), "/"), "/")
-	target := "/app/portal/"
+	target := s.prefixedPath(r, "/app/portal/")
 	if customerID != "" {
 		target += "?customer_id=" + customerID
 	} else if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
 	http.Redirect(w, r, target, http.StatusFound)
+}
+
+func (s *Server) requestBasePath(r *http.Request) string {
+	if prefix := forwardedPrefix(r); prefix != "" {
+		return prefix
+	}
+	return config.NormalizePublicBasePath(s.cfg.PublicBasePath)
+}
+
+func forwardedPrefix(r *http.Request) string {
+	raw := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Prefix"), ",")[0])
+	return config.NormalizePublicBasePath(raw)
+}
+
+func stripBasePath(path string, basePath string) (string, bool) {
+	if basePath == "" {
+		return path, false
+	}
+	if path == basePath {
+		return "/", true
+	}
+	if strings.HasPrefix(path, basePath+"/") {
+		stripped := strings.TrimPrefix(path, basePath)
+		if stripped == "" {
+			return "/", true
+		}
+		return stripped, true
+	}
+	return path, false
+}
+
+func (s *Server) prefixedPath(r *http.Request, path string) string {
+	return joinURLPath(s.requestBasePath(r), path)
+}
+
+func joinURLPath(basePath string, path string) string {
+	basePath = config.NormalizePublicBasePath(basePath)
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	if basePath == "" {
+		return path
+	}
+	return basePath + path
+}
+
+func publicBaseURLWithPath(baseURL string, basePath string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	basePath = config.NormalizePublicBasePath(basePath)
+	if baseURL == "" || basePath == "" || strings.HasSuffix(baseURL, basePath) {
+		return baseURL
+	}
+	return baseURL + basePath
 }
 
 func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {

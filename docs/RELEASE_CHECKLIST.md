@@ -48,6 +48,11 @@ release notes whenever compatibility coverage changes.
 - Start Billtap from the local binary with `BILLTAP_STATIC_DIR=dist/app`.
 - Start the sample app with `PORT=3300 npm --prefix examples/sample-app start` before CLI scenario smoke checks.
 - Open `/app/dashboard/`, `/app/checkout/`, and `/app/portal/`.
+- Start Billtap with `PUBLIC_BASE_PATH=/billtap` and confirm
+  `/billtap/app/dashboard/`, `/billtap/api/diagnostics`, `/billtap/v1/customers`,
+  and a generated checkout session URL are all prefix-aware.
+- Send a request through a proxy or curl with `X-Forwarded-Prefix: /billtap` and
+  confirm redirect `Location` headers include `/billtap`.
 - Create customer, product, price, and checkout session through `/v1`.
 - Complete checkout through `/api/checkout/sessions/{id}/complete`.
 - Verify `/api/timeline`, `/api/objects`, and `/api/delivery-attempts`.

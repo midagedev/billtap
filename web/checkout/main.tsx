@@ -21,6 +21,7 @@ import {
   type CheckoutOutcomeId,
   type StatusTone,
 } from "../shared/data";
+import { appHref } from "../shared/basePath";
 import "../shared/styles.css";
 
 const paymentMethods = [
@@ -146,7 +147,7 @@ function CheckoutApp() {
         title="Checkout session"
         meta={`${session.id} · ${session.customer}`}
         actions={
-          <a className="button secondary" href="/app/dashboard/">
+          <a className="button secondary" href={appHref("dashboard/")}>
             View timeline
           </a>
         }

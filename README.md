@@ -129,6 +129,41 @@ Image tags:
 
 Images are published for `linux/amd64` and `linux/arm64`.
 
+## Reverse Proxy Base Path
+
+Billtap can run behind a shared browser origin such as
+`https://localhost:8081/billtap` while keeping internal service-to-service calls
+on the unprefixed container URL, such as `http://billtap:8080`.
+
+Set one of these before building or starting Billtap:
+
+```bash
+PUBLIC_BASE_PATH=/billtap
+# or, to override only this app when a shared stack sets PUBLIC_BASE_PATH:
+BILLTAP_PUBLIC_BASE_PATH=/billtap
+```
+
+Set `BILLTAP_PUBLIC_BASE_URL` to the browser-visible origin without the path
+prefix when Billtap generates hosted checkout and portal URLs:
+
+```bash
+BILLTAP_PUBLIC_BASE_URL=https://localhost:8081 \
+PUBLIC_BASE_PATH=/billtap \
+go run ./cmd/billtap
+```
+
+The server also honors `X-Forwarded-Prefix`, so a proxy can strip `/billtap`
+before forwarding while Billtap still generates prefixed `Location` headers and
+hosted URLs. Browser links, static assets, dashboard API calls, and Stripe-like
+calls are prefix-aware:
+
+```text
+/billtap/app/dashboard/
+/billtap/app/assets/...
+/billtap/api/diagnostics
+/billtap/v1/customers
+```
+
 ## Fixture And Assertion APIs
 
 Billtap includes local integration-test helpers:

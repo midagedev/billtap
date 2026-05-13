@@ -28,6 +28,7 @@ import {
   type TimelineEntry,
   type WebhookAttempt,
 } from "../shared/data";
+import { appHref } from "../shared/basePath";
 import "../shared/styles.css";
 
 const objectTabs: Array<{ id: DashboardObjectType; label: string }> = [
@@ -135,10 +136,10 @@ function DashboardApp() {
         meta={`${dashboard.billingSnapshot.workspace} · ${source === "api" ? "API timeline" : "fixture timeline"}`}
         actions={
           <>
-            <a className="button secondary" href="/app/checkout/">
+            <a className="button secondary" href={appHref("checkout/")}>
               Open checkout
             </a>
-            <a className="button" href="/app/portal/">
+            <a className="button" href={appHref("portal/")}>
               Open portal
             </a>
           </>
