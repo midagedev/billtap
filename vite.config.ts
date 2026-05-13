@@ -6,7 +6,6 @@ import { defineConfig, type Plugin } from "vite";
 const appRoutes = new Set(["checkout", "dashboard", "portal"]);
 const projectRoot = fileURLToPath(new URL(".", import.meta.url));
 const publicBasePath = normalizePublicBasePath(firstNonEmpty(process.env.BILLTAP_PUBLIC_BASE_PATH, process.env.PUBLIC_BASE_PATH));
-const appBasePath = joinBasePath(publicBasePath, "/app/");
 
 function appPathDevFallback(): Plugin {
   return {
@@ -19,9 +18,9 @@ function appPathDevFallback(): Plugin {
         const match = appPath.match(/^\/app\/(checkout|dashboard|portal)\/?$/);
 
         if (match && appRoutes.has(match[1])) {
-          req.url = `${appBasePath}${match[1]}/index.html${query ? `?${query}` : ""}`;
+          req.url = `/${match[1]}/index.html${query ? `?${query}` : ""}`;
         } else if (appPath === "/app/" || appPath === "/app") {
-          req.url = `${appBasePath}dashboard/index.html${query ? `?${query}` : ""}`;
+          req.url = `/dashboard/index.html${query ? `?${query}` : ""}`;
         }
 
         next();
@@ -44,12 +43,6 @@ function normalizePublicBasePath(value: string): string {
   return withLeading.replace(/\/+$/, "");
 }
 
-function joinBasePath(basePath: string, path: string): string {
-  const normalizedPath = path.startsWith("/") ? path : `/${path}`;
-  if (!basePath) return normalizedPath;
-  return `${basePath}${normalizedPath}`;
-}
-
 function stripBasePath(pathname: string, basePath: string): string {
   if (!basePath) return pathname;
   if (pathname === basePath) return "/";
@@ -59,7 +52,7 @@ function stripBasePath(pathname: string, basePath: string): string {
 
 export default defineConfig({
   root: "web",
-  base: appBasePath,
+  base: "./",
   plugins: [react(), appPathDevFallback()],
   server: {
     host: "127.0.0.1",

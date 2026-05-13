@@ -184,6 +184,16 @@ func TestBuiltReactAppServing(t *testing.T) {
 			t.Fatalf("%s status = %d, want %d", path, rec.Code, http.StatusOK)
 		}
 	}
+
+	req := httptest.NewRequest(http.MethodGet, "/checkout?session_id=cs_test_123", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("built checkout status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if got := rec.Header().Get("Location"); got != "/app/checkout/?session_id=cs_test_123" {
+		t.Fatalf("built checkout Location = %q, want app redirect", got)
+	}
 }
 
 func TestPublicBasePathPrefixesAPISessionURLs(t *testing.T) {

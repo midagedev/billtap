@@ -47,6 +47,7 @@ async function main() {
   try {
     await waitForReady(`${baseURL}/healthz`, server);
     const seed = await seedBillingData(baseURL);
+    await verifyHostedRedirect(seed.checkoutSession.url, withPublicBasePath(`/app/checkout/?session_id=${encodeURIComponent(seed.checkoutSession.id)}`));
     const checks = smokeChecks(seed);
     await runBrowserSmoke(baseURL, checks);
     console.log(`web smoke passed: ${checks.map((check) => check.path).join(", ")}`);
@@ -124,6 +125,21 @@ async function seedBillingData(baseURL) {
   });
 
   return { customer, product, price, checkoutSession, portalSession };
+}
+
+async function verifyHostedRedirect(url, expectedPathAndQuery) {
+  const response = await fetch(url, { redirect: "manual" });
+  if (response.status !== 302) {
+    throw new Error(`${url} returned ${response.status}, want hosted redirect`);
+  }
+  const location = response.headers.get("location");
+  if (!location) {
+    throw new Error(`${url} did not return a Location header`);
+  }
+  const resolved = new URL(location, url);
+  if (`${resolved.pathname}${resolved.search}` !== expectedPathAndQuery) {
+    throw new Error(`${url} redirected to ${resolved.pathname}${resolved.search}, want ${expectedPathAndQuery}`);
+  }
 }
 
 async function postForm(url, values) {

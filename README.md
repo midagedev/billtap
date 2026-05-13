@@ -135,7 +135,7 @@ Billtap can run behind a shared browser origin such as
 `https://localhost:8081/billtap` while keeping internal service-to-service calls
 on the unprefixed container URL, such as `http://billtap:8080`.
 
-Set one of these before building or starting Billtap:
+Set one of these before starting Billtap:
 
 ```bash
 PUBLIC_BASE_PATH=/billtap
@@ -163,6 +163,9 @@ calls are prefix-aware:
 /billtap/api/diagnostics
 /billtap/v1/customers
 ```
+
+The published GHCR image is runtime-prefix safe. You do not need to rebuild the
+frontend for each mount path.
 
 ## Fixture And Assertion APIs
 

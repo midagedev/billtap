@@ -58,7 +58,9 @@ go run ./cmd/billtap
 
 `BILLTAP_PUBLIC_BASE_PATH` is also supported and takes precedence over
 `PUBLIC_BASE_PATH` when a multi-app stack needs a Billtap-specific override.
-The path must be a URL path, not a full URL.
+The path must be a URL path, not a full URL. Published container images are
+runtime-prefix safe, so the same image can be mounted at `/`, `/billtap`, or a
+different proxy path without rebuilding frontend assets.
 
 With `PUBLIC_BASE_PATH=/billtap`, browser-facing paths are:
 

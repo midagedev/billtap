@@ -38,10 +38,11 @@ use URLs such as `http://billtap:8080/v1`.
 
 ## Consequences
 
-The Vite app is built with `/app/` under the public base path, so assets resolve
-without proxy rewrites. Server routes accept both prefixed and unprefixed paths
-when a configured public base path is present, which preserves internal compose
-traffic while allowing browser requests under the prefix.
+The Vite app uses relative static asset paths and derives the runtime public
+prefix from the current browser URL. The published image therefore does not need
+to be rebuilt for each mount path. Server routes accept both prefixed and
+unprefixed paths when a configured public base path is present, which preserves
+internal compose traffic while allowing browser requests under the prefix.
 
 The public base path is validated as a URL path. Full URLs, query strings,
 fragments, dot path segments, and empty path segments are rejected.
