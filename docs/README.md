@@ -45,5 +45,6 @@ This directory contains the public product, architecture, testing, and release n
 
 - `decisions/0001-project-shape.md`
 - `decisions/0002-stack.md`
+- `decisions/0003-public-base-path.md`
 
 Internal adoption notes and original company-specific validation material are preserved locally under `.private/`, which is intentionally ignored by Git.

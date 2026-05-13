@@ -1,3 +1,5 @@
+import { appHref } from "./basePath";
+
 export type StatusTone = "good" | "warning" | "danger" | "neutral" | "info";
 
 export type TimelineEntry = {
@@ -375,7 +377,7 @@ export const checkoutSession = {
   invoiceStatus: "draft",
   paymentIntentId: "pi_test_pending",
   paymentIntentStatus: "requires_payment_method",
-  returnUrl: "/app/dashboard/",
+  returnUrl: appHref("dashboard/"),
   lineItems: [
     { label: "Team Annual base", amount: "$948.00" },
     { label: "3 additional seats", amount: "$240.00" },

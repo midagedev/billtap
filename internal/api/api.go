@@ -6444,20 +6444,38 @@ func absoluteURL(r *http.Request, path string, publicBase string) string {
 	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
 		return path
 	}
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
 	if publicBase != "" {
-		if path == "" {
-			return publicBase
-		}
-		if strings.HasPrefix(path, "/") {
-			return publicBase + path
-		}
-		return publicBase + "/" + path
+		return publicBase + path
 	}
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
 	}
+	if prefix := requestForwardedPrefix(r); prefix != "" {
+		path = prefix + path
+	}
 	return scheme + "://" + r.Host + path
+}
+
+func requestForwardedPrefix(r *http.Request) string {
+	raw := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Prefix"), ",")[0])
+	if raw == "" || raw == "/" || strings.Contains(raw, "://") || strings.ContainsAny(raw, "?#") {
+		return ""
+	}
+	if !strings.HasPrefix(raw, "/") {
+		raw = "/" + raw
+	}
+	raw = strings.TrimRight(raw, "/")
+	if strings.Contains(raw, "//") || strings.Contains(raw, "/../") || strings.HasSuffix(raw, "/..") {
+		return ""
+	}
+	return raw
 }
 
 func (h *Handler) emitCheckoutWebhooks(r *http.Request, result map[string]any) []webhooks.Event {

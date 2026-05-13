@@ -21,6 +21,7 @@ import {
   type PortalPaymentOutcome,
 } from "../shared/api";
 import { billingSnapshot, invoices, portalPlans } from "../shared/data";
+import { appHref } from "../shared/basePath";
 import "../shared/styles.css";
 
 const securePaymentFrame = `<!doctype html>
@@ -157,7 +158,7 @@ function PortalApp() {
               <a className="button secondary" data-testid="return-to-business-link" href={returnUrl}>
                 Return to business
               </a>
-              <a className="button secondary" href="/app/dashboard/">
+              <a className="button secondary" href={appHref("dashboard/")}>
                 View evidence
               </a>
             </div>
@@ -378,7 +379,7 @@ function PortalApp() {
 
 function getPortalReturnUrl(location: Location = window.location): string {
   const params = new URLSearchParams(location.search);
-  return params.get("return_url") ?? params.get("returnUrl") ?? "/app/dashboard/";
+  return params.get("return_url") ?? params.get("returnUrl") ?? appHref("dashboard/");
 }
 
 function shouldRedirectAfterPortalAction(action: string, location: Location = window.location): boolean {

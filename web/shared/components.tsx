@@ -1,4 +1,5 @@
 import type { ReactNode } from "react";
+import { appHref } from "./basePath";
 import type { StatusTone, TimelineEntry } from "./data";
 
 type AppShellProps = {
@@ -7,9 +8,9 @@ type AppShellProps = {
 };
 
 const navItems = [
-  { id: "dashboard", label: "Dashboard", href: "/app/dashboard/" },
-  { id: "checkout", label: "Checkout", href: "/app/checkout/" },
-  { id: "portal", label: "Portal", href: "/app/portal/" },
+  { id: "dashboard", label: "Dashboard", href: appHref("dashboard/") },
+  { id: "checkout", label: "Checkout", href: appHref("checkout/") },
+  { id: "portal", label: "Portal", href: appHref("portal/") },
 ] as const;
 
 export function AppShell({ active, children }: AppShellProps) {
@@ -18,7 +19,7 @@ export function AppShell({ active, children }: AppShellProps) {
   return (
     <div className="app-shell">
       <aside className="sidebar" aria-label="Billtap surfaces">
-        <a className="brand" href="/app/dashboard/" aria-label="Billtap dashboard">
+        <a className="brand" href={appHref("dashboard/")} aria-label="Billtap dashboard">
           <img src={logoUrl} alt="" />
           <span>
             <strong>Billtap</strong>

@@ -17,6 +17,7 @@ import {
   type TimelineEntry,
   type WebhookAttempt,
 } from "./data";
+import { apiHref } from "./basePath";
 
 export type DataSource = "api" | "fixture";
 
@@ -775,7 +776,7 @@ async function postJSON(path: string, body: unknown): Promise<unknown> {
 }
 
 async function requestJSON(path: string, init: RequestInit): Promise<unknown> {
-  const response = await fetch(path, {
+  const response = await fetch(apiHref(path), {
     ...init,
     headers: {
       Accept: "application/json",

@@ -46,6 +46,46 @@ go run ./cmd/billtap
 Billtap from a container or private network name, but the browser needs checkout
 and portal URLs that resolve from the host.
 
+## Shared Reverse Proxy Path
+
+Use `PUBLIC_BASE_PATH` when Billtap is mounted below a shared browser origin:
+
+```bash
+PUBLIC_BASE_PATH=/billtap \
+BILLTAP_PUBLIC_BASE_URL=https://localhost:8081 \
+go run ./cmd/billtap
+```
+
+`BILLTAP_PUBLIC_BASE_PATH` is also supported and takes precedence over
+`PUBLIC_BASE_PATH` when a multi-app stack needs a Billtap-specific override.
+The path must be a URL path, not a full URL.
+
+With `PUBLIC_BASE_PATH=/billtap`, browser-facing paths are:
+
+```text
+https://localhost:8081/billtap/app/dashboard/
+https://localhost:8081/billtap/app/checkout/
+https://localhost:8081/billtap/app/portal/
+https://localhost:8081/billtap/api/diagnostics
+https://localhost:8081/billtap/v1/customers
+```
+
+Internal compose traffic should continue to use the service URL:
+
+```text
+http://billtap:8080/v1
+```
+
+If the reverse proxy strips the prefix before forwarding, pass:
+
+```text
+X-Forwarded-Prefix: /billtap
+```
+
+Billtap uses that header for redirects, hosted checkout and portal URLs, and
+browser-visible links. This avoids HTML or JavaScript response rewrites in the
+proxy.
+
 ## Docker
 
 ```bash

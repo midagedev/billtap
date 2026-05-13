@@ -268,6 +268,7 @@ Gate:
 - [x] T143 Add optional scheduled/manual Stripe OpenAPI inventory workflow artifacts
 - [x] T144 Capture the public simulation capacity backlog for regression-driven fixture and scenario expansion
 - [x] T145 Expand customer history, subscription pause/resume, and payment-method attach/detach simulation routes
+- [x] T146 Add browser-facing public base path and forwarded-prefix support
 
 Suggested agents:
 
