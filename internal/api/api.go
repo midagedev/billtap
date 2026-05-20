@@ -2576,10 +2576,9 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 		if paymentMethodID == "" {
 			paymentMethodID = p.string("source")
 		}
-		outcome := paymentMethodID
 		forgive := p.boolDefault("forgive", false)
 		result, err := h.billing.PayInvoice(r.Context(), id, billing.InvoicePaymentOptions{
-			Outcome:         outcome,
+			Outcome:         p.first("outcome", "billtap_outcome"),
 			PaymentMethodID: paymentMethodID,
 			PaidOutOfBand:   p.boolDefault("paid_out_of_band", false) || forgive,
 		})

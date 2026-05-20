@@ -3722,10 +3722,14 @@ func TestInvoiceBackedOneTimePaymentFlow(t *testing.T) {
 	failInvoice := createInvoice(t, failCustomer.ID)
 	_ = postForm[invoiceResponse](t, handler, "/v1/invoices/"+failInvoice.ID+"/finalize", nil)
 	failed := postForm[invoiceResponse](t, handler, "/v1/invoices/"+failInvoice.ID+"/pay", url.Values{
-		"expand[]": {"payments.data.payment.payment_intent"},
+		"payment_method": {"pm_cus_invoice_fail"},
+		"expand[]":       {"payments.data.payment.payment_intent"},
 	})
 	if failed.Status != "open" || failed.AmountPaid != 0 || failed.AmountDue != 100 || len(failed.Payments.Data) != 1 {
 		t.Fatalf("failed invoice = %#v, want open invoice with amount due", failed)
+	}
+	if failed.Metadata["billtap_last_invoice_payment_outcome"] != "card_declined" {
+		t.Fatalf("failed invoice metadata = %#v, want configured outcome to win over payment_method", failed.Metadata)
 	}
 	failedPI := failed.Payments.Data[0].Payment.PaymentIntent
 	if failedPI.Status != "requires_payment_method" || failedPI.LastPaymentError == nil || failedPI.LastPaymentError.Code != "card_declined" {
@@ -3740,10 +3744,14 @@ func TestInvoiceBackedOneTimePaymentFlow(t *testing.T) {
 	actionInvoice := createInvoice(t, actionCustomer.ID)
 	_ = postForm[invoiceResponse](t, handler, "/v1/invoices/"+actionInvoice.ID+"/finalize", nil)
 	action := postForm[invoiceResponse](t, handler, "/v1/invoices/"+actionInvoice.ID+"/pay", url.Values{
-		"expand[]": {"payments.data.payment.payment_intent"},
+		"payment_method": {"pm_cus_invoice_action"},
+		"expand[]":       {"payments.data.payment.payment_intent"},
 	})
 	if action.Status != "open" || len(action.Payments.Data) != 1 || action.Payments.Data[0].Payment.PaymentIntent.Status != "requires_action" || action.ConfirmationSecret == nil || action.ConfirmationSecret.ClientSecret == "" {
 		t.Fatalf("requires-action invoice = %#v, want open invoice with requires_action intent and confirmation secret", action)
+	}
+	if action.Metadata["billtap_last_invoice_payment_outcome"] != "requires_action" {
+		t.Fatalf("requires-action invoice metadata = %#v, want configured outcome to win over payment_method", action.Metadata)
 	}
 }
 
