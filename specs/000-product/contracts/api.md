@@ -111,9 +111,16 @@ invoicing, and full schedule lifecycle parity are not modeled.
 
 ### Invoices
 
+- `POST /v1/invoices`
 - `GET /v1/invoices/{id}`
 - `GET /v1/invoices`
+- `POST /v1/invoices/{id}/finalize`
 - `POST /v1/invoices/{id}/pay`
+- `GET /v1/invoices/{id}/lines`
+- `GET /v1/invoices/{id}/payments`
+- `POST /v1/invoiceitems`
+- `GET /v1/invoiceitems`
+- `GET /v1/invoiceitems/{id}`
 - `POST /v1/invoices/create_preview`
 - `GET /v1/invoices/upcoming`
 - `POST /v1/invoices/upcoming`
@@ -121,9 +128,28 @@ invoicing, and full schedule lifecycle parity are not modeled.
 Direct invoice `pay` is a local retry mutation for open invoices created by
 Billtap checkout and scenarios. It accepts deterministic sandbox
 `payment_method` or legacy `source` aliases plus bounded protocol flags such as
-`paid_out_of_band`, `forgive`, `off_session`, and `mandate`. Direct invoice
-create, finalize, send, void, line mutation, collection, and full dunning
-automation are not part of the current release-compatible subset.
+`paid_out_of_band`, `forgive`, `off_session`, and `mandate`.
+
+Manual one-time invoices support a bounded local flow:
+
+1. `POST /v1/invoices` creates a draft invoice for a customer and accepts
+   Stripe SDK-style fields including `currency`, `collection_method`,
+   `default_payment_method`, `description`, `auto_advance`,
+   `pending_invoice_items_behavior`, `payment_settings[payment_method_types]`,
+   and `metadata[...]`.
+2. `POST /v1/invoiceitems` attaches a one-time amount and preserves
+   `metadata[...]`.
+3. `POST /v1/invoices/{id}/finalize` opens the invoice and creates local
+   PaymentIntent evidence.
+4. `POST /v1/invoices/{id}/pay` applies deterministic PaymentIntent outcomes,
+   including customer-level `default_payment_intent_outcome` fixture metadata.
+
+Invoice responses include local fallback fields for SDK adoption paths:
+`hosted_invoice_url`, `invoice_pdf`, `confirmation_secret.client_secret`, and
+`payments.data.payment.payment_intent` with id, status, client secret, metadata,
+and `last_payment_error` where applicable. Full invoice rendering, send, void,
+line mutation, automatic collection, tax, and dunning automation are not part of
+the current release-compatible subset.
 
 Preview endpoints accept Stripe SDK-style `subscription`,
 `subscription_details[items][0][price]`,
@@ -162,7 +188,8 @@ PaymentIntents can store a deferred per-intent outcome with
 `deferred_outcome`; the stored outcome is applied when the intent is confirmed.
 If no per-intent outcome is present, customer metadata
 `billtap_default_payment_intent_outcome` or `default_payment_intent_outcome`
-can provide the default outcome for direct one-time PaymentIntents.
+can provide the default outcome for direct and invoice-backed one-time
+PaymentIntents.
 
 ### Setup Intents
 

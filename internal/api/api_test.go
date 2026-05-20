@@ -3577,8 +3577,9 @@ func TestSubscriptionUpdatePreservesItemsAndSupportsAdditiveSeatItems(t *testing
 		} `json:"price"`
 	}
 	type subscriptionResponse struct {
-		ID    string `json:"id"`
-		Items struct {
+		ID       string            `json:"id"`
+		Metadata map[string]string `json:"metadata"`
+		Items    struct {
 			Data []subscriptionItem `json:"data"`
 		} `json:"items"`
 	}
@@ -3596,17 +3597,22 @@ func TestSubscriptionUpdatePreservesItemsAndSupportsAdditiveSeatItems(t *testing
 		"items[0][price]":      {proYearly.ID},
 		"items[0][quantity]":   {"1"},
 		"proration_behavior":   {"always_invoice"},
+		"proration_date":       {"1894752000"},
 		"payment_behavior":     {"error_if_incomplete"},
 		"billing_cycle_anchor": {"now"},
 	})
 	if len(upgraded.Items.Data) != 1 || upgraded.Items.Data[0].Price.ID != proYearly.ID {
 		t.Fatalf("upgraded items = %#v, want existing item price replaced", upgraded.Items.Data)
 	}
+	if upgraded.Metadata["proration_date"] != "1894752000" || upgraded.Metadata["payment_behavior"] != "error_if_incomplete" {
+		t.Fatalf("upgraded metadata = %#v, want accepted proration/payment behavior params", upgraded.Metadata)
+	}
 
 	withSeats := postForm[subscriptionResponse](t, handler, "/v1/subscriptions/"+created.ID, url.Values{
 		"items[0][price]":      {seatYearly.ID},
 		"items[0][quantity]":   {"2"},
 		"proration_behavior":   {"always_invoice"},
+		"proration_date":       {"1894752000"},
 		"payment_behavior":     {"error_if_incomplete"},
 		"billing_cycle_anchor": {"now"},
 	})
@@ -3618,6 +3624,126 @@ func TestSubscriptionUpdatePreservesItemsAndSupportsAdditiveSeatItems(t *testing
 	}
 	if withSeats.Items.Data[1].Price.ID != seatYearly.ID || withSeats.Items.Data[1].Quantity != 2 {
 		t.Fatalf("seat item = %#v, want additive seat item quantity 2", withSeats.Items.Data[1])
+	}
+}
+
+func TestInvoiceBackedOneTimePaymentFlow(t *testing.T) {
+	handler := newTestHandler(t)
+
+	type paymentIntentResponse struct {
+		ID               string `json:"id"`
+		Status           string `json:"status"`
+		ClientSecret     string `json:"client_secret"`
+		LastPaymentError *struct {
+			Code string `json:"code"`
+		} `json:"last_payment_error"`
+		Metadata map[string]string `json:"metadata"`
+	}
+	type invoiceResponse struct {
+		ID                 string            `json:"id"`
+		Object             string            `json:"object"`
+		Customer           string            `json:"customer"`
+		Status             string            `json:"status"`
+		AmountDue          int64             `json:"amount_due"`
+		AmountPaid         int64             `json:"amount_paid"`
+		Currency           string            `json:"currency"`
+		HostedInvoiceURL   string            `json:"hosted_invoice_url"`
+		InvoicePDF         string            `json:"invoice_pdf"`
+		PaymentIntent      string            `json:"payment_intent"`
+		Metadata           map[string]string `json:"metadata"`
+		ConfirmationSecret *struct {
+			ClientSecret string `json:"client_secret"`
+		} `json:"confirmation_secret"`
+		Payments struct {
+			Data []struct {
+				Status  string `json:"status"`
+				Payment struct {
+					PaymentIntent paymentIntentResponse `json:"payment_intent"`
+				} `json:"payment"`
+			} `json:"data"`
+		} `json:"payments"`
+	}
+	createInvoice := func(t *testing.T, customerID string) invoiceResponse {
+		t.Helper()
+		invoice := postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":                       {customerID},
+			"currency":                       {"usd"},
+			"collection_method":              {"charge_automatically"},
+			"default_payment_method":         {"pm_card_visa"},
+			"description":                    {"One-time usage"},
+			"auto_advance":                   {"false"},
+			"pending_invoice_items_behavior": {"exclude"},
+			"payment_settings[payment_method_types][0]": {"card"},
+			"metadata[paymentType]":                     {"EXTRA_USAGE"},
+			"metadata[accountId]":                       {"acct_local"},
+			"metadata[exportRequestHash]":               {"hash_local"},
+		})
+		postForm[struct {
+			ID       string            `json:"id"`
+			Metadata map[string]string `json:"metadata"`
+		}](t, handler, "/v1/invoiceitems", url.Values{
+			"customer":                 {customerID},
+			"invoice":                  {invoice.ID},
+			"amount":                   {"100"},
+			"currency":                 {"usd"},
+			"description":              {"One-time usage"},
+			"metadata[paymentType]":    {"EXTRA_USAGE"},
+			"metadata[provisionRunId]": {"prov_local"},
+		})
+		return invoice
+	}
+
+	successCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"id": {"cus_invoice_success"}, "email": {"invoice-success@example.test"}})
+	successInvoice := createInvoice(t, successCustomer.ID)
+	finalized := postForm[invoiceResponse](t, handler, "/v1/invoices/"+successInvoice.ID+"/finalize", url.Values{
+		"expand[]": {"confirmation_secret"},
+	})
+	if finalized.Status != "open" || finalized.AmountDue != 100 || finalized.ConfirmationSecret == nil || finalized.ConfirmationSecret.ClientSecret == "" {
+		t.Fatalf("finalized invoice = %#v, want open invoice with confirmation secret", finalized)
+	}
+	paid := postForm[invoiceResponse](t, handler, "/v1/invoices/"+successInvoice.ID+"/pay", url.Values{
+		"expand[]": {"payments.data.payment.payment_intent"},
+	})
+	if paid.Status != "paid" || paid.AmountPaid != 100 || paid.AmountDue != 0 || paid.Currency != "usd" || paid.HostedInvoiceURL == "" || paid.InvoicePDF == "" {
+		t.Fatalf("paid invoice = %#v, want paid one-time invoice", paid)
+	}
+	if paid.Metadata["accountId"] != "acct_local" || paid.Metadata["paymentType"] != "EXTRA_USAGE" {
+		t.Fatalf("paid metadata = %#v, want invoice metadata preserved", paid.Metadata)
+	}
+	if len(paid.Payments.Data) != 1 || paid.Payments.Data[0].Payment.PaymentIntent.Status != "succeeded" || paid.Payments.Data[0].Payment.PaymentIntent.ClientSecret == "" {
+		t.Fatalf("paid payments = %#v, want expanded succeeded payment intent", paid.Payments.Data)
+	}
+
+	failCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"id":    {"cus_invoice_fail"},
+		"email": {"invoice-fail@example.test"},
+		"metadata[default_payment_intent_outcome]": {"card_declined"},
+	})
+	failInvoice := createInvoice(t, failCustomer.ID)
+	_ = postForm[invoiceResponse](t, handler, "/v1/invoices/"+failInvoice.ID+"/finalize", nil)
+	failed := postForm[invoiceResponse](t, handler, "/v1/invoices/"+failInvoice.ID+"/pay", url.Values{
+		"expand[]": {"payments.data.payment.payment_intent"},
+	})
+	if failed.Status != "open" || failed.AmountPaid != 0 || failed.AmountDue != 100 || len(failed.Payments.Data) != 1 {
+		t.Fatalf("failed invoice = %#v, want open invoice with amount due", failed)
+	}
+	failedPI := failed.Payments.Data[0].Payment.PaymentIntent
+	if failedPI.Status != "requires_payment_method" || failedPI.LastPaymentError == nil || failedPI.LastPaymentError.Code != "card_declined" {
+		t.Fatalf("failed payment intent = %#v, want card_declined", failedPI)
+	}
+
+	actionCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"id":    {"cus_invoice_action"},
+		"email": {"invoice-action@example.test"},
+		"metadata[default_payment_intent_outcome]": {"requires_action"},
+	})
+	actionInvoice := createInvoice(t, actionCustomer.ID)
+	_ = postForm[invoiceResponse](t, handler, "/v1/invoices/"+actionInvoice.ID+"/finalize", nil)
+	action := postForm[invoiceResponse](t, handler, "/v1/invoices/"+actionInvoice.ID+"/pay", url.Values{
+		"expand[]": {"payments.data.payment.payment_intent"},
+	})
+	if action.Status != "open" || len(action.Payments.Data) != 1 || action.Payments.Data[0].Payment.PaymentIntent.Status != "requires_action" || action.ConfirmationSecret == nil || action.ConfirmationSecret.ClientSecret == "" {
+		t.Fatalf("requires-action invoice = %#v, want open invoice with requires_action intent and confirmation secret", action)
 	}
 }
 

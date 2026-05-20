@@ -844,6 +844,16 @@ func builtinCorpus() []caseSpec {
 			Run:             runInvoicePayRetry("pm_card_visa_chargeDeclined", "open"),
 		},
 		{
+			ID:              "invoices.one_time_invoice_flow.succeeds",
+			Name:            "Manual invoice-backed one-time payment succeeds",
+			Category:        "billing-lifecycle",
+			Level:           "L3",
+			ReleaseBlocking: true,
+			Reference:       "docs/COMPATIBILITY.md#supported-stripe-like-api-subset",
+			Expect:          Observation{HTTPStatus: http.StatusOK, Object: "invoice", ObjectStatus: "paid"},
+			Run:             runOneTimeInvoiceFlow(),
+		},
+		{
 			ID:              "scenarios.invoice_retry.mutates_state",
 			Name:            "Scenario invoice.retry mutates invoice, subscription, and payment intent state",
 			Category:        "billing-lifecycle",
@@ -1239,6 +1249,90 @@ func runInvoicePayRetry(paymentMethod string, expectedStatus string) func(contex
 		}
 		if expectedStatus == "paid" && responseNumber(pay.Response.JSON, "amount_due") != 0 {
 			return execution, fmt.Errorf("paid invoice has non-zero amount_due")
+		}
+		execution.Actual = *pay.Actual
+		return execution, nil
+	}
+}
+
+func runOneTimeInvoiceFlow() func(context.Context, *harness) (caseExecution, error) {
+	return func(_ context.Context, h *harness) (caseExecution, error) {
+		specs := []requestSpec{
+			{
+				Name:   "create customer",
+				Method: http.MethodPost,
+				Path:   "/v1/customers",
+				Params: map[string]string{
+					"id":    "cus_scorecard_one_time_invoice",
+					"email": "scorecard-one-time-invoice@example.test",
+				},
+				ExpectHTTPStatus: http.StatusOK,
+			},
+			{
+				Name:   "create invoice",
+				Method: http.MethodPost,
+				Path:   "/v1/invoices",
+				Params: map[string]string{
+					"customer":                       "cus_scorecard_one_time_invoice",
+					"currency":                       "usd",
+					"collection_method":              "charge_automatically",
+					"auto_advance":                   "false",
+					"pending_invoice_items_behavior": "exclude",
+					"payment_settings[payment_method_types][0]": "card",
+					"metadata[paymentType]":                     "ONE_TIME",
+				},
+				ExpectHTTPStatus: http.StatusOK,
+			},
+		}
+		execution, err := h.runSteps(specs)
+		if err != nil {
+			return execution, err
+		}
+		invoiceID := stringField(execution.Steps[len(execution.Steps)-1].Response.JSON.(map[string]any), "id")
+		item, err := h.do(requestSpec{
+			Name:   "create invoice item",
+			Method: http.MethodPost,
+			Path:   "/v1/invoiceitems",
+			Params: map[string]string{
+				"customer":              "cus_scorecard_one_time_invoice",
+				"invoice":               invoiceID,
+				"amount":                "100",
+				"currency":              "usd",
+				"description":           "One-time usage",
+				"metadata[paymentType]": "ONE_TIME",
+			},
+			ExpectHTTPStatus: http.StatusOK,
+		})
+		execution.Steps = append(execution.Steps, item)
+		if err != nil {
+			return execution, err
+		}
+		finalize, err := h.do(requestSpec{
+			Name:             "finalize invoice",
+			Method:           http.MethodPost,
+			Path:             "/v1/invoices/" + invoiceID + "/finalize",
+			Params:           map[string]string{"expand[]": "confirmation_secret"},
+			ExpectHTTPStatus: http.StatusOK,
+		})
+		execution.Steps = append(execution.Steps, finalize)
+		if err != nil {
+			return execution, err
+		}
+		pay, err := h.do(requestSpec{
+			Name:   "pay invoice",
+			Method: http.MethodPost,
+			Path:   "/v1/invoices/" + invoiceID + "/pay",
+			Params: map[string]string{
+				"expand[]": "payments.data.payment.payment_intent",
+			},
+			ExpectHTTPStatus: http.StatusOK,
+		})
+		execution.Steps = append(execution.Steps, pay)
+		if err != nil {
+			return execution, err
+		}
+		if pay.Actual.ObjectStatus != "paid" || responseNumber(pay.Response.JSON, "amount_paid") != 100 {
+			return execution, fmt.Errorf("paid invoice status/amount = %q/%.0f, want paid/100", pay.Actual.ObjectStatus, responseNumber(pay.Response.JSON, "amount_paid"))
 		}
 		execution.Actual = *pay.Actual
 		return execution, nil

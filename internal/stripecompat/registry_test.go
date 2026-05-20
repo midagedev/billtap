@@ -8,8 +8,8 @@ import (
 func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	registry := DefaultRegistry()
 	claims := registry.Claims()
-	if len(claims) != 165 {
-		t.Fatalf("default claims = %d, want 165", len(claims))
+	if len(claims) != 172 {
+		t.Fatalf("default claims = %d, want 172", len(claims))
 	}
 
 	checkout, ok := registry.Lookup(http.MethodPost, "/v1/checkout/sessions")
@@ -44,6 +44,14 @@ func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	intentSearch, ok := registry.Lookup(http.MethodGet, "/v1/payment_intents/search")
 	if !ok || intentSearch.Level != "L3" || !intentSearch.Stateful {
 		t.Fatalf("payment intent search claim = %#v ok=%t, want L3 stateful", intentSearch, ok)
+	}
+	invoiceCreate, ok := registry.Lookup(http.MethodPost, "/v1/invoices")
+	if !ok || invoiceCreate.Level != "L3" || !invoiceCreate.Stateful {
+		t.Fatalf("invoice create claim = %#v ok=%t, want L3 stateful", invoiceCreate, ok)
+	}
+	invoiceItemCreate, ok := registry.Lookup(http.MethodPost, "/v1/invoiceitems")
+	if !ok || invoiceItemCreate.Level != "L3" || !invoiceItemCreate.Stateful {
+		t.Fatalf("invoiceitem create claim = %#v ok=%t, want L3 stateful", invoiceItemCreate, ok)
 	}
 
 	account, ok := registry.Lookup(http.MethodGet, "/v1/accounts/{account}")
