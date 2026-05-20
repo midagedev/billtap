@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added a manual invoice-backed one-time payment flow for local SaaS usage
+  charges, including `POST /v1/invoices`, `POST /v1/invoiceitems`,
+  `POST /v1/invoices/{id}/finalize`, metadata preservation, expanded
+  payment-intent evidence, and customer-level default outcomes for invoice pay.
+- Accepted Stripe-compatible `proration_date` on subscription updates and
+  retained subscription update billing/proration parameters as local evidence.
 - Added customer-level default PaymentIntent outcomes so fixture-seeded
   customers can drive confirmed one-time payment failures without changing
   app-created PaymentIntent metadata.

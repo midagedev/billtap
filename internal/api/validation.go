@@ -36,6 +36,7 @@ var (
 	promotionRestrictionParamRE = regexp.MustCompile(`^restrictions(\[[^\]]+\])+$`)
 	schedulePhaseParamRE        = regexp.MustCompile(`^phases\[\d+\]\[(start_date|end_date|iterations|items|plans)\].*$`)
 	invoicePreviewItemParamRE   = regexp.MustCompile(`^((subscription_details|subscriptionDetails)\[items\]\[\d+\]\[(id|price|price_id|quantity)\]|(subscription_items|items)\[\d+\]\[(id|price|price_id|quantity)\])$`)
+	invoicePaymentSettingsRE    = regexp.MustCompile(`^payment_settings(\[[^\]]+\])+$`)
 )
 
 var stripePaymentMethodTypes = []string{
@@ -731,6 +732,7 @@ func validateSubscriptionUpdate(p params) error {
 			"pause_collection[behavior]",
 			"pause_collection[resumes_at]",
 			"proration_behavior",
+			"proration_date",
 			"payment_behavior",
 			"billing_cycle_anchor",
 			"trial_end",
@@ -739,7 +741,7 @@ func validateSubscriptionUpdate(p params) error {
 		},
 		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE, discountParamRE},
 		BoolParams:   []string{"cancel_at_period_end"},
-		Int64Params:  []string{"pause_collection[resumes_at]"},
+		Int64Params:  []string{"pause_collection[resumes_at]", "proration_date"},
 		EnumParams: map[string][]string{
 			"pause_collection[behavior]": {"void", "keep_as_draft", "mark_uncollectible"},
 			"proration_behavior":         {"none", "create_prorations", "always_invoice"},
@@ -851,6 +853,58 @@ func validateInvoicePay(p params) error {
 			"source",
 		},
 		BoolParams: []string{"forgive", "off_session", "paid_out_of_band"},
+	})
+}
+
+func validateInvoiceCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"customer",
+			"currency",
+			"collection_method",
+			"default_payment_method",
+			"description",
+			"auto_advance",
+			"pending_invoice_items_behavior",
+		},
+		AllowedRegex: []*regexp.Regexp{invoicePaymentSettingsRE},
+		Required:     []string{"customer"},
+		BoolParams:   []string{"auto_advance"},
+		EnumParams: map[string][]string{
+			"collection_method":              {"charge_automatically", "send_invoice"},
+			"pending_invoice_items_behavior": {"exclude", "include"},
+		},
+		AllowMetadata: true,
+	})
+}
+
+func validateInvoiceItemCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"customer",
+			"invoice",
+			"amount",
+			"currency",
+			"description",
+		},
+		Required:      []string{"customer", "invoice", "amount", "currency"},
+		Int64Params:   []string{"amount"},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	if p.int64("amount") == 0 {
+		return invalidParam("amount", "Must be non-zero.")
+	}
+	return nil
+}
+
+func validateInvoiceFinalize(p params) error {
+	return p.validate(paramSpec{
+		Allowed:    []string{"auto_advance"},
+		BoolParams: []string{"auto_advance"},
 	})
 }
 

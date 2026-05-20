@@ -52,10 +52,16 @@ type Repository interface {
 	ListSubscriptions(context.Context) ([]Subscription, error)
 	ListSubscriptionsByCustomer(context.Context, string) ([]Subscription, error)
 	UpdateSubscription(context.Context, Subscription, []TimelineEntry) (Subscription, error)
+	CreateInvoice(context.Context, Invoice, []TimelineEntry) (Invoice, error)
 	GetInvoice(context.Context, string) (Invoice, error)
 	ListInvoices(context.Context) ([]Invoice, error)
 	ListInvoicesFiltered(context.Context, InvoiceFilter) ([]Invoice, error)
+	UpdateInvoice(context.Context, Invoice, []TimelineEntry) (Invoice, error)
+	CreateInvoiceItem(context.Context, InvoiceItem, Invoice, []TimelineEntry) (InvoiceItem, Invoice, error)
+	ListInvoiceItemsFiltered(context.Context, InvoiceItemFilter) ([]InvoiceItem, error)
+	FinalizeInvoice(context.Context, Invoice, PaymentIntent, []TimelineEntry) (Invoice, PaymentIntent, error)
 	UpdateInvoicePayment(context.Context, Subscription, Invoice, PaymentIntent, []TimelineEntry) (Subscription, Invoice, PaymentIntent, error)
+	UpdateManualInvoicePayment(context.Context, Invoice, PaymentIntent, []TimelineEntry) (Invoice, PaymentIntent, error)
 	RecordSubscriptionRenewal(context.Context, Subscription, Invoice, PaymentIntent, []TimelineEntry) (Subscription, Invoice, PaymentIntent, error)
 	GetPaymentIntent(context.Context, string) (PaymentIntent, error)
 	CreatePaymentIntent(context.Context, PaymentIntent) (PaymentIntent, error)
@@ -600,8 +606,172 @@ func (s *Service) GetInvoice(ctx context.Context, id string) (Invoice, error) {
 	return s.repo.GetInvoice(ctx, id)
 }
 
+func (s *Service) CreateInvoice(ctx context.Context, in Invoice) (Invoice, error) {
+	customerID := strings.TrimSpace(in.CustomerID)
+	if customerID == "" {
+		return Invoice{}, fmt.Errorf("%w: customer is required", ErrInvalidInput)
+	}
+	customer, err := s.repo.GetCustomer(ctx, customerID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	now := s.now()
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = id("in")
+	}
+	in.Object = ObjectInvoice
+	in.CustomerID = customer.ID
+	in.SubscriptionID = strings.TrimSpace(in.SubscriptionID)
+	in.Status = firstNonEmpty(strings.ToLower(strings.TrimSpace(in.Status)), "draft")
+	in.Currency = strings.ToLower(firstNonEmpty(strings.TrimSpace(in.Currency), "usd"))
+	in.Metadata = copyMap(in.Metadata)
+	in.Subtotal = 0
+	in.DiscountAmount = 0
+	in.Total = 0
+	in.AmountDue = 0
+	in.AmountPaid = 0
+	in.AttemptCount = 0
+	in.PaymentIntentID = ""
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = now
+	}
+	return s.repo.CreateInvoice(ctx, in, []TimelineEntry{billingTimelineEntry(
+		"invoice_created_"+in.ID,
+		"invoice.created",
+		"Invoice created",
+		ObjectInvoice,
+		in.ID,
+		in.CustomerID,
+		"",
+		in.SubscriptionID,
+		in.ID,
+		"",
+		map[string]string{"source": "invoice.create", "status": in.Status},
+		in.CreatedAt,
+	)})
+}
+
 func (s *Service) ListInvoices(ctx context.Context) ([]Invoice, error) {
 	return s.repo.ListInvoices(ctx)
+}
+
+func (s *Service) CreateInvoiceItem(ctx context.Context, in InvoiceItem) (InvoiceItem, Invoice, error) {
+	if strings.TrimSpace(in.InvoiceID) == "" {
+		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
+	}
+	if in.Amount == 0 {
+		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: amount is required", ErrInvalidInput)
+	}
+	invoice, err := s.repo.GetInvoice(ctx, in.InvoiceID)
+	if err != nil {
+		return InvoiceItem{}, Invoice{}, err
+	}
+	customerID := firstNonEmpty(strings.TrimSpace(in.CustomerID), invoice.CustomerID)
+	if customerID != invoice.CustomerID {
+		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: customer must match invoice customer", ErrInvalidInput)
+	}
+	if _, err := s.repo.GetCustomer(ctx, customerID); err != nil {
+		return InvoiceItem{}, Invoice{}, err
+	}
+	now := s.now()
+	if strings.TrimSpace(in.ID) == "" {
+		in.ID = id("ii")
+	}
+	in.Object = ObjectInvoiceItem
+	in.CustomerID = customerID
+	in.Currency = strings.ToLower(firstNonEmpty(strings.TrimSpace(in.Currency), invoice.Currency, "usd"))
+	in.Metadata = copyMap(in.Metadata)
+	if in.CreatedAt.IsZero() {
+		in.CreatedAt = now
+	}
+	invoice.Subtotal += in.Amount
+	invoice.Total += in.Amount
+	if invoice.Total < 0 {
+		invoice.Total = 0
+	}
+	invoice.AmountDue = invoice.Total - invoice.AmountPaid
+	if invoice.AmountDue < 0 {
+		invoice.AmountDue = 0
+	}
+	invoice.Currency = firstNonEmpty(invoice.Currency, in.Currency)
+	createdItem, updatedInvoice, err := s.repo.CreateInvoiceItem(ctx, in, invoice, []TimelineEntry{billingTimelineEntry(
+		"invoiceitem_created_"+in.ID,
+		"invoiceitem.created",
+		"Invoice item created",
+		ObjectInvoiceItem,
+		in.ID,
+		in.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoiceitem.create", "amount": strconv.FormatInt(in.Amount, 10), "currency": in.Currency},
+		in.CreatedAt,
+	)})
+	return createdItem, updatedInvoice, err
+}
+
+func (s *Service) ListInvoiceItems(ctx context.Context, filter InvoiceItemFilter) ([]InvoiceItem, error) {
+	return s.repo.ListInvoiceItemsFiltered(ctx, filter)
+}
+
+func (s *Service) FinalizeInvoice(ctx context.Context, invoiceID string) (InvoicePaymentResult, error) {
+	if strings.TrimSpace(invoiceID) == "" {
+		return InvoicePaymentResult{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
+	}
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	if invoice.Status != "draft" {
+		var intent PaymentIntent
+		if invoice.PaymentIntentID != "" {
+			intent, _ = s.repo.GetPaymentIntent(ctx, invoice.PaymentIntentID)
+		}
+		return InvoicePaymentResult{Invoice: invoice, PaymentIntent: intent}, nil
+	}
+	at := s.now()
+	invoice.Status = "open"
+	invoice.AmountDue = invoice.Total
+	invoice.AmountPaid = 0
+	invoice.NextPaymentAttempt = nil
+	invoice.AttemptCount = 0
+	intent := PaymentIntent{
+		ID:            id("pi"),
+		Object:        ObjectPaymentIntent,
+		CustomerID:    invoice.CustomerID,
+		InvoiceID:     invoice.ID,
+		Amount:        invoice.Total,
+		Currency:      invoice.Currency,
+		Status:        "requires_payment_method",
+		CaptureMethod: "automatic",
+		Metadata:      copyMap(invoice.Metadata),
+		CreatedAt:     at,
+	}
+	if paymentIntentConfiguredOutcome(intent.Metadata) == "" && invoice.CustomerID != "" {
+		if customer, err := s.repo.GetCustomer(ctx, invoice.CustomerID); err == nil {
+			if outcome := CustomerDefaultPaymentIntentOutcome(customer.Metadata); outcome != "" {
+				if intent.Metadata == nil {
+					intent.Metadata = map[string]string{}
+				}
+				intent.Metadata[MetadataPaymentIntentOutcome] = outcome
+			}
+		}
+	}
+	if outcome := paymentIntentConfiguredOutcome(intent.Metadata); outcome != "" && !IsSupportedPaymentIntentOutcome(outcome) {
+		return InvoicePaymentResult{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
+	}
+	invoice.PaymentIntentID = intent.ID
+	invoice.Metadata = copyMap(invoice.Metadata)
+	invoice.Metadata["billtap_finalized_at"] = at.Format(time.RFC3339Nano)
+	updatedInvoice, createdIntent, err := s.repo.FinalizeInvoice(ctx, invoice, intent, []TimelineEntry{
+		billingTimelineEntry("invoice_finalized_"+invoice.ID, "invoice.finalized", "Invoice finalized", ObjectInvoice, invoice.ID, invoice.CustomerID, "", invoice.SubscriptionID, invoice.ID, intent.ID, map[string]string{"source": "invoice.finalize", "status": invoice.Status}, at),
+		billingTimelineEntry("invoice_payment_intent_created_"+intent.ID, "payment_intent.created", "Invoice payment intent created", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", invoice.SubscriptionID, invoice.ID, intent.ID, map[string]string{"source": "invoice.finalize", "status": intent.Status}, at),
+	})
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	return InvoicePaymentResult{Invoice: updatedInvoice, PaymentIntent: createdIntent}, nil
 }
 
 func (s *Service) PayInvoice(ctx context.Context, invoiceID string, opts InvoicePaymentOptions) (InvoicePaymentResult, error) {
@@ -615,6 +785,9 @@ func (s *Service) PayInvoice(ctx context.Context, invoiceID string, opts Invoice
 	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
 	if err != nil {
 		return InvoicePaymentResult{}, err
+	}
+	if invoice.SubscriptionID == "" {
+		return s.payManualInvoice(ctx, invoice, opts, at)
 	}
 	subscription, err := s.repo.GetSubscription(ctx, invoice.SubscriptionID)
 	if err != nil {
@@ -684,6 +857,82 @@ func (s *Service) PayInvoice(ctx context.Context, invoiceID string, opts Invoice
 		return InvoicePaymentResult{}, err
 	}
 	return InvoicePaymentResult{Invoice: invoice, Subscription: subscription, PaymentIntent: intent}, nil
+}
+
+func (s *Service) payManualInvoice(ctx context.Context, invoice Invoice, opts InvoicePaymentOptions, at time.Time) (InvoicePaymentResult, error) {
+	if invoice.Status == "draft" {
+		finalized, err := s.FinalizeInvoice(ctx, invoice.ID)
+		if err != nil {
+			return InvoicePaymentResult{}, err
+		}
+		invoice = finalized.Invoice
+	}
+	if invoice.Status != "open" {
+		return InvoicePaymentResult{}, fmt.Errorf("%w: status must be open", ErrInvalidInput)
+	}
+	intent, err := s.repo.GetPaymentIntent(ctx, invoice.PaymentIntentID)
+	if err != nil {
+		return InvoicePaymentResult{}, err
+	}
+	configuredOutcome := paymentIntentConfiguredOutcome(intent.Metadata)
+	outcome := firstNonEmpty(opts.Outcome, configuredOutcome)
+	if opts.PaidOutOfBand {
+		outcome = "payment_succeeded"
+	}
+	if outcome == "" && invoice.CustomerID != "" {
+		if customer, err := s.repo.GetCustomer(ctx, invoice.CustomerID); err == nil {
+			outcome = CustomerDefaultPaymentIntentOutcome(customer.Metadata)
+		}
+	}
+	outcome = firstNonEmpty(outcome, opts.PaymentMethodID, "payment_succeeded")
+	spec, ok := intentOutcomeSpec(outcome)
+	if !ok {
+		return InvoicePaymentResult{}, fmt.Errorf("%w: %s", ErrUnsupportedOutcome, outcome)
+	}
+	if opts.PaymentMethodID != "" {
+		intent.PaymentMethodID = opts.PaymentMethodID
+	}
+	intent.PaymentMethodID = firstNonEmpty(intent.PaymentMethodID, spec.PaymentMethodID)
+	intent.Status = spec.PaymentIntentStatus
+	intent.FailureCode = spec.FailureCode
+	intent.DeclineCode = spec.DeclineCode
+	intent.FailureMessage = spec.FailureMessage
+	invoice.AttemptCount++
+	if invoice.AttemptCount <= 0 {
+		invoice.AttemptCount = 1
+	}
+	if intent.Status == "succeeded" {
+		invoice.Status = "paid"
+		invoice.AmountPaid = invoice.Total
+		invoice.AmountDue = 0
+		invoice.NextPaymentAttempt = nil
+		intent.FailureCode = ""
+		intent.DeclineCode = ""
+		intent.FailureMessage = ""
+	} else {
+		invoice.Status = "open"
+		invoice.AmountPaid = 0
+		invoice.AmountDue = invoice.Total
+		nextAttempt := at.Add(24 * time.Hour)
+		invoice.NextPaymentAttempt = &nextAttempt
+	}
+	invoice.Metadata = copyMap(invoice.Metadata)
+	invoice.Metadata["billtap_last_invoice_payment_attempt"] = at.Format(time.RFC3339Nano)
+	invoice.Metadata["billtap_last_invoice_payment_outcome"] = outcome
+	timeline := []TimelineEntry{
+		billingTimelineEntry("manual_invoice_payment_intent_"+intent.ID+"_"+at.Format(time.RFC3339Nano), paymentIntentEvent(intent.Status), "Invoice payment intent "+intent.Status, ObjectPaymentIntent, intent.ID, intent.CustomerID, "", "", invoice.ID, intent.ID, map[string]string{"source": "invoice.pay", "status": intent.Status, "outcome": outcome}, at),
+	}
+	for _, eventType := range invoiceEventTypesForPayment(invoice.Status, intent.Status) {
+		timeline = append(timeline, billingTimelineEntry("manual_invoice_"+eventType+"_"+invoice.ID+"_"+at.Format(time.RFC3339Nano), eventType, "Invoice "+invoice.Status, ObjectInvoice, invoice.ID, invoice.CustomerID, "", "", invoice.ID, intent.ID, map[string]string{"source": "invoice.pay", "status": invoice.Status, "outcome": outcome}, at))
+	}
+	updatedInvoice, updatedIntent, err := s.repo.UpdateManualInvoicePayment(ctx, invoice, intent, timeline)
+	if err != nil {
+		if errors.Is(err, ErrInvalidInput) {
+			return InvoicePaymentResult{}, fmt.Errorf("%w: status must be open or payment attempt is stale", ErrInvalidInput)
+		}
+		return InvoicePaymentResult{}, err
+	}
+	return InvoicePaymentResult{Invoice: updatedInvoice, PaymentIntent: updatedIntent}, nil
 }
 
 func (s *Service) AdvanceClock(ctx context.Context, at time.Time) (ClockAdvanceResult, error) {
@@ -2391,6 +2640,22 @@ func paymentIntentEvent(status string) string {
 		return "payment_intent.amount_capturable_updated"
 	default:
 		return "payment_intent.payment_failed"
+	}
+}
+
+func invoiceEventTypesForPayment(status string, paymentIntentStatus string) []string {
+	switch status {
+	case "paid":
+		return []string{"invoice.payment_succeeded", "invoice.paid"}
+	case "void":
+		return []string{"invoice.voided"}
+	case "open":
+		if paymentIntentStatus == "processing" {
+			return nil
+		}
+		return []string{"invoice.payment_failed"}
+	default:
+		return []string{"invoice.payment_failed"}
 	}
 }
 

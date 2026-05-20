@@ -9,6 +9,7 @@ const (
 	ObjectCheckoutSession  = "checkout.session"
 	ObjectSubscription     = "subscription"
 	ObjectInvoice          = "invoice"
+	ObjectInvoiceItem      = "invoiceitem"
 	ObjectPaymentIntent    = "payment_intent"
 	ObjectSetupIntent      = "setup_intent"
 	ObjectTestClock        = "test_helpers.test_clock"
@@ -128,22 +129,35 @@ type Subscription struct {
 }
 
 type Invoice struct {
-	ID                 string     `json:"id"`
-	Object             string     `json:"object"`
-	CustomerID         string     `json:"customer"`
-	SubscriptionID     string     `json:"subscription,omitempty"`
-	Status             string     `json:"status"`
-	Currency           string     `json:"currency"`
-	Subtotal           int64      `json:"subtotal"`
-	DiscountAmount     int64      `json:"discount_amount,omitempty"`
-	Discounts          []Discount `json:"discounts,omitempty"`
-	Total              int64      `json:"total"`
-	AmountDue          int64      `json:"amount_due"`
-	AmountPaid         int64      `json:"amount_paid"`
-	AttemptCount       int        `json:"attempt_count"`
-	NextPaymentAttempt *time.Time `json:"next_payment_attempt,omitempty"`
-	PaymentIntentID    string     `json:"payment_intent,omitempty"`
-	CreatedAt          time.Time  `json:"created_at"`
+	ID                 string            `json:"id"`
+	Object             string            `json:"object"`
+	CustomerID         string            `json:"customer"`
+	SubscriptionID     string            `json:"subscription,omitempty"`
+	Status             string            `json:"status"`
+	Currency           string            `json:"currency"`
+	Subtotal           int64             `json:"subtotal"`
+	DiscountAmount     int64             `json:"discount_amount,omitempty"`
+	Discounts          []Discount        `json:"discounts,omitempty"`
+	Total              int64             `json:"total"`
+	AmountDue          int64             `json:"amount_due"`
+	AmountPaid         int64             `json:"amount_paid"`
+	AttemptCount       int               `json:"attempt_count"`
+	NextPaymentAttempt *time.Time        `json:"next_payment_attempt,omitempty"`
+	PaymentIntentID    string            `json:"payment_intent,omitempty"`
+	Metadata           map[string]string `json:"metadata,omitempty"`
+	CreatedAt          time.Time         `json:"created_at"`
+}
+
+type InvoiceItem struct {
+	ID          string            `json:"id"`
+	Object      string            `json:"object"`
+	CustomerID  string            `json:"customer"`
+	InvoiceID   string            `json:"invoice"`
+	Amount      int64             `json:"amount"`
+	Currency    string            `json:"currency"`
+	Description string            `json:"description,omitempty"`
+	Metadata    map[string]string `json:"metadata,omitempty"`
+	CreatedAt   time.Time         `json:"created_at"`
 }
 
 type InvoicePaymentOptions struct {
@@ -316,6 +330,11 @@ type SubscriptionFilter struct {
 type InvoiceFilter struct {
 	CustomerID     string
 	SubscriptionID string
+}
+
+type InvoiceItemFilter struct {
+	CustomerID string
+	InvoiceID  string
 }
 
 type PaymentIntentFilter struct {
