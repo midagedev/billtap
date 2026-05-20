@@ -848,9 +848,11 @@ func validateInvoicePay(p params) error {
 			"forgive",
 			"mandate",
 			"off_session",
+			"outcome",
 			"paid_out_of_band",
 			"payment_method",
 			"source",
+			"billtap_outcome",
 		},
 		BoolParams: []string{"forgive", "off_session", "paid_out_of_band"},
 	})

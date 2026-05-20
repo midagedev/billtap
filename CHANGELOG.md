@@ -6,6 +6,8 @@
   charges, including `POST /v1/invoices`, `POST /v1/invoiceitems`,
   `POST /v1/invoices/{id}/finalize`, metadata preservation, expanded
   payment-intent evidence, and customer-level default outcomes for invoice pay.
+- Fixed invoice pay requests so a submitted payment method no longer overrides
+  a configured invoice-backed PaymentIntent outcome.
 - Accepted Stripe-compatible `proration_date` on subscription updates and
   retained subscription update billing/proration parameters as local evidence.
 - Added customer-level default PaymentIntent outcomes so fixture-seeded
