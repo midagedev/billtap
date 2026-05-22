@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Added multi-workspace support so one running server can hold several fully
+  isolated billing datasets. Requests select a workspace with the
+  `X-Billtap-Workspace` header or `workspace` query parameter, unselected
+  requests keep using the backward-compatible `default` workspace, named
+  workspaces open their own SQLite database lazily under `workspaces/`, and
+  `GET /workspaces` lists the known workspaces.
 - Added a manual invoice-backed one-time payment flow for local SaaS usage
   charges, including `POST /v1/invoices`, `POST /v1/invoiceitems`,
   `POST /v1/invoices/{id}/finalize`, metadata preservation, expanded

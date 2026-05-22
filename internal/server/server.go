@@ -2,6 +2,7 @@ package server
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -21,20 +22,31 @@ type Options struct {
 }
 
 type Server struct {
-	cfg   config.Config
-	store storage.Store
-	mux   *http.ServeMux
+	cfg        config.Config
+	store      storage.Store
+	mux        *http.ServeMux
+	workspaces *workspaceManager
 }
 
-func New(opts Options) http.Handler {
+func New(opts Options) *Server {
 	s := &Server{
 		cfg:   opts.Config,
 		store: opts.Store,
 		mux:   http.NewServeMux(),
 	}
 	s.cfg.PublicBasePath = config.NormalizePublicBasePath(s.cfg.PublicBasePath)
+	s.workspaces = newWorkspaceManager(s.cfg, s.store, s.buildAPIHandler)
 	s.routes()
 	return s
+}
+
+// Close releases workspace storage opened on demand. The default store passed
+// via Options is owned by the caller and is not closed here.
+func (s *Server) Close() error {
+	if s.workspaces == nil {
+		return nil
+	}
+	return s.workspaces.Close()
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -58,28 +70,11 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) routes() {
-	if repo, ok := s.store.(billing.Repository); ok {
-		var webhookService *webhooks.Service
-		if webhookRepo, ok := s.store.(webhooks.Repository); ok {
-			webhookService = webhooks.NewServiceWithOptions(webhookRepo, webhooks.ServiceOptions{
-				StoreRawPayloads:    s.cfg.RawPayloadStorage != config.RawPayloadMetadataOnly,
-				RetentionDays:       s.cfg.RetentionDays,
-				SignatureHeaderName: s.cfg.WebhookSignatureHeader,
-				APIVersion:          s.cfg.WebhookAPIVersion,
-			})
-		}
-		var diagnosticsService *diagnostics.Service
-		if diagnosticsRepo, ok := s.store.(diagnostics.Repository); ok {
-			diagnosticsService = diagnostics.NewService(diagnosticsRepo)
-		}
-		handler := api.New(api.Options{
-			Billing:       billing.NewService(repo),
-			Webhooks:      webhookService,
-			Diagnostics:   diagnosticsService,
-			PublicBaseURL: publicBaseURLWithPath(s.cfg.PublicBaseURL, s.cfg.PublicBasePath),
-		})
-		s.mux.Handle("/v1/", handler)
-		s.mux.Handle("/api/", handler)
+	if s.workspaces.apiEnabled {
+		apiHandler := s.workspaces.handler()
+		s.mux.Handle("/v1/", apiHandler)
+		s.mux.Handle("/api/", apiHandler)
+		s.mux.HandleFunc("/workspaces", s.handleWorkspaces)
 	}
 	s.mux.HandleFunc("/", s.handleRoot)
 	s.mux.HandleFunc("/health", s.handleHealth)
@@ -91,6 +86,54 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/portal", s.handleHostedPortal)
 	s.mux.HandleFunc("/portal/", s.handleHostedPortal)
 	s.mux.HandleFunc("/assets/", s.handleAssets)
+}
+
+// buildAPIHandler assembles the Stripe-like API handler for a single
+// workspace store. It is invoked once per workspace by the workspace manager.
+func (s *Server) buildAPIHandler(store storage.Store) (http.Handler, error) {
+	repo, ok := store.(billing.Repository)
+	if !ok {
+		return nil, errors.New("storage backend does not implement the billing repository")
+	}
+	var webhookService *webhooks.Service
+	if webhookRepo, ok := store.(webhooks.Repository); ok {
+		webhookService = webhooks.NewServiceWithOptions(webhookRepo, webhooks.ServiceOptions{
+			StoreRawPayloads:    s.cfg.RawPayloadStorage != config.RawPayloadMetadataOnly,
+			RetentionDays:       s.cfg.RetentionDays,
+			SignatureHeaderName: s.cfg.WebhookSignatureHeader,
+			APIVersion:          s.cfg.WebhookAPIVersion,
+		})
+	}
+	var diagnosticsService *diagnostics.Service
+	if diagnosticsRepo, ok := store.(diagnostics.Repository); ok {
+		diagnosticsService = diagnostics.NewService(diagnosticsRepo)
+	}
+	return api.New(api.Options{
+		Billing:       billing.NewService(repo),
+		Webhooks:      webhookService,
+		Diagnostics:   diagnosticsService,
+		PublicBaseURL: publicBaseURLWithPath(s.cfg.PublicBaseURL, s.cfg.PublicBasePath),
+	}), nil
+}
+
+func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	names := s.workspaces.list()
+	data := make([]map[string]any, 0, len(names))
+	for _, name := range names {
+		data = append(data, map[string]any{
+			"object":     "workspace",
+			"name":       name,
+			"is_default": name == DefaultWorkspace,
+		})
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   data,
+	})
 }
 
 func (s *Server) handleRoot(w http.ResponseWriter, r *http.Request) {

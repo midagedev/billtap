@@ -81,6 +81,11 @@ Fixture ergonomics for integration tests:
 - assert expected objects through `POST /api/fixtures/assert`
 - keep fixture IDs stable for customer, product, and price setup
 - use fixture `runId`, `namespace`, `tenantId`, and `ref` metadata to isolate repeated local/CI runs
+- for stronger isolation, run parallel suites against separate Billtap
+  workspaces instead of restarting the server between sets: send
+  `X-Billtap-Workspace: <name>` (or `?workspace=<name>`) so each suite gets an
+  independent dataset, while unselected requests keep using the `default`
+  workspace; `GET /workspaces` lists what exists
 
 Integration diagnostics for failed app runs:
 

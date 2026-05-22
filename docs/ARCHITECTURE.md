@@ -67,7 +67,14 @@ Initial default:
 - SQLite for local app state
 - in-memory option for unit tests
 
-Tables:
+One running server can host several isolated billing datasets. The implicit
+`default` workspace is backed by the configured `database_url`; each named
+workspace (selected per request via the `X-Billtap-Workspace` header or
+`workspace` query parameter) opens its own SQLite database lazily under a
+sibling `workspaces/` directory and gets an independent API handler, so its
+billing state, webhooks, idempotency keys, and test clocks stay isolated.
+
+Tables (per workspace):
 
 - customers
 - products
