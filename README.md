@@ -167,6 +167,37 @@ calls are prefix-aware:
 The published GHCR image is runtime-prefix safe. You do not need to rebuild the
 frontend for each mount path.
 
+## Workspaces
+
+Billtap can hold several fully isolated billing datasets in one running server,
+so parallel test suites do not have to restart Billtap or reset shared state
+between runs.
+
+- Requests with no workspace selector use the `default` workspace, backed by
+  the configured `database_url`. Existing integrations keep working unchanged.
+- Name a workspace to get an independent dataset (its own customers, invoices,
+  webhooks, idempotency keys, and test clocks). It is created on first use.
+- Select a workspace with the `X-Billtap-Workspace` request header or the
+  `workspace` query parameter. The resolved name is echoed on the
+  `X-Billtap-Workspace` response header.
+
+```bash
+# default workspace (backward compatible)
+curl http://localhost:8080/v1/customers
+
+# isolated dataset for one test suite
+curl -H 'X-Billtap-Workspace: suite-a' http://localhost:8080/v1/customers
+curl 'http://localhost:8080/v1/customers?workspace=suite-a'
+
+# list known workspaces
+curl http://localhost:8080/workspaces
+```
+
+Workspace names accept letters, digits, `.`, `-`, and `_`, must start with a
+letter or digit, and are case-insensitive. Each named workspace is stored next
+to the default database under a `workspaces/` directory (for example
+`.billtap/workspaces/suite-a.db`).
+
 ## Fixture And Assertion APIs
 
 Billtap includes local integration-test helpers:

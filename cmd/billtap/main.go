@@ -59,9 +59,16 @@ func main() {
 		}
 	}()
 
+	appServer := server.New(server.Options{Config: cfg, Store: store})
+	defer func() {
+		if err := appServer.Close(); err != nil {
+			slog.Warn("close workspaces", "error", err)
+		}
+	}()
+
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           server.New(server.Options{Config: cfg, Store: store}),
+		Handler:           appServer,
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 
