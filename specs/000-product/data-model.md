@@ -1,5 +1,11 @@
 # Data Model
 
+All entities below are scoped to a single workspace. A server hosts the
+implicit `default` workspace plus any named workspaces; each workspace has its
+own isolated store, so the same entity id may exist independently in different
+workspaces. Workspaces are an instance-level partition and are not themselves
+persisted rows — see `contracts/api.md` for selection and listing.
+
 ## Customer
 
 - id

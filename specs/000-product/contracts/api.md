@@ -16,6 +16,26 @@ Process health.
 
 Storage and worker readiness.
 
+## Workspaces
+
+One running server can host several isolated billing datasets. Every `/v1`
+and `/api` request resolves a workspace before dispatch:
+
+- A request with no selector uses the `default` workspace, backed by the
+  configured `database_url`. This keeps existing integrations unchanged.
+- A request may select a named workspace with the `X-Billtap-Workspace`
+  request header or the `workspace` query parameter. Named workspaces are
+  created on first use, have their own storage, and are isolated from each
+  other and from `default`.
+- The resolved workspace name is returned on the `X-Billtap-Workspace`
+  response header. An invalid workspace name returns `400`.
+
+### `GET /workspaces`
+
+Lists known workspaces (the default, any opened this session, and any whose
+database file already exists). Returns a `list` envelope of `workspace`
+objects with `name` and `is_default`.
+
 ## Stripe-like API
 
 ### Customers
