@@ -87,10 +87,12 @@ documentation before it counts as implemented.
 
 ## Supported Stripe-Like API Subset
 
-Base path: `/v1`. When `PUBLIC_BASE_PATH` or `BILLTAP_PUBLIC_BASE_PATH` is set,
-or a proxy sends `X-Forwarded-Prefix`, the same API is available below that
-browser-facing prefix, such as `/billtap/v1`. Internal service traffic can keep
-using the unprefixed service URL.
+Base path: `/v1`. A parallel test run can scope the same Stripe-like API under
+`/runs/<runId>/v1`; unscoped requests use the backward-compatible `default`
+run. When `PUBLIC_BASE_PATH` or `BILLTAP_PUBLIC_BASE_PATH` is set, or a proxy
+sends `X-Forwarded-Prefix`, the same API is available below that browser-facing
+prefix, such as `/billtap/v1` or `/billtap/runs/<runId>/v1`. Internal service
+traffic can keep using the unprefixed service URL.
 
 | Resource                | Endpoints                                                                                                                                                           | Level            | Scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -120,6 +122,10 @@ using the unprefixed service URL.
 | Webhook endpoints       | `POST /v1/webhook_endpoints`, `GET /v1/webhook_endpoints`, `GET /v1/webhook_endpoints/{id}`, `POST /v1/webhook_endpoints/{id}`, `PATCH /v1/webhook_endpoints/{id}`, `DELETE /v1/webhook_endpoints/{id}`, `GET /v1/webhook_endpoints/{id}/attempts` | Supported        | Manage local webhook endpoints and inspect endpoint-scoped delivery attempts. Secrets are generated when omitted and masked in API responses. `enabled_events` supports exact event names, `*`, and prefix wildcards such as `invoice.*`. `PATCH` accepts the same local mutable fields as `POST`, including the `enabled` alias for `active`.                                                                                                                         |
 | Events                  | `GET /v1/events`, `GET /v1/events/{id}`                                                                                                                             | Supported        | List and retrieve Billtap-created events. Filters include `type`, `scenarioRunId`, `created[gte]`, `created[gt]`, `created[lte]`, `created[lt]`, `data.object.customer`, and `data.object.metadata[key]`.                                                                                                                                                                                                                                                              |
 
+All list and search endpoints are scoped by the selected run. Webhook endpoints
+registered through `/runs/<runId>/v1/webhook_endpoints` receive only events
+emitted in that run, and local test clocks are isolated the same way.
+
 ## Billtap APIs
 
 Base path: `/api`
@@ -135,6 +141,10 @@ Base path: `/api`
 | Fixtures           | `POST /api/fixtures/apply`, `POST /api/fixtures/validate`, `GET /api/fixtures/resolve`, `GET /api/fixtures/snapshot`, `POST /api/fixtures/assert`                                                                                                                                                        | Data-driven setup and dry-run validation APIs for customers, connected accounts, products, prices, test clocks, subscription graphs, invoices, payment intents, refunds, credit notes, disputes, and timeline evidence. |
 | Scenarios          | `POST /api/scenarios/run`                                                                                                                                                                                                                                                                               | Runs a scenario JSON object or YAML payload and returns the scenario report.                                                                 |
 | Boundary controls  | `GET /api/audit-log`, `POST /api/retention/apply`                                                                                                                                                                                                                                                       | Audit and retention controls for replay, delivery overrides, and raw evidence redaction.                                                     |
+
+Billtap-only `/api` endpoints are also available under `/runs/<runId>/api` for
+run-scoped checkout completion, fixture apply/snapshot/assert, diagnostics, and
+webhook replay workflows.
 
 ## Webhook Compatibility Claim
 

@@ -75,6 +75,8 @@ func (s *Server) routes() {
 		s.mux.Handle("/v1/", apiHandler)
 		s.mux.Handle("/api/", apiHandler)
 		s.mux.HandleFunc("/workspaces", s.handleWorkspaces)
+		s.mux.HandleFunc("/admin/runs", s.handleAdminRuns)
+		s.mux.HandleFunc("/runs/", s.handleRun)
 	}
 	s.mux.HandleFunc("/", s.handleRoot)
 	s.mux.HandleFunc("/health", s.handleHealth)
@@ -86,6 +88,114 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/portal", s.handleHostedPortal)
 	s.mux.HandleFunc("/portal/", s.handleHostedPortal)
 	s.mux.HandleFunc("/assets/", s.handleAssets)
+}
+
+func (s *Server) handleAdminRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	summaries := s.workspaces.summaries(r.Context())
+	data := make([]map[string]any, 0, len(summaries))
+	for _, run := range summaries {
+		item := map[string]any{
+			"object":     "run",
+			"run_id":     run.Name,
+			"runId":      run.Name,
+			"is_default": run.IsDefault,
+			"open":       run.Open,
+			"storage":    run.Storage,
+			"summary":    run.Summary,
+		}
+		if run.Error != "" {
+			item["error"] = run.Error
+		}
+		data = append(data, item)
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   data,
+	})
+}
+
+func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
+	runID, rest, err := parseRunPath(r.URL.Path)
+	if err != nil {
+		writeWorkspaceError(w, r, http.StatusBadRequest, err.Error())
+		return
+	}
+	if rest == "" {
+		if r.Method != http.MethodDelete {
+			w.Header().Set("Allow", "DELETE")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if err := s.workspaces.delete(r.Context(), runID); err != nil {
+			writeWorkspaceError(w, r, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, r, http.StatusOK, map[string]any{
+			"object":  "run_cleanup",
+			"run_id":  runID,
+			"runId":   runID,
+			"deleted": true,
+		})
+		return
+	}
+
+	runRequest := s.requestForRun(r, runID, rest)
+	switch {
+	case rest == "/v1" || strings.HasPrefix(rest, "/v1/") || rest == "/api" || strings.HasPrefix(rest, "/api/"):
+		apiHandler, err := s.workspaces.get(r.Context(), runID)
+		if err != nil {
+			writeWorkspaceError(w, r, http.StatusInternalServerError, err.Error())
+			return
+		}
+		w.Header().Set(WorkspaceHeader, runID)
+		w.Header().Set(RunHeader, runID)
+		apiHandler.ServeHTTP(w, stripWorkspaceQuery(runRequest))
+	case rest == "/checkout" || strings.HasPrefix(rest, "/checkout/"):
+		s.handleHostedCheckout(w, runRequest)
+	case rest == "/portal" || strings.HasPrefix(rest, "/portal/"):
+		s.handleHostedPortal(w, runRequest)
+	case rest == "/app" || strings.HasPrefix(rest, "/app/"):
+		s.handleApp(w, runRequest)
+	case strings.HasPrefix(rest, "/assets/"):
+		s.handleAssets(w, runRequest)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+func parseRunPath(path string) (string, string, error) {
+	rest := strings.TrimPrefix(path, "/runs/")
+	if rest == path || rest == "" {
+		return "", "", errors.New("run id is required")
+	}
+	rawRunID, suffix, _ := strings.Cut(rest, "/")
+	runID, err := resolveWorkspaceName(rawRunID)
+	if err != nil {
+		return "", "", err
+	}
+	if suffix == "" {
+		return runID, "", nil
+	}
+	return runID, "/" + suffix, nil
+}
+
+func (s *Server) requestForRun(r *http.Request, runID string, path string) *http.Request {
+	clone := r.Clone(r.Context())
+	clone.Header = r.Header.Clone()
+	clone.Header.Set(WorkspaceHeader, runID)
+	clone.Header.Set(RunHeader, runID)
+	clone.Header.Set(RunPrefixHeader, "/runs/"+runID)
+	clone.Header.Set("X-Forwarded-Prefix", joinURLPath(forwardedPrefix(r), "/runs/"+runID))
+
+	u := *r.URL
+	u.Path = path
+	u.RawPath = ""
+	clone.URL = &u
+	return clone
 }
 
 // buildAPIHandler assembles the Stripe-like API handler for a single

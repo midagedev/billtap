@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -8,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hckim/billtap/internal/billing"
 	"github.com/hckim/billtap/internal/scenarios"
+	"github.com/hckim/billtap/internal/server"
+	"github.com/hckim/billtap/internal/storage"
 )
 
 func TestParseScenarioRunArgsAllowsFlagsAfterFile(t *testing.T) {
@@ -117,6 +121,37 @@ func TestRunCompatibilityInventoryRequiresOpenAPIPath(t *testing.T) {
 	code := runCompatibility([]string{"inventory", "--output-dir", t.TempDir()})
 	if code != scenarios.ExitInvalidConfig {
 		t.Fatalf("exit code = %d, want %d", code, scenarios.ExitInvalidConfig)
+	}
+}
+
+func TestRunSeedUsesFixtureRunIDBeforeFlag(t *testing.T) {
+	dir := t.TempDir()
+	packPath := filepath.Join(dir, "seed.yml")
+	dbPath := filepath.Join(dir, "billtap.db")
+	writeFile(t, packPath, `
+name: seed-pack
+runId: yaml-run
+customers:
+  - id: cus_seeded
+    email: seeded@example.test
+`)
+	code := runSeed([]string{"--pack", packPath, "--run-id", "flag-run", "--database-url", dbPath})
+	if code != scenarios.ExitPass {
+		t.Fatalf("exit code = %d, want %d", code, scenarios.ExitPass)
+	}
+
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, server.RunDSN(dbPath, "yaml-run"))
+	if err != nil {
+		t.Fatalf("open seeded run store: %v", err)
+	}
+	defer store.Close()
+	customers, err := billing.NewService(store).ListCustomers(ctx)
+	if err != nil {
+		t.Fatalf("list customers: %v", err)
+	}
+	if len(customers) != 1 || customers[0].ID != "cus_seeded" || customers[0].Metadata["billtap_fixture_run_id"] != "yaml-run" {
+		t.Fatalf("customers = %#v, want fixture run customer", customers)
 	}
 }
 

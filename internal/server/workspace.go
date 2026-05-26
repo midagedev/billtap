@@ -30,6 +30,12 @@ const (
 	// that cannot easily set headers.
 	WorkspaceQueryParam = "workspace"
 
+	// RunHeader carries the path-scoped run ID resolved from /runs/<runId>.
+	RunHeader = "X-Billtap-Run-Id"
+
+	// RunPrefixHeader carries the browser path prefix for a path-scoped run.
+	RunPrefixHeader = "X-Billtap-Run-Prefix"
+
 	maxWorkspaceNameLength = 63
 )
 
@@ -48,9 +54,10 @@ type workspaceManager struct {
 	cfg   config.Config
 	build apiHandlerBuilder
 
-	mu       sync.Mutex
-	handlers map[string]http.Handler  // name -> API handler
-	stores   map[string]storage.Store // name -> store (lazily opened only)
+	mu           sync.Mutex
+	handlers     map[string]http.Handler  // name -> API handler
+	stores       map[string]storage.Store // name -> store (lazily opened only)
+	defaultStore storage.Store
 
 	// apiEnabled is false when the default store cannot back the API (for
 	// example a non-billing store). It preserves the previous behaviour of
@@ -60,10 +67,11 @@ type workspaceManager struct {
 
 func newWorkspaceManager(cfg config.Config, defaultStore storage.Store, build apiHandlerBuilder) *workspaceManager {
 	m := &workspaceManager{
-		cfg:      cfg,
-		build:    build,
-		handlers: make(map[string]http.Handler),
-		stores:   make(map[string]storage.Store),
+		cfg:          cfg,
+		build:        build,
+		handlers:     make(map[string]http.Handler),
+		stores:       make(map[string]storage.Store),
+		defaultStore: defaultStore,
 	}
 	if defaultStore == nil {
 		return m
@@ -75,6 +83,15 @@ func newWorkspaceManager(cfg config.Config, defaultStore storage.Store, build ap
 	m.handlers[DefaultWorkspace] = handler
 	m.apiEnabled = true
 	return m
+}
+
+type runSummary struct {
+	Name      string
+	IsDefault bool
+	Open      bool
+	Storage   string
+	Summary   map[string]int
+	Error     string
 }
 
 // handler returns the dispatcher mounted on /v1/ and /api/. It resolves the
@@ -175,6 +192,115 @@ func (m *workspaceManager) list() []string {
 	return names
 }
 
+func (m *workspaceManager) summaries(ctx context.Context) []runSummary {
+	names := m.list()
+	out := make([]runSummary, 0, len(names))
+	for _, name := range names {
+		summary := runSummary{
+			Name:      name,
+			IsDefault: name == DefaultWorkspace,
+			Open:      m.isOpen(name),
+			Storage:   workspaceDSN(m.cfg.DatabaseURL, name),
+			Summary:   map[string]int{},
+		}
+		store, closeStore, err := m.storeForSummary(ctx, name)
+		if err != nil {
+			summary.Error = err.Error()
+			out = append(out, summary)
+			continue
+		}
+		counts, err := storage.SQLiteTableCounts(ctx, store)
+		if closeStore != nil {
+			closeStore()
+		}
+		if err != nil {
+			summary.Error = err.Error()
+		} else {
+			summary.Summary = counts
+		}
+		out = append(out, summary)
+	}
+	return out
+}
+
+func (m *workspaceManager) isOpen(name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if name == DefaultWorkspace {
+		return m.defaultStore != nil
+	}
+	_, ok := m.handlers[name]
+	return ok
+}
+
+func (m *workspaceManager) storeForSummary(ctx context.Context, name string) (storage.Store, func(), error) {
+	m.mu.Lock()
+	if name == DefaultWorkspace {
+		store := m.defaultStore
+		m.mu.Unlock()
+		if store == nil {
+			return nil, nil, fmt.Errorf("default run storage is not open")
+		}
+		return store, nil, nil
+	}
+	if store, ok := m.stores[name]; ok {
+		m.mu.Unlock()
+		return store, nil, nil
+	}
+	m.mu.Unlock()
+
+	if !workspaceDBExists(m.cfg.DatabaseURL, name) {
+		return nil, nil, fmt.Errorf("run storage does not exist")
+	}
+	store, err := storage.OpenSQLite(context.WithoutCancel(ctx), workspaceDSN(m.cfg.DatabaseURL, name))
+	if err != nil {
+		return nil, nil, err
+	}
+	return store, func() { _ = store.Close() }, nil
+}
+
+func (m *workspaceManager) delete(ctx context.Context, name string) error {
+	if name == "" {
+		return fmt.Errorf("run id is required")
+	}
+	if name == DefaultWorkspace {
+		m.mu.Lock()
+		store := m.defaultStore
+		m.mu.Unlock()
+		if store == nil {
+			return fmt.Errorf("default run storage is not open")
+		}
+		return storage.ResetSQLiteData(ctx, store)
+	}
+
+	var store storage.Store
+	m.mu.Lock()
+	if existing, ok := m.stores[name]; ok {
+		store = existing
+		delete(m.stores, name)
+	}
+	delete(m.handlers, name)
+	m.mu.Unlock()
+	if store != nil {
+		if err := store.Close(); err != nil {
+			return err
+		}
+	}
+	if isMemoryDSN(m.cfg.DatabaseURL) {
+		return nil
+	}
+	path := workspaceDBPath(m.cfg.DatabaseURL, name)
+	for _, candidate := range []string{path, path + "-wal", path + "-shm"} {
+		if candidate == "" {
+			continue
+		}
+		if err := os.Remove(candidate); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 // Close releases every lazily-opened workspace store. The default store is
 // owned by the caller and is left untouched.
 func (m *workspaceManager) Close() error {
@@ -199,6 +325,11 @@ func resolveWorkspace(r *http.Request) (string, error) {
 	if raw == "" {
 		raw = strings.TrimSpace(r.URL.Query().Get(WorkspaceQueryParam))
 	}
+	return resolveWorkspaceName(raw)
+}
+
+func resolveWorkspaceName(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
 	if raw == "" {
 		return DefaultWorkspace, nil
 	}
@@ -218,6 +349,12 @@ func resolveWorkspace(r *http.Request) (string, error) {
 	return name, nil
 }
 
+// NormalizeRunID validates a user-supplied run ID using the same rules as
+// /runs/<runId> routing and workspace selectors.
+func NormalizeRunID(raw string) (string, error) {
+	return resolveWorkspaceName(raw)
+}
+
 // workspaceDSN derives the SQLite DSN for a named workspace from the base
 // (default) DSN. The default workspace returns the base DSN unchanged.
 func workspaceDSN(baseDSN, name string) string {
@@ -230,16 +367,39 @@ func workspaceDSN(baseDSN, name string) string {
 		return fmt.Sprintf("file:billtap_ws_%s?mode=memory&cache=shared", name)
 	}
 
-	path, query := splitDSN(baseDSN)
-	ext := filepath.Ext(path)
-	if ext == "" {
-		ext = ".db"
-	}
-	wsPath := filepath.Join(filepath.Dir(path), "workspaces", name+ext)
+	_, query := splitDSN(baseDSN)
+	wsPath := workspaceDBPath(baseDSN, name)
 	if query == "" {
 		return wsPath
 	}
 	return "file:" + wsPath + query
+}
+
+// RunDSN returns the SQLite DSN used for a path-scoped run ID.
+func RunDSN(baseDSN, runID string) string {
+	return workspaceDSN(baseDSN, runID)
+}
+
+func workspaceDBPath(baseDSN string, name string) string {
+	path, _ := splitDSN(baseDSN)
+	ext := filepath.Ext(path)
+	if ext == "" {
+		ext = ".db"
+	}
+	return filepath.Join(filepath.Dir(path), "workspaces", name+ext)
+}
+
+func workspaceDBExists(baseDSN string, name string) bool {
+	if name == "" || name == DefaultWorkspace {
+		return true
+	}
+	if isMemoryDSN(baseDSN) {
+		return false
+	}
+	if _, err := os.Stat(workspaceDBPath(baseDSN, name)); err == nil {
+		return true
+	}
+	return false
 }
 
 // workspacesDir returns the directory that holds named workspace databases,
