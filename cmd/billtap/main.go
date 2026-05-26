@@ -65,7 +65,7 @@ func main() {
 	appServer := server.New(server.Options{Config: cfg, Store: store})
 	defer func() {
 		if err := appServer.Close(); err != nil {
-			slog.Warn("close workspaces", "error", err)
+			slog.Warn("close runs", "error", err)
 		}
 	}()
 
@@ -116,7 +116,7 @@ func runSeed(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return scenarios.ExitInvalidConfig
 	}
-	runID, err := server.NormalizeRunID(firstSeedValue(pack.RunID, runIDFlag, server.DefaultWorkspace))
+	runID, err := server.NormalizeRunID(firstSeedValue(pack.RunID, runIDFlag, server.DefaultRun))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return scenarios.ExitInvalidConfig

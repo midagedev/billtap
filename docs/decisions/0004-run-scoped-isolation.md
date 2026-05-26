@@ -16,11 +16,12 @@ requests to keep using the default dataset.
 Billtap exposes run-scoped routing at `/runs/<runId>/v1/...` and
 `/runs/<runId>/api/...`. Unscoped requests use the `default` run.
 
-The current implementation maps each named run to the existing isolated-store
-workspace mechanism. The default run uses the configured `database_url`; named
-runs use sibling SQLite databases under `workspaces/`. This preserves duplicate
-Stripe object IDs across runs and isolates webhook fan-out, test clocks, traces,
-and fixture state without forcing a risky all-table primary-key migration in the
+The current implementation maps each named run to one isolated SQLite store.
+The default run uses the configured `database_url`; named runs use sibling
+SQLite databases under the existing `workspaces/` directory for on-disk
+compatibility with earlier Billtap builds. This preserves duplicate Stripe
+object IDs across runs and isolates webhook fan-out, test clocks, traces, and
+fixture state without forcing a risky all-table primary-key migration in the
 same change.
 
 `GET /admin/runs` reports known runs and row-count summaries. `DELETE

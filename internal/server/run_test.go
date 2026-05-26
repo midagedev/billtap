@@ -13,10 +13,9 @@ import (
 	"github.com/hckim/billtap/internal/storage"
 )
 
-// newWorkspaceServer builds a SQLite-backed server whose configured
-// DatabaseURL matches the default store, so named workspaces resolve to
-// sibling files under <dir>/workspaces.
-func newWorkspaceServer(t *testing.T) (*Server, string) {
+// newRunServer builds a SQLite-backed server whose configured DatabaseURL
+// matches the default store, so named runs resolve to sibling SQLite files.
+func newRunServer(t *testing.T) (*Server, string) {
 	t.Helper()
 	dir := t.TempDir()
 	dbPath := filepath.Join(dir, "billtap.db")
@@ -38,16 +37,16 @@ func newWorkspaceServer(t *testing.T) (*Server, string) {
 	return srv, dir
 }
 
-func countCustomers(t *testing.T, handler http.Handler, workspace string) int {
+func countCustomers(t *testing.T, handler http.Handler, legacyWorkspace string) int {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, "/v1/customers", nil)
-	if workspace != "" {
-		req.Header.Set(WorkspaceHeader, workspace)
+	if legacyWorkspace != "" {
+		req.Header.Set(WorkspaceHeader, legacyWorkspace)
 	}
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("list customers (workspace=%q) status = %d body = %s", workspace, rec.Code, rec.Body.String())
+		t.Fatalf("list customers (legacy workspace=%q) status = %d body = %s", legacyWorkspace, rec.Code, rec.Body.String())
 	}
 	var out struct {
 		Data []json.RawMessage `json:"data"`
@@ -75,10 +74,10 @@ func countCustomersPath(t *testing.T, handler http.Handler, path string) int {
 	return len(out.Data)
 }
 
-func TestWorkspacesIsolateBillingData(t *testing.T) {
-	srv, _ := newWorkspaceServer(t)
+func TestLegacyWorkspaceSelectorIsolatesBillingData(t *testing.T) {
+	srv, _ := newRunServer(t)
 
-	// Two customers in the default workspace, one in a named workspace.
+	// Two customers in the default run, one through the legacy workspace alias.
 	postForm[struct {
 		ID string `json:"id"`
 	}](t, srv, "/v1/customers", map[string]string{"email": "default-1@example.test"})
@@ -91,21 +90,21 @@ func TestWorkspacesIsolateBillingData(t *testing.T) {
 		map[string]string{WorkspaceHeader: "test-a"})
 
 	if got := countCustomers(t, srv, ""); got != 2 {
-		t.Fatalf("default workspace customer count = %d, want 2", got)
+		t.Fatalf("default run customer count = %d, want 2", got)
 	}
 	if got := countCustomers(t, srv, "test-a"); got != 1 {
-		t.Fatalf("test-a workspace customer count = %d, want 1", got)
+		t.Fatalf("test-a run customer count = %d, want 1", got)
 	}
 	if got := countCustomers(t, srv, "default"); got != 2 {
-		t.Fatalf("explicit default workspace customer count = %d, want 2", got)
+		t.Fatalf("explicit default run customer count = %d, want 2", got)
 	}
 	if got := countCustomers(t, srv, "test-b"); got != 0 {
-		t.Fatalf("fresh workspace customer count = %d, want 0", got)
+		t.Fatalf("fresh run customer count = %d, want 0", got)
 	}
 }
 
-func TestWorkspaceResolvedFromQueryParam(t *testing.T) {
-	srv, _ := newWorkspaceServer(t)
+func TestLegacyWorkspaceResolvedFromQueryParam(t *testing.T) {
+	srv, _ := newRunServer(t)
 
 	postFormWithHeaders[struct {
 		ID string `json:"id"`
@@ -121,12 +120,12 @@ func TestWorkspaceResolvedFromQueryParam(t *testing.T) {
 		t.Fatalf("response %s = %q, want %q", WorkspaceHeader, got, "via-query")
 	}
 	if got := countCustomers(t, srv, ""); got != 0 {
-		t.Fatalf("default workspace should stay empty, got %d", got)
+		t.Fatalf("default run should stay empty, got %d", got)
 	}
 }
 
-func TestWorkspaceHeaderEchoedAndInvalidRejected(t *testing.T) {
-	srv, _ := newWorkspaceServer(t)
+func TestLegacyWorkspaceHeaderEchoedAndInvalidRejected(t *testing.T) {
+	srv, _ := newRunServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/v1/customers", nil)
 	req.Header.Set(WorkspaceHeader, "Mixed-Case")
@@ -136,7 +135,7 @@ func TestWorkspaceHeaderEchoedAndInvalidRejected(t *testing.T) {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	if got := rec.Header().Get(WorkspaceHeader); got != "mixed-case" {
-		t.Fatalf("resolved workspace = %q, want lowercased %q", got, "mixed-case")
+		t.Fatalf("resolved run = %q, want lowercased %q", got, "mixed-case")
 	}
 
 	for _, bad := range []string{"bad/name", "../escape", ".hidden", "with space"} {
@@ -145,13 +144,13 @@ func TestWorkspaceHeaderEchoedAndInvalidRejected(t *testing.T) {
 		rec := httptest.NewRecorder()
 		srv.ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest {
-			t.Fatalf("workspace %q status = %d, want 400", bad, rec.Code)
+			t.Fatalf("run %q status = %d, want 400", bad, rec.Code)
 		}
 	}
 }
 
-func TestWorkspacesListingEndpoint(t *testing.T) {
-	srv, _ := newWorkspaceServer(t)
+func TestLegacyWorkspacesListingEndpoint(t *testing.T) {
+	srv, _ := newRunServer(t)
 
 	postFormWithHeaders[struct {
 		ID string `json:"id"`
@@ -177,12 +176,12 @@ func TestWorkspacesListingEndpoint(t *testing.T) {
 	for _, ws := range out.Data {
 		seen[ws.Name] = true
 	}
-	if !seen[DefaultWorkspace] || !seen["scenario-1"] {
+	if !seen[DefaultRun] || !seen["scenario-1"] {
 		t.Fatalf("workspace list = %#v, want default and scenario-1", out.Data)
 	}
 }
 
-func TestWorkspaceDSN(t *testing.T) {
+func TestRunDSN(t *testing.T) {
 	cases := []struct {
 		base string
 		name string
@@ -191,17 +190,17 @@ func TestWorkspaceDSN(t *testing.T) {
 		{".billtap/billtap.db", "default", ".billtap/billtap.db"},
 		{".billtap/billtap.db", "test-a", filepath.Join(".billtap", "workspaces", "test-a.db")},
 		{"/data/billtap.db", "ci", filepath.Join("/data", "workspaces", "ci.db")},
-		{":memory:", "iso", "file:billtap_ws_iso?mode=memory&cache=shared"},
+		{":memory:", "iso", "file:billtap_run_iso?mode=memory&cache=shared"},
 	}
 	for _, tc := range cases {
-		if got := workspaceDSN(tc.base, tc.name); got != tc.want {
-			t.Fatalf("workspaceDSN(%q, %q) = %q, want %q", tc.base, tc.name, got, tc.want)
+		if got := runDSN(tc.base, tc.name); got != tc.want {
+			t.Fatalf("runDSN(%q, %q) = %q, want %q", tc.base, tc.name, got, tc.want)
 		}
 	}
 }
 
 func TestRunPathPrefixIsolatesBillingData(t *testing.T) {
-	srv, _ := newWorkspaceServer(t)
+	srv, _ := newRunServer(t)
 
 	postForm[struct {
 		ID string `json:"id"`
@@ -231,8 +230,30 @@ func TestRunPathPrefixIsolatesBillingData(t *testing.T) {
 	}
 }
 
+func TestRunPathScopeWinsOverLegacyWorkspaceHeader(t *testing.T) {
+	srv, _ := newRunServer(t)
+
+	req := httptest.NewRequest(http.MethodPost, "/runs/run-a/v1/customers", strings.NewReader("email=a@example.test"))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set(WorkspaceHeader, "run-b")
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create scoped customer status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if got := rec.Header().Get(RunHeader); got != "run-a" {
+		t.Fatalf("%s = %q, want run-a", RunHeader, got)
+	}
+	if got := countCustomersPath(t, srv, "/runs/run-a/v1/customers"); got != 1 {
+		t.Fatalf("run-a customers = %d, want 1", got)
+	}
+	if got := countCustomersPath(t, srv, "/runs/run-b/v1/customers"); got != 0 {
+		t.Fatalf("run-b customers = %d, want 0", got)
+	}
+}
+
 func TestRunPathPrefixesHostedCheckoutURL(t *testing.T) {
-	srv, _ := newWorkspaceServer(t)
+	srv, _ := newRunServer(t)
 
 	customer := postForm[struct {
 		ID string `json:"id"`
@@ -272,7 +293,7 @@ func TestRunPathPrefixesHostedCheckoutURL(t *testing.T) {
 }
 
 func TestRunWebhookEndpointsOnlyReceiveRunEvents(t *testing.T) {
-	srv, _ := newWorkspaceServer(t)
+	srv, _ := newRunServer(t)
 
 	endpointA := postForm[struct {
 		ID string `json:"id"`
@@ -321,7 +342,7 @@ func TestRunWebhookEndpointsOnlyReceiveRunEvents(t *testing.T) {
 }
 
 func TestRunAdminAndCleanup(t *testing.T) {
-	srv, _ := newWorkspaceServer(t)
+	srv, _ := newRunServer(t)
 	postForm[struct {
 		ID string `json:"id"`
 	}](t, srv, "/runs/cleanup-run/v1/customers", map[string]string{"email": "cleanup@example.test"})

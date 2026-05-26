@@ -180,14 +180,14 @@ http://billtap:8080/runs/<runId>
 Stripe SDKs can keep their normal `/v1/...` paths because the SDK appends them
 under that base URL.
 
-- Requests with no workspace selector use the `default` workspace, backed by
+- Requests with no run selector use the `default` run, backed by
   the configured `database_url`. Existing integrations keep working unchanged.
 - Name a run to get an independent dataset (its own customers, invoices,
   webhooks, idempotency keys, and test clocks). It is created on first use.
 - Select a run with `/runs/<runId>/...`. The resolved name is echoed on
   `X-Billtap-Run-Id` and `X-Billtap-Workspace`.
 - For backward compatibility, `X-Billtap-Workspace` and the `workspace` query
-  parameter still select an isolated dataset on unprefixed requests.
+  parameter still select the same isolated run on unprefixed requests.
 - `DELETE /runs/<runId>` removes that run's dataset. `GET /admin/runs` lists
   known runs and row-count summaries.
 
@@ -199,7 +199,7 @@ curl http://localhost:8080/v1/customers
 curl http://localhost:8080/runs/suite-a/v1/customers
 curl http://localhost:8080/runs/suite-a/v1/webhook_endpoints
 
-# legacy workspace selectors
+# legacy workspace selectors, mapped to runs
 curl -H 'X-Billtap-Workspace: suite-a' http://localhost:8080/v1/customers
 curl 'http://localhost:8080/v1/customers?workspace=suite-a'
 
@@ -207,14 +207,15 @@ curl 'http://localhost:8080/v1/customers?workspace=suite-a'
 curl http://localhost:8080/admin/runs
 curl -X DELETE http://localhost:8080/runs/suite-a
 
-# list known legacy workspaces
+# legacy listing alias
 curl http://localhost:8080/workspaces
 ```
 
 Run IDs accept letters, digits, `.`, `-`, and `_`, must start with a letter or
 digit, and are case-insensitive. Each named run is stored next to the default
-database under a `workspaces/` directory (for example
-`.billtap/workspaces/suite-a.db`).
+database as an isolated SQLite file. For compatibility with earlier Billtap
+builds, those files currently live under the existing `workspaces/` directory
+(for example `.billtap/workspaces/suite-a.db`).
 
 Fixture packs can also be applied directly to a run:
 
@@ -224,7 +225,6 @@ go run ./cmd/billtap seed --run-id suite-a --pack seed/sample-basic.yml
 
 When the fixture pack has a top-level `runId`, that value is used for the run
 scope and fixture metadata.
-
 ## Fixture And Assertion APIs
 
 Billtap includes local integration-test helpers:
