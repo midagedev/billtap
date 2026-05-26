@@ -68,13 +68,14 @@ Initial default:
 - in-memory option for unit tests
 
 One running server can host several isolated billing datasets. The implicit
-`default` workspace is backed by the configured `database_url`; each named
-workspace (selected per request via the `X-Billtap-Workspace` header or
-`workspace` query parameter) opens its own SQLite database lazily under a
-sibling `workspaces/` directory and gets an independent API handler, so its
-billing state, webhooks, idempotency keys, and test clocks stay isolated.
+`default` run is backed by the configured `database_url`; each named run
+selected through `/runs/<runId>` opens its own SQLite database lazily under the
+existing sibling `workspaces/` directory and gets an independent API handler, so
+its billing state, webhooks, idempotency keys, and test clocks stay isolated.
+The legacy `X-Billtap-Workspace` header and `workspace` query parameter remain
+aliases for the same run partition.
 
-Tables (per workspace):
+Tables (per run):
 
 - customers
 - products

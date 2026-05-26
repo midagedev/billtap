@@ -125,6 +125,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/test_helpers/customers/", h.handleTestHelperCustomer)
 	h.mux.HandleFunc("/v1/test_helpers/test_clocks", h.handleTestClocks)
 	h.mux.HandleFunc("/v1/test_helpers/test_clocks/", h.handleTestClock)
+	h.mux.HandleFunc("/v1/test_clocks", h.handleTestClocks)
+	h.mux.HandleFunc("/v1/test_clocks/", h.handleTestClockAlias)
 	h.mux.HandleFunc("/v1/payment_methods", h.handlePaymentMethods)
 	h.mux.HandleFunc("/v1/payment_methods/", h.handlePaymentMethod)
 	h.mux.HandleFunc("/v1/webhook_endpoints", h.handleWebhookEndpoints)
@@ -3151,6 +3153,15 @@ func (h *Handler) handleTestClock(w http.ResponseWriter, r *http.Request) {
 	writeResult(w, response, err)
 }
 
+func (h *Handler) handleTestClockAlias(w http.ResponseWriter, r *http.Request) {
+	clone := r.Clone(r.Context())
+	u := *r.URL
+	u.Path = "/v1/test_helpers/test_clocks/" + strings.TrimPrefix(r.URL.Path, "/v1/test_clocks/")
+	u.RawPath = ""
+	clone.URL = &u
+	h.handleTestClock(w, clone)
+}
+
 func (h *Handler) handlePaymentMethods(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -3740,6 +3751,7 @@ func (h *Handler) handleFixtureApply(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: %v", billing.ErrInvalidInput, err))
 		return
 	}
+	pack = applyRequestRunID(r, pack)
 	result, err := fixtures.NewService(h.billing).Apply(r.Context(), pack)
 	if err != nil {
 		if errors.Is(err, fixtures.ErrAssertionFailed) {
@@ -3775,6 +3787,7 @@ func (h *Handler) handleFixtureValidate(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: %v", billing.ErrInvalidInput, err))
 		return
 	}
+	pack = applyRequestRunID(r, pack)
 	if err := fixtures.NewService(h.billing).Validate(pack); err != nil {
 		writeResult(w, nil, err)
 		return
@@ -3872,7 +3885,7 @@ func (h *Handler) handleFixtureResolve(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := fixtures.NewService(h.billing).Resolve(r.Context(), fixtures.ResolveFilter{
 		Ref:         firstQuery(r, "ref", "id", "lookup_key", "lookupKey"),
-		RunID:       firstQuery(r, "runId", "run_id"),
+		RunID:       firstNonEmptyString(firstQuery(r, "runId", "run_id"), requestRunID(r)),
 		FixtureName: firstQuery(r, "fixtureName", "fixture_name", "name"),
 		Namespace:   firstQuery(r, "namespace"),
 		TenantID:    firstQuery(r, "tenantId", "tenant_id"),
@@ -3894,6 +3907,9 @@ func (h *Handler) handleFixtureAssert(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusBadRequest, fmt.Errorf("%w: %v", billing.ErrInvalidInput, err))
 		return
+	}
+	if req.Filter.RunID == "" {
+		req.Filter.RunID = requestRunID(r)
 	}
 	report, err := fixtures.NewService(h.billing).Assert(r.Context(), req)
 	if err != nil {
@@ -3932,11 +3948,22 @@ func decodeLooseBody(body []byte, contentType string) any {
 func fixtureSnapshotFilter(r *http.Request) fixtures.SnapshotFilter {
 	return fixtures.SnapshotFilter{
 		CustomerID:  firstQuery(r, "customer", "customerId", "customer_id"),
-		RunID:       firstQuery(r, "runId", "run_id"),
+		RunID:       firstNonEmptyString(firstQuery(r, "runId", "run_id"), requestRunID(r)),
 		TenantID:    firstQuery(r, "tenantId", "tenant_id"),
 		FixtureName: firstQuery(r, "fixture", "fixtureName", "fixture_name", "name"),
 		Namespace:   firstQuery(r, "namespace", "ns"),
 	}
+}
+
+func applyRequestRunID(r *http.Request, pack fixtures.Pack) fixtures.Pack {
+	if pack.RunID == "" {
+		pack.RunID = requestRunID(r)
+	}
+	return pack
+}
+
+func requestRunID(r *http.Request) string {
+	return strings.TrimSpace(r.Header.Get("X-Billtap-Run-Id"))
 }
 
 func debugBundleTimelineFilter(p params) billing.TimelineFilter {
@@ -6738,6 +6765,9 @@ func absoluteURL(r *http.Request, path string, publicBase string) string {
 		path = "/" + path
 	}
 	if publicBase != "" {
+		if runPrefix := requestRunPrefix(r); runPrefix != "" {
+			path = runPrefix + path
+		}
 		return publicBase + path
 	}
 	scheme := "http"
@@ -6763,6 +6793,17 @@ func requestForwardedPrefix(r *http.Request) string {
 		return ""
 	}
 	return raw
+}
+
+func requestRunPrefix(r *http.Request) string {
+	raw := strings.TrimSpace(strings.Split(r.Header.Get("X-Billtap-Run-Prefix"), ",")[0])
+	if raw == "" || raw == "/" || strings.Contains(raw, "://") || strings.ContainsAny(raw, "?#") {
+		return ""
+	}
+	if !strings.HasPrefix(raw, "/") {
+		raw = "/" + raw
+	}
+	return strings.TrimRight(raw, "/")
 }
 
 func (h *Handler) emitCheckoutWebhooks(r *http.Request, result map[string]any) []webhooks.Event {

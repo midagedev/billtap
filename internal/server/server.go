@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -22,10 +23,10 @@ type Options struct {
 }
 
 type Server struct {
-	cfg        config.Config
-	store      storage.Store
-	mux        *http.ServeMux
-	workspaces *workspaceManager
+	cfg   config.Config
+	store storage.Store
+	mux   *http.ServeMux
+	runs  *runManager
 }
 
 func New(opts Options) *Server {
@@ -35,46 +36,65 @@ func New(opts Options) *Server {
 		mux:   http.NewServeMux(),
 	}
 	s.cfg.PublicBasePath = config.NormalizePublicBasePath(s.cfg.PublicBasePath)
-	s.workspaces = newWorkspaceManager(s.cfg, s.store, s.buildAPIHandler)
+	s.runs = newRunManager(s.cfg, s.store, s.buildAPIHandler)
 	s.routes()
 	return s
 }
 
-// Close releases workspace storage opened on demand. The default store passed
+// Close releases run storage opened on demand. The default store passed
 // via Options is owned by the caller and is not closed here.
 func (s *Server) Close() error {
-	if s.workspaces == nil {
+	if s.runs == nil {
 		return nil
 	}
-	return s.workspaces.Close()
+	return s.runs.Close()
 }
 
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	request := s.requestWithBasePath(r)
+	if s.runs != nil && s.runs.apiEnabled {
+		scoped, runID, ok, err := s.requestWithRunScope(request)
+		if err != nil {
+			writeRunError(w, r, http.StatusBadRequest, err.Error())
+			return
+		}
+		if ok {
+			if scoped.URL.Path == "" {
+				s.handleRunRoot(w, scoped, runID)
+				return
+			}
+			request = scoped
+		}
+	}
+	s.mux.ServeHTTP(w, request)
+}
+
+func (s *Server) requestWithBasePath(r *http.Request) *http.Request {
 	basePath := s.requestBasePath(r)
 	if basePath == "" {
-		s.mux.ServeHTTP(w, r)
-		return
+		return r
 	}
-	r2 := r.Clone(r.Context())
-	r2.Header = r.Header.Clone()
-	if r2.Header.Get("X-Forwarded-Prefix") == "" {
-		r2.Header.Set("X-Forwarded-Prefix", basePath)
+	clone := r.Clone(r.Context())
+	clone.Header = r.Header.Clone()
+	if clone.Header.Get("X-Forwarded-Prefix") == "" {
+		clone.Header.Set("X-Forwarded-Prefix", basePath)
 	}
 	u := *r.URL
 	if stripped, ok := stripBasePath(u.Path, basePath); ok {
 		u.Path = stripped
 		u.RawPath = ""
 	}
-	r2.URL = &u
-	s.mux.ServeHTTP(w, r2)
+	clone.URL = &u
+	return clone
 }
 
 func (s *Server) routes() {
-	if s.workspaces.apiEnabled {
-		apiHandler := s.workspaces.handler()
+	if s.runs.apiEnabled {
+		apiHandler := s.runs.apiHandler()
 		s.mux.Handle("/v1/", apiHandler)
 		s.mux.Handle("/api/", apiHandler)
 		s.mux.HandleFunc("/workspaces", s.handleWorkspaces)
+		s.mux.HandleFunc("/admin/runs", s.handleAdminRuns)
 	}
 	s.mux.HandleFunc("/", s.handleRoot)
 	s.mux.HandleFunc("/health", s.handleHealth)
@@ -88,8 +108,94 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/assets/", s.handleAssets)
 }
 
-// buildAPIHandler assembles the Stripe-like API handler for a single
-// workspace store. It is invoked once per workspace by the workspace manager.
+func (s *Server) handleAdminRuns(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	summaries := s.runs.summaries(r.Context())
+	data := make([]map[string]any, 0, len(summaries))
+	for _, run := range summaries {
+		item := map[string]any{
+			"object":     "run",
+			"run_id":     run.Name,
+			"runId":      run.Name,
+			"is_default": run.IsDefault,
+			"open":       run.Open,
+			"storage":    run.Storage,
+			"summary":    run.Summary,
+		}
+		if run.Error != "" {
+			item["error"] = run.Error
+		}
+		data = append(data, item)
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"object": "list",
+		"data":   data,
+	})
+}
+
+func (s *Server) handleRunRoot(w http.ResponseWriter, r *http.Request, runID string) {
+	if r.Method != http.MethodDelete {
+		w.Header().Set("Allow", "DELETE")
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.runs.delete(r.Context(), runID); err != nil {
+		writeRunError(w, r, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, r, http.StatusOK, map[string]any{
+		"object":  "run_cleanup",
+		"run_id":  runID,
+		"runId":   runID,
+		"deleted": true,
+	})
+}
+
+func (s *Server) requestWithRunScope(r *http.Request) (*http.Request, string, bool, error) {
+	runID, rest, ok, err := parseRunPath(r.URL.Path)
+	if err != nil {
+		return nil, "", false, err
+	}
+	if !ok {
+		return r, "", false, nil
+	}
+	clone := r.Clone(r.Context())
+	clone.Header = r.Header.Clone()
+	clone = clone.WithContext(context.WithValue(clone.Context(), runContextKey{}, runID))
+	clone.Header.Set(RunPrefixHeader, "/runs/"+runID)
+	clone.Header.Set("X-Forwarded-Prefix", joinURLPath(forwardedPrefix(r), "/runs/"+runID))
+
+	u := *r.URL
+	u.Path = rest
+	u.RawPath = ""
+	clone.URL = &u
+	return clone, runID, true, nil
+}
+
+func parseRunPath(path string) (string, string, bool, error) {
+	rest := strings.TrimPrefix(path, "/runs/")
+	if rest == path {
+		return "", "", false, nil
+	}
+	if rest == "" {
+		return "", "", true, errors.New("run id is required")
+	}
+	rawRunID, suffix, _ := strings.Cut(rest, "/")
+	runID, err := normalizeRunID(rawRunID)
+	if err != nil {
+		return "", "", true, err
+	}
+	if suffix == "" {
+		return runID, "", true, nil
+	}
+	return runID, "/" + suffix, true, nil
+}
+
+// buildAPIHandler assembles the Stripe-like API handler for a single run store.
+// It is invoked once per run by the run manager.
 func (s *Server) buildAPIHandler(store storage.Store) (http.Handler, error) {
 	repo, ok := store.(billing.Repository)
 	if !ok {
@@ -121,13 +227,13 @@ func (s *Server) handleWorkspaces(w http.ResponseWriter, r *http.Request) {
 		methodNotAllowed(w)
 		return
 	}
-	names := s.workspaces.list()
+	names := s.runs.list()
 	data := make([]map[string]any, 0, len(names))
 	for _, name := range names {
 		data = append(data, map[string]any{
 			"object":     "workspace",
 			"name":       name,
-			"is_default": name == DefaultWorkspace,
+			"is_default": name == DefaultRun,
 		})
 	}
 	writeJSON(w, r, http.StatusOK, map[string]any{

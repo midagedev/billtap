@@ -16,6 +16,7 @@ import (
 	"github.com/hckim/billtap/internal/billing"
 	"github.com/hckim/billtap/internal/compatibility"
 	"github.com/hckim/billtap/internal/config"
+	"github.com/hckim/billtap/internal/fixtures"
 	"github.com/hckim/billtap/internal/scenarios"
 	"github.com/hckim/billtap/internal/server"
 	"github.com/hckim/billtap/internal/storage"
@@ -33,6 +34,8 @@ func main() {
 			os.Exit(runScenario(args[1:]))
 		case "compatibility":
 			os.Exit(runCompatibility(args[1:]))
+		case "seed":
+			os.Exit(runSeed(args[1:]))
 		}
 	}
 
@@ -62,7 +65,7 @@ func main() {
 	appServer := server.New(server.Options{Config: cfg, Store: store})
 	defer func() {
 		if err := appServer.Close(); err != nil {
-			slog.Warn("close workspaces", "error", err)
+			slog.Warn("close runs", "error", err)
 		}
 	}()
 
@@ -86,6 +89,125 @@ func main() {
 		slog.Error("serve", "error", err)
 		os.Exit(1)
 	}
+}
+
+func runSeed(args []string) int {
+	packPath, runIDFlag, databaseURL, configPath, err := parseSeedArgs(args)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, "usage: billtap seed --pack path [--run-id id] [--database-url dsn] [--config path]")
+		return scenarios.ExitInvalidConfig
+	}
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return scenarios.ExitInvalidConfig
+	}
+	if strings.TrimSpace(databaseURL) != "" {
+		cfg.DatabaseURL = strings.TrimSpace(databaseURL)
+	}
+	body, err := os.ReadFile(packPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return scenarios.ExitInvalidConfig
+	}
+	pack, err := fixtures.LoadPack(body, fixtureContentType(packPath))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return scenarios.ExitInvalidConfig
+	}
+	runID, err := server.NormalizeRunID(firstSeedValue(pack.RunID, runIDFlag, server.DefaultRun))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return scenarios.ExitInvalidConfig
+	}
+	pack.RunID = runID
+
+	ctx := context.Background()
+	store, err := storage.OpenSQLite(ctx, server.RunDSN(cfg.DatabaseURL, runID))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return scenarios.ExitRuntimeFailure
+	}
+	defer func() {
+		if err := store.Close(); err != nil {
+			slog.Warn("close seed store", "error", err)
+		}
+	}()
+	result, err := fixtures.NewService(billing.NewService(store)).Apply(ctx, pack)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return scenarios.ExitRuntimeFailure
+	}
+	fmt.Fprintf(os.Stdout, "seeded fixture %s runId=%s customers=%d products=%d prices=%d subscriptions=%d test_clocks=%d\n",
+		result.Name,
+		result.RunID,
+		result.Summary["customers"],
+		result.Summary["products"],
+		result.Summary["prices"],
+		result.Summary["subscriptions"],
+		result.Summary["test_clocks"],
+	)
+	return scenarios.ExitPass
+}
+
+func parseSeedArgs(args []string) (packPath string, runID string, databaseURL string, configPath string, err error) {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch {
+		case arg == "--pack" || arg == "--run-id" || arg == "--database-url" || arg == "--config":
+			if i+1 >= len(args) {
+				return "", "", "", "", fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			switch arg {
+			case "--pack":
+				packPath = args[i]
+			case "--run-id":
+				runID = args[i]
+			case "--database-url":
+				databaseURL = args[i]
+			case "--config":
+				configPath = args[i]
+			}
+		case strings.HasPrefix(arg, "--pack="):
+			packPath = strings.TrimPrefix(arg, "--pack=")
+		case strings.HasPrefix(arg, "--run-id="):
+			runID = strings.TrimPrefix(arg, "--run-id=")
+		case strings.HasPrefix(arg, "--database-url="):
+			databaseURL = strings.TrimPrefix(arg, "--database-url=")
+		case strings.HasPrefix(arg, "--config="):
+			configPath = strings.TrimPrefix(arg, "--config=")
+		case strings.HasPrefix(arg, "-"):
+			return "", "", "", "", fmt.Errorf("unknown flag %s", arg)
+		default:
+			if packPath != "" {
+				return "", "", "", "", fmt.Errorf("multiple fixture packs provided")
+			}
+			packPath = arg
+		}
+	}
+	if strings.TrimSpace(packPath) == "" {
+		return "", "", "", "", fmt.Errorf("fixture pack path is required")
+	}
+	return packPath, runID, databaseURL, configPath, nil
+}
+
+func fixtureContentType(path string) string {
+	lower := strings.ToLower(path)
+	if strings.HasSuffix(lower, ".yaml") || strings.HasSuffix(lower, ".yml") {
+		return "application/yaml"
+	}
+	return "application/json"
+}
+
+func firstSeedValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func runCompatibility(args []string) int {

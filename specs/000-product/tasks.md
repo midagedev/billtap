@@ -270,6 +270,7 @@ Gate:
 - [x] T145 Expand customer history, subscription pause/resume, and payment-method attach/detach simulation routes
 - [x] T146 Add browser-facing public base path and forwarded-prefix support
 - [x] T147 Add isolated billing workspaces selectable per request so parallel test suites share one server
+- [x] T148 Add runId URL-scope routing, admin summaries, cleanup, and fixture seed CLI
 
 Suggested agents:
 

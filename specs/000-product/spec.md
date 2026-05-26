@@ -117,11 +117,12 @@ Acceptance criteria:
 - FR-007: Create, retrieve, confirm, fail, and list payment intents.
 - FR-008: Create, retrieve, update, delete, and list webhook endpoints.
 - FR-009: Create, retrieve, and list events.
-- FR-010: Serve isolated billing workspaces from one running server. Requests
-  with no workspace selector use the backward-compatible `default` workspace;
-  a request may select a named workspace via the `X-Billtap-Workspace` header
-  or `workspace` query parameter to get an independent dataset, and the known
-  workspaces are listable.
+- FR-010: Serve isolated billing runs from one running server. Requests with no
+  run selector use the backward-compatible `default` run; a request may select
+  a named run via `/runs/<runId>/v1/...` or `/runs/<runId>/api/...` to get an
+  independent dataset, and the known runs are listable with row-count
+  summaries. The legacy `X-Billtap-Workspace` header and `workspace` query
+  parameter remain supported for backward compatibility.
 
 ### Hosted UI
 
@@ -182,7 +183,7 @@ Acceptance criteria:
 - NFR-005: No real card data is stored.
 - NFR-006: Contract behavior is fixture-backed.
 - NFR-007: Profile-specific behavior is fixture-backed and does not require production payment credentials.
-- NFR-008: Named workspaces are isolated at the storage boundary so parallel
+- NFR-008: Named runs are isolated at the storage boundary so parallel
   test suites do not need a server restart or shared-state reset between runs.
 
 ## Non-Goals

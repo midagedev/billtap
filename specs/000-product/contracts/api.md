@@ -16,25 +16,38 @@ Process health.
 
 Storage and worker readiness.
 
-## Workspaces
+## Runs
 
 One running server can host several isolated billing datasets. Every `/v1`
-and `/api` request resolves a workspace before dispatch:
+and `/api` request resolves a run before dispatch:
 
-- A request with no selector uses the `default` workspace, backed by the
+- A request with no selector uses the `default` run, backed by the
   configured `database_url`. This keeps existing integrations unchanged.
-- A request may select a named workspace with the `X-Billtap-Workspace`
-  request header or the `workspace` query parameter. Named workspaces are
-  created on first use, have their own storage, and are isolated from each
-  other and from `default`.
-- The resolved workspace name is returned on the `X-Billtap-Workspace`
-  response header. An invalid workspace name returns `400`.
+- A request may select a named run with the `/runs/<runId>` path prefix, for
+  example `/runs/ci-123/v1/customers` or `/runs/ci-123/api/diagnostics`.
+  Named runs are created on first use, have their own storage, and are isolated
+  from each other and from `default`.
+- The resolved run ID is returned on `X-Billtap-Run-Id`. The legacy
+  `X-Billtap-Workspace` response header is also echoed for compatibility.
+- The legacy `X-Billtap-Workspace` request header and `workspace` query
+  parameter remain supported as aliases for unprefixed requests. An invalid
+  run ID returns `400`.
+
+### `GET /admin/runs`
+
+Lists known runs (the default, any opened this session, and any whose database
+file already exists). Returns a `list` envelope of `run` objects with `runId`,
+`is_default`, `open`, `storage`, and table row-count `summary`.
+
+### `DELETE /runs/<runId>`
+
+Deletes a named run store. For `default`, clears user data while preserving
+schema metadata.
 
 ### `GET /workspaces`
 
-Lists known workspaces (the default, any opened this session, and any whose
-database file already exists). Returns a `list` envelope of `workspace`
-objects with `name` and `is_default`.
+Legacy alias that lists run partitions as `workspace` objects with `name` and
+`is_default`.
 
 ## Stripe-like API
 
