@@ -363,6 +363,153 @@ func TestRunAdminAndCleanup(t *testing.T) {
 	}
 }
 
+// newRunServerWithPublicBase mirrors newRunServer with a global public base
+// URL configured, so tests can prove run-scoped bases win over it.
+func newRunServerWithPublicBase(t *testing.T, publicBaseURL string) *Server {
+	t.Helper()
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "billtap.db")
+	store, err := storage.OpenSQLite(context.Background(), dbPath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	cfg := config.Config{
+		Addr:          ":0",
+		DatabaseURL:   dbPath,
+		StaticDir:     "web/dist",
+		Environment:   "test",
+		PublicBaseURL: publicBaseURL,
+	}
+	srv := New(Options{Config: cfg, Store: store})
+	t.Cleanup(func() {
+		_ = srv.Close()
+		_ = store.Close()
+	})
+	return srv
+}
+
+// seedRunCheckoutSession creates the minimal catalog and an open checkout
+// session under pathPrefix ("" targets the default run) and returns the
+// session id and hosted URL.
+func seedRunCheckoutSession(t *testing.T, handler http.Handler, pathPrefix string, headers map[string]string) (string, string) {
+	t.Helper()
+	customer := postFormWithHeaders[struct {
+		ID string `json:"id"`
+	}](t, handler, pathPrefix+"/v1/customers", map[string]string{"email": "buyer@example.test"}, headers)
+	product := postFormWithHeaders[struct {
+		ID string `json:"id"`
+	}](t, handler, pathPrefix+"/v1/products", map[string]string{"name": "Team"}, headers)
+	price := postFormWithHeaders[struct {
+		ID string `json:"id"`
+	}](t, handler, pathPrefix+"/v1/prices", map[string]string{
+		"product":             product.ID,
+		"currency":            "usd",
+		"unit_amount":         "9900",
+		"recurring[interval]": "month",
+	}, headers)
+	session := postFormWithHeaders[struct {
+		ID  string `json:"id"`
+		URL string `json:"url"`
+	}](t, handler, pathPrefix+"/v1/checkout/sessions", map[string]string{
+		"customer":                customer.ID,
+		"line_items[0][price]":    price.ID,
+		"line_items[0][quantity]": "1",
+	}, headers)
+	return session.ID, session.URL
+}
+
+func TestRunScopedPublicBaseURLsPerRun(t *testing.T) {
+	srv := newRunServerWithPublicBase(t, "https://localhost:8080")
+
+	postForm[map[string]any](t, srv, "/runs/run-a/v1/config", map[string]string{
+		"public_base_url":  "https://localhost:19029",
+		"public_base_path": "/billtap",
+	})
+	postForm[map[string]any](t, srv, "/runs/run-b/v1/config", map[string]string{
+		"public_base_url": "https://localhost:18131",
+	})
+
+	_, urlA := seedRunCheckoutSession(t, srv, "/runs/run-a", nil)
+	if want := "https://localhost:19029/billtap/runs/run-a/checkout/"; !strings.HasPrefix(urlA, want) {
+		t.Fatalf("run-a checkout URL = %q, want prefix %q", urlA, want)
+	}
+	sessionB, urlB := seedRunCheckoutSession(t, srv, "/runs/run-b", nil)
+	if want := "https://localhost:18131/runs/run-b/checkout/"; !strings.HasPrefix(urlB, want) {
+		t.Fatalf("run-b checkout URL = %q, want prefix %q", urlB, want)
+	}
+
+	// Runs without a configured base and the default run keep the global base.
+	_, urlC := seedRunCheckoutSession(t, srv, "/runs/run-c", nil)
+	if want := "https://localhost:8080/runs/run-c/checkout/"; !strings.HasPrefix(urlC, want) {
+		t.Fatalf("run-c checkout URL = %q, want prefix %q", urlC, want)
+	}
+	_, urlDefault := seedRunCheckoutSession(t, srv, "", nil)
+	if want := "https://localhost:8080/checkout/"; !strings.HasPrefix(urlDefault, want) {
+		t.Fatalf("default checkout URL = %q, want prefix %q", urlDefault, want)
+	}
+
+	// The hosted page refetches its session through the run path and must see
+	// the same run-scoped base.
+	req := httptest.NewRequest(http.MethodGet, "/runs/run-b/v1/checkout/sessions/"+sessionB, nil)
+	rec := httptest.NewRecorder()
+	srv.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get run-b session status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var fetched struct {
+		URL string `json:"url"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &fetched); err != nil {
+		t.Fatalf("decode run-b session: %v body=%s", err, rec.Body.String())
+	}
+	if want := "https://localhost:18131/runs/run-b/checkout/"; !strings.HasPrefix(fetched.URL, want) {
+		t.Fatalf("refetched run-b session URL = %q, want prefix %q", fetched.URL, want)
+	}
+
+	// Deleting a run drops its configured base together with its data.
+	cleanup := httptest.NewRequest(http.MethodDelete, "/runs/run-b", nil)
+	rec = httptest.NewRecorder()
+	srv.ServeHTTP(rec, cleanup)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("run-b cleanup status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	_, urlAfter := seedRunCheckoutSession(t, srv, "/runs/run-b", nil)
+	if want := "https://localhost:8080/runs/run-b/checkout/"; !strings.HasPrefix(urlAfter, want) {
+		t.Fatalf("run-b checkout URL after cleanup = %q, want prefix %q", urlAfter, want)
+	}
+}
+
+func TestRunScopedForwardedOriginBeatsGlobalBase(t *testing.T) {
+	srv := newRunServerWithPublicBase(t, "https://localhost:8080")
+	headers := map[string]string{
+		"X-Forwarded-Host":   "localhost:19029",
+		"X-Forwarded-Proto":  "https",
+		"X-Forwarded-Prefix": "/billtap",
+	}
+
+	// A run-scoped browser request through the reverse proxy lands on the
+	// proxy origin even though a global base is configured.
+	_, urlFwd := seedRunCheckoutSession(t, srv, "/runs/fwd-run", headers)
+	if want := "https://localhost:19029/billtap/runs/fwd-run/checkout/"; !strings.HasPrefix(urlFwd, want) {
+		t.Fatalf("forwarded run checkout URL = %q, want prefix %q", urlFwd, want)
+	}
+
+	// A configured run base still wins over the forwarded origin.
+	postForm[map[string]any](t, srv, "/runs/fwd-run2/v1/config", map[string]string{
+		"public_base_url": "https://configured.example",
+	})
+	_, urlConfigured := seedRunCheckoutSession(t, srv, "/runs/fwd-run2", headers)
+	if want := "https://configured.example/runs/fwd-run2/checkout/"; !strings.HasPrefix(urlConfigured, want) {
+		t.Fatalf("configured run checkout URL = %q, want prefix %q", urlConfigured, want)
+	}
+
+	// Default-run requests keep the global base unchanged behind the proxy.
+	_, urlDefault := seedRunCheckoutSession(t, srv, "", headers)
+	if want := "https://localhost:8080/checkout/"; !strings.HasPrefix(urlDefault, want) {
+		t.Fatalf("default checkout URL = %q, want prefix %q", urlDefault, want)
+	}
+}
+
 func getRunList(t *testing.T, handler http.Handler, path string) struct {
 	Data []json.RawMessage `json:"data"`
 } {

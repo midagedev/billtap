@@ -217,6 +217,39 @@ database as an isolated SQLite file. For compatibility with earlier Billtap
 builds, those files currently live under the existing `workspaces/` directory
 (for example `.billtap/workspaces/suite-a.db`).
 
+### Per-Run Public Base URL
+
+When several proxied stacks share one Billtap server, each stack usually has
+its own browser origin (for example `https://localhost:19029/billtap`), so a
+single global `BILLTAP_PUBLIC_BASE_URL` cannot describe them all. A run can pin
+its own public base, and every absolute URL generated under that run — checkout
+`session.url`, billing portal URLs, hosted-page links — uses it:
+
+```bash
+# usually issued by the stack's seed container, which knows the external origin
+curl -X POST http://billtap:8080/runs/suite-a/v1/config \
+  -d public_base_url=https://localhost:19029 \
+  -d public_base_path=/billtap
+
+curl http://billtap:8080/runs/suite-a/v1/config   # inspect (also /api/config)
+curl -X DELETE http://billtap:8080/runs/suite-a/v1/config  # back to the global base
+```
+
+The base of generated absolute URLs resolves in this order:
+
+1. The run's configured `public_base_url` (+ optional `public_base_path`).
+2. An explicit `X-Billtap-Public-Base-Url` request header.
+3. For run-scoped requests arriving through a reverse proxy:
+   `X-Forwarded-Proto`/`X-Forwarded-Host`/`X-Forwarded-Prefix`.
+4. The global `BILLTAP_PUBLIC_BASE_URL` (+ `BILLTAP_PUBLIC_BASE_PATH`), then the
+   request host — exactly the previous behaviour, so the default run and
+   single-stack setups are unchanged.
+
+Caller-provided `success_url` and `cancel_url` values are never rewritten. The
+per-run base lives in memory with the run's API handler: it survives until the
+run is deleted or the server restarts, so seed it together with the run's
+catalog and webhooks.
+
 Fixture packs can also be applied directly to a run:
 
 ```bash

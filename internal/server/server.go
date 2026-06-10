@@ -218,7 +218,7 @@ func (s *Server) buildAPIHandler(store storage.Store) (http.Handler, error) {
 		Billing:       billing.NewService(repo),
 		Webhooks:      webhookService,
 		Diagnostics:   diagnosticsService,
-		PublicBaseURL: publicBaseURLWithPath(s.cfg.PublicBaseURL, s.cfg.PublicBasePath),
+		PublicBaseURL: config.PublicBaseURLWithPath(s.cfg.PublicBaseURL, s.cfg.PublicBasePath),
 	}), nil
 }
 
@@ -387,15 +387,6 @@ func joinURLPath(basePath string, path string) string {
 		return path
 	}
 	return basePath + path
-}
-
-func publicBaseURLWithPath(baseURL string, basePath string) string {
-	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
-	basePath = config.NormalizePublicBasePath(basePath)
-	if baseURL == "" || basePath == "" || strings.HasSuffix(baseURL, basePath) {
-		return baseURL
-	}
-	return baseURL + basePath
 }
 
 func (s *Server) handleAssets(w http.ResponseWriter, r *http.Request) {

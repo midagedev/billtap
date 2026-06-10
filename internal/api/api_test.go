@@ -112,6 +112,149 @@ func TestHostedURLsUseConfiguredPublicBaseURL(t *testing.T) {
 	}
 }
 
+type runConfigResponse struct {
+	Object              string `json:"object"`
+	PublicBaseURL       any    `json:"public_base_url"`
+	PublicBasePath      any    `json:"public_base_path"`
+	EffectivePublicBase any    `json:"effective_public_base"`
+}
+
+func TestRunConfigEndpointControlsPublicBase(t *testing.T) {
+	handler := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
+
+	initial := getJSON[runConfigResponse](t, handler, "/v1/config")
+	if initial.Object != "run_config" || initial.PublicBaseURL != nil {
+		t.Fatalf("initial config = %#v, want unset run_config", initial)
+	}
+	if initial.EffectivePublicBase != "http://127.0.0.1:18080" {
+		t.Fatalf("initial effective base = %v, want global base", initial.EffectivePublicBase)
+	}
+
+	updated := postForm[runConfigResponse](t, handler, "/v1/config", url.Values{
+		"public_base_url":  {"https://localhost:19029/"},
+		"public_base_path": {"/billtap"},
+	})
+	if updated.PublicBaseURL != "https://localhost:19029" || updated.PublicBasePath != "/billtap" {
+		t.Fatalf("updated config = %#v, want normalized base url and path", updated)
+	}
+	if updated.EffectivePublicBase != "https://localhost:19029/billtap" {
+		t.Fatalf("updated effective base = %v, want combined base", updated.EffectivePublicBase)
+	}
+	if alias := getJSON[runConfigResponse](t, handler, "/api/config"); alias.EffectivePublicBase != "https://localhost:19029/billtap" {
+		t.Fatalf("alias effective base = %v, want combined base", alias.EffectivePublicBase)
+	}
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"run-config@example.test"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"9900"},
+		"recurring[interval]": {"month"},
+	})
+	checkout := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	if !strings.HasPrefix(checkout.URL, "https://localhost:19029/billtap/checkout/") {
+		t.Fatalf("checkout url = %q, want run-configured public base", checkout.URL)
+	}
+	// Caller-provided redirect targets are never rewritten to the run base.
+	if checkout.SuccessURL != "http://app.test/success" || checkout.CancelURL != "http://app.test/cancel" {
+		t.Fatalf("success/cancel urls = %q/%q, want caller values untouched", checkout.SuccessURL, checkout.CancelURL)
+	}
+	portal := postForm[struct {
+		URL string `json:"url"`
+	}](t, handler, "/v1/billing_portal/sessions", url.Values{"customer": {customer.ID}})
+	if !strings.HasPrefix(portal.URL, "https://localhost:19029/billtap/portal?") {
+		t.Fatalf("portal url = %q, want run-configured public base", portal.URL)
+	}
+
+	// DELETE clears the run config and restores the global fallback.
+	cleared := deleteJSON[runConfigResponse](t, handler, "/v1/config")
+	if cleared.PublicBaseURL != nil || cleared.EffectivePublicBase != "http://127.0.0.1:18080" {
+		t.Fatalf("cleared config = %#v, want global fallback", cleared)
+	}
+	fallback := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+	})
+	if !strings.HasPrefix(fallback.URL, "http://127.0.0.1:18080/checkout/") {
+		t.Fatalf("checkout url after clear = %q, want global public base", fallback.URL)
+	}
+}
+
+func TestRunConfigRejectsInvalidPublicBase(t *testing.T) {
+	handler := newTestHandler(t)
+
+	for name, values := range map[string]url.Values{
+		"relative url":         {"public_base_url": {"localhost:19029"}},
+		"url with query":       {"public_base_url": {"https://localhost:19029?x=1"}},
+		"path without url":     {"public_base_path": {"/billtap"}},
+		"path with scheme":     {"public_base_url": {"https://localhost:19029"}, "public_base_path": {"https://other"}},
+		"url with credentials": {"public_base_url": {"https://user:pw@localhost:19029"}},
+	} {
+		status, body := postFormStatus(t, handler, "/v1/config", values)
+		if status != http.StatusBadRequest {
+			t.Fatalf("%s: status = %d body = %s, want 400", name, status, body)
+		}
+	}
+}
+
+func TestPublicBaseHeaderOverridesGlobalBase(t *testing.T) {
+	handler := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"header-base@example.test"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"9900"},
+		"recurring[interval]": {"month"},
+	})
+	sessionValues := url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+	}
+	headers := map[string]string{"X-Billtap-Public-Base-Url": "https://localhost:18131"}
+
+	status, body, _ := postFormStatusWithResponseHeaders(t, handler, "/v1/checkout/sessions", sessionValues, headers)
+	if status != http.StatusOK {
+		t.Fatalf("create session status = %d body = %s", status, body)
+	}
+	var session billing.CheckoutSession
+	if err := json.Unmarshal([]byte(body), &session); err != nil {
+		t.Fatalf("decode session: %v body=%s", err, body)
+	}
+	if !strings.HasPrefix(session.URL, "https://localhost:18131/checkout/") {
+		t.Fatalf("checkout url = %q, want header-provided public base", session.URL)
+	}
+
+	// The run-scoped config still wins over the per-request header.
+	postForm[runConfigResponse](t, handler, "/v1/config", url.Values{
+		"public_base_url": {"https://localhost:19029"},
+	})
+	status, body, _ = postFormStatusWithResponseHeaders(t, handler, "/v1/checkout/sessions", sessionValues, headers)
+	if status != http.StatusOK {
+		t.Fatalf("create session status = %d body = %s", status, body)
+	}
+	if err := json.Unmarshal([]byte(body), &session); err != nil {
+		t.Fatalf("decode session: %v body=%s", err, body)
+	}
+	if !strings.HasPrefix(session.URL, "https://localhost:19029/checkout/") {
+		t.Fatalf("checkout url = %q, want run-configured public base", session.URL)
+	}
+}
+
 func TestCheckoutFailureOutcome(t *testing.T) {
 	handler := newTestHandler(t)
 

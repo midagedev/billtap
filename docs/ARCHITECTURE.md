@@ -75,6 +75,15 @@ its billing state, webhooks, idempotency keys, and test clocks stay isolated.
 The legacy `X-Billtap-Workspace` header and `workspace` query parameter remain
 aliases for the same run partition.
 
+Each run can also pin its own browser-facing base URL through
+`POST /runs/<runId>/v1/config` (`public_base_url`, optional `public_base_path`).
+Absolute URLs generated under that run (hosted checkout `session.url`, billing
+portal URLs) prefer the run's base, then an `X-Billtap-Public-Base-Url` request
+header, then the forwarded proxy origin for run-scoped requests, and finally
+the global `BILLTAP_PUBLIC_BASE_URL`, which keeps the default run unchanged.
+The setting lives in memory with the run's API handler and is dropped on run
+deletion or server restart.
+
 Tables (per run):
 
 - customers
