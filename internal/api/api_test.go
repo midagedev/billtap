@@ -190,6 +190,137 @@ func TestRunConfigEndpointControlsPublicBase(t *testing.T) {
 	}
 }
 
+func TestRunConfiguredBaseRewritesLocalRedirects(t *testing.T) {
+	handler := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
+
+	postForm[runConfigResponse](t, handler, "/v1/config", url.Values{
+		"public_base_url":  {"https://localhost:18689"},
+		"public_base_path": {"/billtap"},
+	})
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"redirect-rewrite@example.test"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"9900"},
+		"recurring[interval]": {"month"},
+	})
+	created := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+		"success_url":             {"https://localhost:8080/checkout-success?step=done"},
+		"cancel_url":              {"https://localhost:8080/checkout-cancel"},
+	})
+
+	// Retrieve keeps the stored success_url and adds the rewritten link for the
+	// hosted page: only the origin changes, the public base path is not added.
+	fetched := getJSON[struct {
+		SuccessURL       string `json:"success_url"`
+		BilltapReturnURL string `json:"billtap_return_url"`
+	}](t, handler, "/v1/checkout/sessions/"+created.ID)
+	if fetched.SuccessURL != "https://localhost:8080/checkout-success?step=done" {
+		t.Fatalf("retrieved success_url = %q, want stored caller value", fetched.SuccessURL)
+	}
+	if fetched.BilltapReturnURL != "https://localhost:18689/checkout-success?step=done" {
+		t.Fatalf("billtap_return_url = %q, want run origin with caller path/query", fetched.BilltapReturnURL)
+	}
+
+	completion := postJSON[struct {
+		Session          billing.CheckoutSession `json:"session"`
+		BilltapReturnURL string                  `json:"billtap_return_url"`
+	}](t, handler, "/api/checkout/sessions/"+created.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+	if completion.Session.SuccessURL != "https://localhost:8080/checkout-success?step=done" {
+		t.Fatalf("completed success_url = %q, want stored caller value", completion.Session.SuccessURL)
+	}
+	if completion.BilltapReturnURL != "https://localhost:18689/checkout-success?step=done" {
+		t.Fatalf("completion billtap_return_url = %q, want rewritten link", completion.BilltapReturnURL)
+	}
+
+	// Portal: the response field keeps the caller value, the hosted URL query
+	// carries the rewritten target. 127.0.0.1 rewrites too, including scheme.
+	portal := postForm[struct {
+		URL       string `json:"url"`
+		ReturnURL string `json:"return_url"`
+	}](t, handler, "/v1/billing_portal/sessions", url.Values{
+		"customer":   {customer.ID},
+		"return_url": {"http://127.0.0.1:3000/dashboard?tab=billing"},
+	})
+	if portal.ReturnURL != "http://127.0.0.1:3000/dashboard?tab=billing" {
+		t.Fatalf("portal return_url = %q, want caller value", portal.ReturnURL)
+	}
+	parsed, err := url.Parse(portal.URL)
+	if err != nil {
+		t.Fatalf("parse portal url %q: %v", portal.URL, err)
+	}
+	if got := parsed.Query().Get("return_url"); got != "https://localhost:18689/dashboard?tab=billing" {
+		t.Fatalf("portal url return_url query = %q, want rewritten target", got)
+	}
+}
+
+func TestLocalRedirectRewriteSkipsExternalAndUnconfigured(t *testing.T) {
+	seedSession := func(handler http.Handler, successURL string) (string, string) {
+		customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+			"email": {"redirect-skip@example.test"},
+		})
+		product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+		price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+			"product":             {product.ID},
+			"currency":            {"usd"},
+			"unit_amount":         {"9900"},
+			"recurring[interval]": {"month"},
+		})
+		session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                {customer.ID},
+			"line_items[0][price]":    {price.ID},
+			"line_items[0][quantity]": {"1"},
+			"success_url":             {successURL},
+		})
+		return session.ID, customer.ID
+	}
+
+	// External hosts are never rewritten, even with a run base configured.
+	configured := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
+	postForm[runConfigResponse](t, configured, "/v1/config", url.Values{
+		"public_base_url": {"https://localhost:18689"},
+	})
+	externalID, _ := seedSession(configured, "https://accounts.example.com/checkout-success")
+	external := getJSON[map[string]any](t, configured, "/v1/checkout/sessions/"+externalID)
+	if _, ok := external["billtap_return_url"]; ok {
+		t.Fatalf("external success_url got billtap_return_url = %v, want none", external["billtap_return_url"])
+	}
+
+	// Without a run config, localhost redirects stay untouched even though the
+	// global public base is set.
+	unconfigured := newTestHandlerWithOptions(t, Options{PublicBaseURL: "http://127.0.0.1:18080"})
+	localID, customerID := seedSession(unconfigured, "https://localhost:8080/checkout-success")
+	local := getJSON[map[string]any](t, unconfigured, "/v1/checkout/sessions/"+localID)
+	if _, ok := local["billtap_return_url"]; ok {
+		t.Fatalf("unconfigured run got billtap_return_url = %v, want none", local["billtap_return_url"])
+	}
+	if got := local["success_url"]; got != "https://localhost:8080/checkout-success" {
+		t.Fatalf("unconfigured success_url = %v, want caller value", got)
+	}
+	portal := postForm[struct {
+		URL string `json:"url"`
+	}](t, unconfigured, "/v1/billing_portal/sessions", url.Values{
+		"customer":   {customerID},
+		"return_url": {"https://localhost:8080/dashboard"},
+	})
+	parsed, err := url.Parse(portal.URL)
+	if err != nil {
+		t.Fatalf("parse portal url %q: %v", portal.URL, err)
+	}
+	if got := parsed.Query().Get("return_url"); got != "https://localhost:8080/dashboard" {
+		t.Fatalf("unconfigured portal return_url query = %q, want caller value", got)
+	}
+}
+
 func TestRunConfigRejectsInvalidPublicBase(t *testing.T) {
 	handler := newTestHandler(t)
 

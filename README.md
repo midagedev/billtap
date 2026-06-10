@@ -245,10 +245,24 @@ The base of generated absolute URLs resolves in this order:
    request host — exactly the previous behaviour, so the default run and
    single-stack setups are unchanged.
 
-Caller-provided `success_url` and `cancel_url` values are never rewritten. The
-per-run base lives in memory with the run's API handler: it survives until the
-run is deleted or the server restarts, so seed it together with the run's
+The per-run base lives in memory with the run's API handler: it survives until
+the run is deleted or the server restarts, so seed it together with the run's
 catalog and webhooks.
+
+When a run has a `public_base_url`, hosted pages also repoint caller-provided
+**localhost redirect targets** at that run's origin. Consumers often store one
+static redirect URL (for example `https://localhost:8080/checkout-success`)
+while each CI job listens on its own port; the hosted checkout "Return to app"
+link and the billing portal return link/redirect then swap only the
+scheme/host/port for the run's origin, keeping path and query:
+
+- The stored session is untouched: `GET /v1/checkout/sessions/{id}` keeps
+  `success_url` exactly as created and exposes the rewritten link as the
+  extension field `billtap_return_url` (also returned beside the session in
+  the completion response). Portal responses keep `return_url` as provided and
+  embed the rewritten target only in the hosted `url` query.
+- Only `localhost` and `127.0.0.1` hosts are rewritten; external domains are
+  never touched. Runs without a `public_base_url` keep redirects unchanged.
 
 Fixture packs can also be applied directly to a run:
 
