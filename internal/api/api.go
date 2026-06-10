@@ -47,10 +47,11 @@ type Handler struct {
 	// Run-scoped public base configured through /v1/config. Each run owns one
 	// Handler instance, so the values live here like the other per-run
 	// in-memory state (idempotency keys, local evidence).
-	runConfigMu       sync.RWMutex
-	runPublicBaseURL  string
-	runPublicBasePath string
-	runPublicBase     string // runPublicBaseURL combined with runPublicBasePath
+	runConfigMu         sync.RWMutex
+	runPublicBaseURL    string
+	runPublicBasePath   string
+	runPublicBase       string // runPublicBaseURL combined with runPublicBasePath
+	runPublicBaseOrigin string // scheme://host of runPublicBaseURL, no path
 }
 
 func New(opts Options) http.Handler {
@@ -1625,7 +1626,13 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 	if err == nil {
 		session.URL = h.absoluteURL(r, session.URL)
 	}
-	writeResult(w, stripeCheckoutSession(session), err)
+	payload := stripeCheckoutSession(session)
+	// The hosted page prefers this extension field for its "Return to app"
+	// link; success_url itself stays exactly as the caller stored it.
+	if rewritten := h.rewriteRunLocalRedirect(session.SuccessURL); rewritten != session.SuccessURL {
+		payload["billtap_return_url"] = rewritten
+	}
+	writeResult(w, payload, err)
 }
 
 func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Request) {
@@ -1659,7 +1666,7 @@ func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Req
 		"locale":        emptyToNil(p.string("locale")),
 		"on_behalf_of":  emptyToNil(p.string("on_behalf_of")),
 		"return_url":    returnURL,
-		"url":           h.absoluteURL(r, billingPortalSessionPath(customerID, sessionID, returnURL, flowType, billingPortalSessionSubscriptionID(p))),
+		"url":           h.absoluteURL(r, billingPortalSessionPath(customerID, sessionID, h.rewriteRunLocalRedirect(returnURL), flowType, billingPortalSessionSubscriptionID(p))),
 		"created":       time.Now().UTC().Unix(),
 		"livemode":      false,
 	}
@@ -1734,6 +1741,12 @@ func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id st
 	}
 	session.URL = h.absoluteURL(r, session.URL)
 	result := map[string]any{"session": session}
+	// Sibling key on purpose: webhook payloads and evidence keep reading the
+	// untouched session struct, while the hosted page uses this for its
+	// post-payment "Return to app" link.
+	if rewritten := h.rewriteRunLocalRedirect(session.SuccessURL); rewritten != session.SuccessURL {
+		result["billtap_return_url"] = rewritten
+	}
 	if session.SubscriptionID != "" {
 		if sub, err := h.billing.GetSubscription(r.Context(), session.SubscriptionID); err == nil {
 			result["subscription"] = sub
@@ -6805,6 +6818,42 @@ func (h *Handler) setRunPublicBase(baseURL string, basePath string) {
 	h.runPublicBaseURL = baseURL
 	h.runPublicBasePath = basePath
 	h.runPublicBase = config.PublicBaseURLWithPath(baseURL, basePath)
+	h.runPublicBaseOrigin = ""
+	if parsed, err := url.Parse(baseURL); err == nil && parsed.Host != "" {
+		h.runPublicBaseOrigin = parsed.Scheme + "://" + parsed.Host
+	}
+}
+
+// rewriteRunLocalRedirect repoints a caller-provided localhost redirect target
+// (checkout success_url, portal return_url) at the run's configured public
+// origin, keeping path and query. Consumers often share one static redirect
+// URL across CI jobs while each job listens on its own port; only the
+// scheme/host/port change, only for localhost/127.0.0.1 targets, and only when
+// the run pinned a public base — other hosts and unconfigured runs keep the
+// caller's value.
+func (h *Handler) rewriteRunLocalRedirect(raw string) string {
+	h.runConfigMu.RLock()
+	origin := h.runPublicBaseOrigin
+	h.runConfigMu.RUnlock()
+	if origin == "" || raw == "" {
+		return raw
+	}
+	target, err := url.Parse(raw)
+	if err != nil || (target.Scheme != "http" && target.Scheme != "https") {
+		return raw
+	}
+	switch strings.ToLower(target.Hostname()) {
+	case "localhost", "127.0.0.1":
+	default:
+		return raw
+	}
+	scheme, hostPort, ok := strings.Cut(origin, "://")
+	if !ok {
+		return raw
+	}
+	target.Scheme = scheme
+	target.Host = hostPort
+	return target.String()
 }
 
 func (h *Handler) writeRunConfig(w http.ResponseWriter, r *http.Request) {

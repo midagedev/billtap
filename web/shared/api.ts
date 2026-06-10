@@ -852,7 +852,9 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
       readObjectId(session.payment_intent) ??
       readString(paymentIntent, ["id"], fixtureSession.paymentIntentId),
     paymentIntentStatus: readString(paymentIntent, ["status"], fixtureSession.paymentIntentStatus),
-    returnUrl: readString(session, ["return_url", "returnUrl", "success_url", "successUrl"], fixtureSession.returnUrl),
+    returnUrl:
+      readString(root, ["billtap_return_url", "billtapReturnUrl"], "") ||
+      readString(session, ["billtap_return_url", "return_url", "returnUrl", "success_url", "successUrl"], fixtureSession.returnUrl),
     lineItems: normalizeLineItems(root, session),
   };
 }

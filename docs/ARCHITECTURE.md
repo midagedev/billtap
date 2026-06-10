@@ -82,7 +82,11 @@ portal URLs) prefer the run's base, then an `X-Billtap-Public-Base-Url` request
 header, then the forwarded proxy origin for run-scoped requests, and finally
 the global `BILLTAP_PUBLIC_BASE_URL`, which keeps the default run unchanged.
 The setting lives in memory with the run's API handler and is dropped on run
-deletion or server restart.
+deletion or server restart. When a run pins a base, hosted pages also repoint
+caller-provided localhost redirect targets (checkout `success_url`, portal
+`return_url`) at the run's origin — surfaced through the `billtap_return_url`
+extension field and the portal URL query, while stored sessions and the
+Stripe-shaped response fields keep the caller's original values.
 
 Tables (per run):
 

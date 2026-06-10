@@ -479,6 +479,67 @@ func TestRunScopedPublicBaseURLsPerRun(t *testing.T) {
 	}
 }
 
+func TestRunScopedRedirectRewriteFollowsRunConfig(t *testing.T) {
+	srv := newRunServerWithPublicBase(t, "https://localhost:8080")
+
+	postForm[map[string]any](t, srv, "/runs/run-a/v1/config", map[string]string{
+		"public_base_url": "https://localhost:18689",
+	})
+
+	seedSession := func(runPrefix string) string {
+		customer := postForm[struct {
+			ID string `json:"id"`
+		}](t, srv, runPrefix+"/v1/customers", map[string]string{"email": "buyer@example.test"})
+		product := postForm[struct {
+			ID string `json:"id"`
+		}](t, srv, runPrefix+"/v1/products", map[string]string{"name": "Team"})
+		price := postForm[struct {
+			ID string `json:"id"`
+		}](t, srv, runPrefix+"/v1/prices", map[string]string{
+			"product":             product.ID,
+			"currency":            "usd",
+			"unit_amount":         "9900",
+			"recurring[interval]": "month",
+		})
+		session := postForm[struct {
+			ID string `json:"id"`
+		}](t, srv, runPrefix+"/v1/checkout/sessions", map[string]string{
+			"customer":                customer.ID,
+			"line_items[0][price]":    price.ID,
+			"line_items[0][quantity]": "1",
+			"success_url":             "https://localhost:8080/checkout-success",
+		})
+		return session.ID
+	}
+
+	getSession := func(path string) map[string]any {
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rec := httptest.NewRecorder()
+		srv.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s status = %d body = %s", path, rec.Code, rec.Body.String())
+		}
+		var out map[string]any
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode %s: %v body=%s", path, err, rec.Body.String())
+		}
+		return out
+	}
+
+	sessionA := getSession("/runs/run-a/v1/checkout/sessions/" + seedSession("/runs/run-a"))
+	if got := sessionA["success_url"]; got != "https://localhost:8080/checkout-success" {
+		t.Fatalf("run-a success_url = %v, want caller value", got)
+	}
+	if got := sessionA["billtap_return_url"]; got != "https://localhost:18689/checkout-success" {
+		t.Fatalf("run-a billtap_return_url = %v, want rewritten run origin", got)
+	}
+
+	sessionB := getSession("/runs/run-b/v1/checkout/sessions/" + seedSession("/runs/run-b"))
+	if _, ok := sessionB["billtap_return_url"]; ok {
+		t.Fatalf("run-b billtap_return_url = %v, want none for unconfigured run", sessionB["billtap_return_url"])
+	}
+}
+
 func TestRunScopedForwardedOriginBeatsGlobalBase(t *testing.T) {
 	srv := newRunServerWithPublicBase(t, "https://localhost:8080")
 	headers := map[string]string{

@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Hosted pages now repoint caller-provided localhost redirect targets at the
+  run's configured public origin: when a run has a `public_base_url`, the
+  hosted checkout "Return to app" link and billing portal return
+  link/redirect swap the scheme/host/port of `localhost`/`127.0.0.1`
+  `success_url`/`return_url` values for the run origin (path and query kept),
+  surfaced via the `billtap_return_url` extension field and the portal URL
+  query while stored sessions, `success_url`, and portal `return_url`
+  response fields keep the caller's original values. External domains and
+  unconfigured runs are untouched.
 - Added run-scoped public base URLs so several proxied stacks can share one
   Billtap server: `POST /runs/<runId>/v1/config` pins `public_base_url` and an
   optional `public_base_path` per run, and absolute URLs (checkout
