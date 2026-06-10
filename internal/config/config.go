@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -252,6 +253,38 @@ func ValidatePublicBasePath(value string) (string, error) {
 		return "", errors.New("public_base_path cannot contain empty path segments")
 	}
 	return value, nil
+}
+
+// ValidatePublicBaseURL normalizes an absolute public base URL. The value must
+// be http(s) with a host, may carry a path prefix, and cannot include
+// credentials, a query, or a fragment. An empty value stays empty.
+func ValidatePublicBaseURL(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", nil
+	}
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return "", fmt.Errorf("public_base_url must be a valid URL: %v", err)
+	}
+	if (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", errors.New("public_base_url must be an absolute http(s) URL")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", errors.New("public_base_url cannot contain credentials, query, or fragment")
+	}
+	return strings.TrimRight(value, "/"), nil
+}
+
+// PublicBaseURLWithPath combines a public base URL with an optional base path,
+// avoiding a duplicated suffix when the URL already ends with the path.
+func PublicBaseURLWithPath(baseURL string, basePath string) string {
+	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
+	basePath = NormalizePublicBasePath(basePath)
+	if baseURL == "" || basePath == "" || strings.HasSuffix(baseURL, basePath) {
+		return baseURL
+	}
+	return baseURL + basePath
 }
 
 func parseBool(value string) bool {

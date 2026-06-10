@@ -11,9 +11,11 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/hckim/billtap/internal/billing"
+	"github.com/hckim/billtap/internal/config"
 	"github.com/hckim/billtap/internal/diagnostics"
 	"github.com/hckim/billtap/internal/fixtures"
 	"github.com/hckim/billtap/internal/scenarios"
@@ -41,6 +43,14 @@ type Handler struct {
 	compat      stripecompat.Registry
 	knownRoutes stripecompat.RouteCatalog
 	validation  stripecompat.ValidationCatalog
+
+	// Run-scoped public base configured through /v1/config. Each run owns one
+	// Handler instance, so the values live here like the other per-run
+	// in-memory state (idempotency keys, local evidence).
+	runConfigMu       sync.RWMutex
+	runPublicBaseURL  string
+	runPublicBasePath string
+	runPublicBase     string // runPublicBaseURL combined with runPublicBasePath
 }
 
 func New(opts Options) http.Handler {
@@ -133,6 +143,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/webhook_endpoints/", h.handleWebhookEndpoint)
 	h.mux.HandleFunc("/v1/events", h.handleEvents)
 	h.mux.HandleFunc("/v1/events/", h.handleEvent)
+	h.mux.HandleFunc("/v1/config", h.handleRunConfig)
+	h.mux.HandleFunc("/api/config", h.handleRunConfig)
 	h.mux.HandleFunc("/v1", h.handleStripeFallback)
 	h.mux.HandleFunc("/v1/", h.handleStripeFallback)
 	h.mux.HandleFunc("/v2", h.handleStripeFallback)
@@ -6750,7 +6762,104 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
+// handleRunConfig reads or updates per-run settings. POST replaces the whole
+// config with the submitted values, so a seed container can pin the run's
+// externally reachable base with a single form-encoded request.
+func (h *Handler) handleRunConfig(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		h.writeRunConfig(w, r)
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		baseURL, err := config.ValidatePublicBaseURL(p.string("public_base_url"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		basePath, err := config.ValidatePublicBasePath(p.string("public_base_path"))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if baseURL == "" && basePath != "" {
+			writeError(w, http.StatusBadRequest, errors.New("public_base_path requires public_base_url"))
+			return
+		}
+		h.setRunPublicBase(baseURL, basePath)
+		h.writeRunConfig(w, r)
+	case http.MethodDelete:
+		h.setRunPublicBase("", "")
+		h.writeRunConfig(w, r)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
+	}
+}
+
+func (h *Handler) setRunPublicBase(baseURL string, basePath string) {
+	h.runConfigMu.Lock()
+	defer h.runConfigMu.Unlock()
+	h.runPublicBaseURL = baseURL
+	h.runPublicBasePath = basePath
+	h.runPublicBase = config.PublicBaseURLWithPath(baseURL, basePath)
+}
+
+func (h *Handler) writeRunConfig(w http.ResponseWriter, r *http.Request) {
+	h.runConfigMu.RLock()
+	baseURL, basePath, combined := h.runPublicBaseURL, h.runPublicBasePath, h.runPublicBase
+	h.runConfigMu.RUnlock()
+	effective := combined
+	if effective == "" {
+		effective = h.publicBase
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"object":                "run_config",
+		"run_id":                emptyToNil(strings.TrimSpace(r.Header.Get(runIDHeader))),
+		"public_base_url":       emptyToNil(baseURL),
+		"public_base_path":      emptyToNil(basePath),
+		"effective_public_base": emptyToNil(effective),
+	})
+}
+
+func (h *Handler) runConfiguredPublicBase() string {
+	h.runConfigMu.RLock()
+	defer h.runConfigMu.RUnlock()
+	return h.runPublicBase
+}
+
+// absoluteURL turns a server-relative path into the URL a browser must use.
+// The base resolves in order: the run's configured public base, an explicit
+// X-Billtap-Public-Base-Url override, the reverse-proxy forwarded origin for
+// run-scoped requests, and finally the global public base or request host.
 func (h *Handler) absoluteURL(r *http.Request, path string) string {
+	if strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://") {
+		return path
+	}
+	if path == "" {
+		path = "/"
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	runPrefix := requestRunPrefix(r)
+	if base := h.runConfiguredPublicBase(); base != "" {
+		return base + runPrefix + path
+	}
+	if base := requestPublicBaseOverride(r); base != "" {
+		return base + runPrefix + path
+	}
+	// A run-scoped browser request carries the proxy origin, which beats the
+	// global base: that base only knows a single-stack origin, while several
+	// proxied stacks can share this server. X-Forwarded-Prefix already
+	// includes the run prefix here, joined during run-path routing.
+	if runPrefix != "" {
+		if origin := forwardedOrigin(r); origin != "" {
+			return origin + requestForwardedPrefix(r) + path
+		}
+	}
 	return absoluteURL(r, path, h.publicBase)
 }
 
@@ -6804,6 +6913,44 @@ func requestRunPrefix(r *http.Request) string {
 		raw = "/" + raw
 	}
 	return strings.TrimRight(raw, "/")
+}
+
+const (
+	// runIDHeader carries the canonical run resolved by the server dispatcher.
+	runIDHeader = "X-Billtap-Run-Id"
+
+	// publicBaseURLHeader lets a single request pin the public base of the
+	// absolute URLs in its response without touching the run config.
+	publicBaseURLHeader = "X-Billtap-Public-Base-Url"
+)
+
+func requestPublicBaseOverride(r *http.Request) string {
+	raw := strings.TrimSpace(r.Header.Get(publicBaseURLHeader))
+	if raw == "" {
+		return ""
+	}
+	base, err := config.ValidatePublicBaseURL(raw)
+	if err != nil {
+		return ""
+	}
+	return base
+}
+
+// forwardedOrigin rebuilds the browser-facing origin from the reverse-proxy
+// X-Forwarded-Host and X-Forwarded-Proto headers.
+func forwardedOrigin(r *http.Request) string {
+	host := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0])
+	if host == "" || strings.Contains(host, "://") || strings.ContainsAny(host, "/?#\\ ") {
+		return ""
+	}
+	scheme := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	if scheme != "http" && scheme != "https" {
+		scheme = "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+	}
+	return scheme + "://" + host
 }
 
 func (h *Handler) emitCheckoutWebhooks(r *http.Request, result map[string]any) []webhooks.Event {

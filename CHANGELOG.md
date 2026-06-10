@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added run-scoped public base URLs so several proxied stacks can share one
+  Billtap server: `POST /runs/<runId>/v1/config` pins `public_base_url` and an
+  optional `public_base_path` per run, and absolute URLs (checkout
+  `session.url`, billing portal URLs) prefer the run's base over an
+  `X-Billtap-Public-Base-Url` request header, the forwarded proxy origin
+  (`X-Forwarded-Proto`/`Host`/`Prefix`) on run-scoped requests, and the global
+  `BILLTAP_PUBLIC_BASE_URL`. The default run keeps its previous behaviour.
 - Added multi-workspace support so one running server can hold several fully
   isolated billing datasets. Requests select a workspace with the
   `X-Billtap-Workspace` header or `workspace` query parameter, unselected
