@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -77,6 +78,135 @@ func TestCheckoutMVPFlow(t *testing.T) {
 	}](t, handler, "/api/timeline?checkoutSessionId="+session.ID)
 	if got := len(timeline.Data); got < 4 {
 		t.Fatalf("timeline entries = %d, want checkout completion evidence", got)
+	}
+}
+
+func TestCheckoutCompletionDoesNotWaitForSlowWebhookDelivery(t *testing.T) {
+	releaseWebhook := make(chan struct{})
+	receiverStarted := make(chan struct{}, 1)
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case receiverStarted <- struct{}{}:
+		default:
+		}
+		<-releaseWebhook
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+	defer close(releaseWebhook)
+
+	handler := newTestHandler(t)
+	_ = postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"*"},
+	})
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"buyer@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Team"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"9900"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+
+	done := make(chan struct {
+		status int
+		body   string
+	}, 1)
+	start := time.Now()
+	go func() {
+		req := httptest.NewRequest(http.MethodPost, "/api/checkout/sessions/"+session.ID+"/complete", strings.NewReader(`{"outcome":"payment_succeeded"}`))
+		req.Header.Set("Content-Type", "application/json")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		done <- struct {
+			status int
+			body   string
+		}{status: rec.Code, body: rec.Body.String()}
+	}()
+
+	select {
+	case result := <-done:
+		if result.status != http.StatusOK {
+			t.Fatalf("checkout completion status = %d body = %s", result.status, result.body)
+		}
+		if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+			t.Fatalf("checkout completion took %s, want response before slow webhook delivery completes", elapsed)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("checkout completion waited for slow webhook delivery")
+	}
+
+	select {
+	case <-receiverStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("webhook delivery did not start")
+	}
+}
+
+func TestDirectPaymentIntentWebhooksDoNotWaitForSlowDelivery(t *testing.T) {
+	releaseWebhook := make(chan struct{})
+	receiverStarted := make(chan struct{}, 1)
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case receiverStarted <- struct{}{}:
+		default:
+		}
+		<-releaseWebhook
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer receiver.Close()
+	defer close(releaseWebhook)
+
+	handler := newTestHandler(t)
+	_ = postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
+		"url":            {receiver.URL},
+		"enabled_events": {"payment_intent.*"},
+	})
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"pi@example.test"}})
+
+	done := make(chan struct {
+		status int
+		body   string
+	}, 1)
+	start := time.Now()
+	go func() {
+		form := url.Values{
+			"customer":       {customer.ID},
+			"amount":         {"1200"},
+			"currency":       {"usd"},
+			"payment_method": {"pm_card_visa"},
+			"confirm":        {"true"},
+		}
+		req := httptest.NewRequest(http.MethodPost, "/v1/payment_intents", strings.NewReader(form.Encode()))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		done <- struct {
+			status int
+			body   string
+		}{status: rec.Code, body: rec.Body.String()}
+	}()
+
+	select {
+	case result := <-done:
+		if result.status != http.StatusOK {
+			t.Fatalf("payment intent create status = %d body = %s", result.status, result.body)
+		}
+		if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+			t.Fatalf("payment intent create took %s, want response before slow webhook delivery completes", elapsed)
+		}
+	case <-time.After(150 * time.Millisecond):
+		t.Fatal("payment intent create waited for slow webhook delivery")
+	}
+
+	select {
+	case <-receiverStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("webhook delivery did not start")
 	}
 }
 
@@ -1092,6 +1222,7 @@ func TestWebhookEndpointHistoricalReplay(t *testing.T) {
 		t.Fatalf("initial attempts = %#v, want no attempts before endpoint registration", initialAttempts.Data)
 	}
 
+	var receivedMu sync.Mutex
 	var receivedTypes []string
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
@@ -1100,10 +1231,25 @@ func TestWebhookEndpointHistoricalReplay(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode webhook payload: %v", err)
 		}
+		receivedMu.Lock()
 		receivedTypes = append(receivedTypes, payload.Type)
+		receivedMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer receiver.Close()
+	waitForReceivedTypes := func(minCount int) []string {
+		deadline := time.Now().Add(2 * time.Second)
+		var got []string
+		for {
+			receivedMu.Lock()
+			got = append([]string(nil), receivedTypes...)
+			receivedMu.Unlock()
+			if len(got) >= minCount || time.Now().After(deadline) {
+				return got
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
 
 	endpoint := postForm[webhooks.Endpoint](t, handler, "/v1/webhook_endpoints", url.Values{
 		"url":            {receiver.URL},
@@ -1117,8 +1263,8 @@ func TestWebhookEndpointHistoricalReplay(t *testing.T) {
 	_ = postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+laterSession.ID+"/complete", map[string]string{
 		"outcome": "payment_succeeded",
 	})
-	if len(receivedTypes) != 4 {
-		t.Fatalf("post-registration received types = %#v, want four normally delivered invoice events", receivedTypes)
+	if gotTypes := waitForReceivedTypes(4); len(gotTypes) != 4 {
+		t.Fatalf("post-registration received types = %#v, want four normally delivered invoice events", gotTypes)
 	}
 
 	catchup := postForm[struct {
@@ -1146,8 +1292,8 @@ func TestWebhookEndpointHistoricalReplay(t *testing.T) {
 			t.Fatalf("catchup attempt = %#v, want successful historical invoice replay", attempt)
 		}
 	}
-	if len(receivedTypes) != 8 {
-		t.Fatalf("received types = %#v, want four normal and four historical invoice events", receivedTypes)
+	if gotTypes := waitForReceivedTypes(8); len(gotTypes) != 8 {
+		t.Fatalf("received types = %#v, want four normal and four historical invoice events", gotTypes)
 	}
 
 	second := postForm[struct {
@@ -1159,8 +1305,8 @@ func TestWebhookEndpointHistoricalReplay(t *testing.T) {
 	if second.MatchedEvents != 4 || second.ReplayedEvents != 0 || second.SkippedEvents != 4 || second.AttemptCount != 0 {
 		t.Fatalf("second catchup = %#v, want idempotent skip of existing attempts", second)
 	}
-	if len(receivedTypes) != 8 {
-		t.Fatalf("received types after second catchup = %#v, want no duplicate delivery", receivedTypes)
+	if gotTypes := waitForReceivedTypes(8); len(gotTypes) != 8 {
+		t.Fatalf("received types after second catchup = %#v, want no duplicate delivery", gotTypes)
 	}
 
 	filtered := postForm[struct {
@@ -2809,6 +2955,7 @@ func TestBillingPortalSessionActionsEmitWebhooks(t *testing.T) {
 		"items[0][price]": {price.ID},
 	})
 
+	var receivedMu sync.Mutex
 	var receivedTypes []string
 	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var payload struct {
@@ -2817,7 +2964,9 @@ func TestBillingPortalSessionActionsEmitWebhooks(t *testing.T) {
 		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
 			t.Fatalf("decode webhook payload: %v", err)
 		}
+		receivedMu.Lock()
 		receivedTypes = append(receivedTypes, payload.Type)
+		receivedMu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer receiver.Close()
@@ -2889,8 +3038,19 @@ func TestBillingPortalSessionActionsEmitWebhooks(t *testing.T) {
 	})
 
 	wantTypes := []string{"payment_method.attached", "customer.updated", "customer.subscription.updated", "customer.subscription.deleted"}
-	if strings.Join(receivedTypes, ",") != strings.Join(wantTypes, ",") {
-		t.Fatalf("received webhook types = %#v, want %#v", receivedTypes, wantTypes)
+	var gotTypes []string
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		receivedMu.Lock()
+		gotTypes = append([]string(nil), receivedTypes...)
+		receivedMu.Unlock()
+		if len(gotTypes) >= len(wantTypes) || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if strings.Join(gotTypes, ",") != strings.Join(wantTypes, ",") {
+		t.Fatalf("received webhook types = %#v, want %#v", gotTypes, wantTypes)
 	}
 
 	filteredEvents := getJSON[struct {

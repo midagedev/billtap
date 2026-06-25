@@ -142,6 +142,7 @@ type EventInput struct {
 	Source          string
 	Sequence        int64
 	DeliverNow      bool
+	AsyncDelivery   bool
 	DeliveryOptions DeliveryOptions
 }
 
@@ -205,6 +206,7 @@ type ServiceOptions struct {
 	RetentionDays       int
 	SignatureHeaderName string
 	APIVersion          string
+	DeliveryConcurrency int
 }
 
 type Repository interface {

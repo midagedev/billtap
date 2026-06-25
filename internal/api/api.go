@@ -7017,6 +7017,7 @@ func (h *Handler) emitCheckoutWebhooks(r *http.Request, result map[string]any) [
 			IdempotencyKey: "billtap:" + item.eventType + ":" + item.objectID,
 			Source:         webhooks.SourceCheckout,
 			Sequence:       sequence + int64(idx),
+			AsyncDelivery:  true,
 		})
 		if err == nil {
 			emitted = append(emitted, event)
@@ -7041,6 +7042,7 @@ func (h *Handler) emitSubscriptionWebhook(r *http.Request, eventType string, sub
 		IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", eventType, subscription.ID, sequence),
 		Source:         source,
 		Sequence:       sequence,
+		AsyncDelivery:  true,
 	})
 	if err != nil {
 		return nil
@@ -7064,6 +7066,7 @@ func (h *Handler) emitPaymentIntentWebhook(r *http.Request, eventType string, in
 		IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", eventType, intent.ID, sequence),
 		Source:         webhooks.SourceAPI,
 		Sequence:       sequence,
+		AsyncDelivery:  true,
 	})
 	if err != nil {
 		return nil
@@ -7085,6 +7088,7 @@ func (h *Handler) emitInvoicePaymentWebhooks(r *http.Request, result billing.Inv
 			IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", item.eventType, item.objectID, sequence),
 			Source:         source,
 			Sequence:       sequence + int64(idx),
+			AsyncDelivery:  true,
 		})
 		if err == nil {
 			emitted = append(emitted, event)
@@ -7107,6 +7111,7 @@ func (h *Handler) emitRenewalWebhooks(r *http.Request, result billing.InvoicePay
 			IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", item.eventType, item.objectID, sequence),
 			Source:         source,
 			Sequence:       sequence + int64(idx),
+			AsyncDelivery:  true,
 		})
 		if err == nil {
 			emitted = append(emitted, event)
@@ -7264,6 +7269,7 @@ func (h *Handler) emitGenericWebhook(r *http.Request, eventType string, objectID
 		IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", eventType, objectID, sequence),
 		Source:         source,
 		Sequence:       sequence,
+		AsyncDelivery:  true,
 	})
 	if err != nil {
 		return nil
@@ -7287,6 +7293,7 @@ func (h *Handler) emitSetupIntentWebhook(r *http.Request, eventType string, inte
 		IdempotencyKey: fmt.Sprintf("billtap:%s:%s:%d", eventType, intent.ID, sequence),
 		Source:         webhooks.SourceAPI,
 		Sequence:       sequence,
+		AsyncDelivery:  true,
 	})
 	if err != nil {
 		return nil

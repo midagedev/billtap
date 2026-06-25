@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/hckim/billtap/internal/config"
 	"github.com/hckim/billtap/internal/storage"
@@ -331,7 +332,7 @@ func TestRunWebhookEndpointsOnlyReceiveRunEvents(t *testing.T) {
 	})
 	_ = postForm[map[string]any](t, srv, "/runs/webhook-a/v1/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
 
-	attemptsA := getRunList(t, srv, "/runs/webhook-a/v1/webhook_endpoints/"+endpointA.ID+"/attempts")
+	attemptsA := waitForRunListCount(t, srv, "/runs/webhook-a/v1/webhook_endpoints/"+endpointA.ID+"/attempts", 1)
 	if len(attemptsA.Data) == 0 {
 		t.Fatalf("run-a endpoint attempts = 0, want checkout delivery attempts")
 	}
@@ -588,6 +589,23 @@ func getRunList(t *testing.T, handler http.Handler, path string) struct {
 		t.Fatalf("decode %s: %v body=%s", path, err, rec.Body.String())
 	}
 	return out
+}
+
+func waitForRunListCount(t *testing.T, handler http.Handler, path string, minCount int) struct {
+	Data []json.RawMessage `json:"data"`
+} {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	var out struct {
+		Data []json.RawMessage `json:"data"`
+	}
+	for {
+		out = getRunList(t, handler, path)
+		if len(out.Data) >= minCount || time.Now().After(deadline) {
+			return out
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 func getRunSummaries(t *testing.T, handler http.Handler) map[string]map[string]int {

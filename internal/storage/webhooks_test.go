@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -122,6 +123,147 @@ func TestWebhookServiceRecordsSignedDelivery(t *testing.T) {
 	}
 	if gotSignature == "" {
 		t.Fatal("test server did not receive Billtap-Signature")
+	}
+}
+
+func TestWebhookServiceAsyncDeliveryDoesNotWaitForReceiver(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer store.Close()
+
+	var received atomic.Int32
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		received.Add(1)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	defer close(release)
+
+	service := webhooks.NewService(store)
+	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
+		t.Fatalf("CreateEndpoint returned error: %v", err)
+	}
+
+	start := time.Now()
+	_, attempts, err := service.CreateEvent(ctx, webhooks.EventInput{
+		Type:          "checkout.session.completed",
+		ObjectPayload: json.RawMessage(`{"id":"cs_async"}`),
+		Source:        webhooks.SourceCheckout,
+		Sequence:      1,
+		AsyncDelivery: true,
+	})
+	if err != nil {
+		t.Fatalf("CreateEvent returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 100*time.Millisecond {
+		t.Fatalf("CreateEvent took %s, want async return before receiver is released", elapsed)
+	}
+	if len(attempts) != 0 {
+		t.Fatalf("attempts = %#v, want none returned for async delivery", attempts)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for received.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if received.Load() == 0 {
+		t.Fatal("async delivery did not reach receiver")
+	}
+}
+
+func TestWebhookServiceLimitsConcurrentDelivery(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer store.Close()
+
+	var received atomic.Int32
+	var inFlight atomic.Int32
+	var maxInFlight atomic.Int32
+	release := make(chan struct{})
+	var released atomic.Bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		current := inFlight.Add(1)
+		for {
+			max := maxInFlight.Load()
+			if current <= max || maxInFlight.CompareAndSwap(max, current) {
+				break
+			}
+		}
+		received.Add(1)
+		<-release
+		inFlight.Add(-1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+	defer func() {
+		if released.CompareAndSwap(false, true) {
+			close(release)
+		}
+	}()
+
+	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{
+		StoreRawPayloads:    true,
+		RetentionDays:       30,
+		DeliveryConcurrency: 1,
+	})
+	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
+		t.Fatalf("CreateEndpoint returned error: %v", err)
+	}
+
+	done := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func(sequence int64) {
+			_, _, err := service.CreateEvent(ctx, webhooks.EventInput{
+				Type:          "checkout.session.completed",
+				ObjectPayload: json.RawMessage(`{"id":"cs_limit"}`),
+				Source:        webhooks.SourceCheckout,
+				Sequence:      sequence,
+			})
+			done <- err
+		}(int64(i + 1))
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for received.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if received.Load() == 0 {
+		t.Fatal("first delivery did not start")
+	}
+	time.Sleep(50 * time.Millisecond)
+	if maxInFlight.Load() != 1 {
+		t.Fatalf("max in-flight delivery = %d, want 1", maxInFlight.Load())
+	}
+	if released.CompareAndSwap(false, true) {
+		close(release)
+	}
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CreateEvent returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first CreateEvent did not complete after release")
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("CreateEvent returned error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("second CreateEvent did not complete after release")
+	}
+	if received.Load() != 2 {
+		t.Fatalf("received deliveries = %d, want 2", received.Load())
 	}
 }
 

@@ -23,6 +23,7 @@ type Service struct {
 	repo                Repository
 	now                 func() time.Time
 	client              *http.Client
+	deliverySemaphore   chan struct{}
 	storeRawPayloads    bool
 	retentionDays       int
 	signatureHeaderName string
@@ -40,9 +41,13 @@ func NewServiceWithOptions(repo Repository, opts ServiceOptions) *Service {
 	if strings.TrimSpace(opts.APIVersion) == "" {
 		opts.APIVersion = DefaultAPIVersion
 	}
+	if opts.DeliveryConcurrency <= 0 {
+		opts.DeliveryConcurrency = 2
+	}
 	return &Service{
 		repo:                repo,
 		now:                 func() time.Time { return time.Now().UTC() },
+		deliverySemaphore:   make(chan struct{}, opts.DeliveryConcurrency),
 		storeRawPayloads:    opts.StoreRawPayloads,
 		retentionDays:       opts.RetentionDays,
 		signatureHeaderName: NormalizeSignatureHeaderName(opts.SignatureHeaderName),
@@ -154,6 +159,13 @@ func (s *Service) CreateEvent(ctx context.Context, in EventInput) (Event, []Deli
 		return Event{}, nil, err
 	}
 	event.RawPayload = raw
+
+	if in.AsyncDelivery && len(endpoints) > 0 {
+		go func() {
+			_, _ = s.createAttempts(context.WithoutCancel(ctx), event, endpoints, in.DeliveryOptions)
+		}()
+		return event, nil, nil
+	}
 
 	attempts, err := s.createAttempts(ctx, event, endpoints, in.DeliveryOptions)
 	if err != nil {
@@ -520,6 +532,13 @@ func (s *Service) recordSimulatedAttempt(ctx context.Context, endpoint Endpoint,
 }
 
 func (s *Service) deliverAttempt(ctx context.Context, endpoint Endpoint, attempt DeliveryAttempt) (DeliveryAttempt, error) {
+	if err := s.acquireDeliverySlot(ctx); err != nil {
+		attempt.Status = StatusFailed
+		attempt.Error = err.Error()
+		return s.recordRetry(ctx, endpoint, attempt)
+	}
+	defer s.releaseDeliverySlot()
+
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint.URL, bytes.NewReader(attempt.RequestBody))
 	if err != nil {
 		attempt.Status = StatusFailed
@@ -550,6 +569,28 @@ func (s *Service) deliverAttempt(ctx context.Context, endpoint Endpoint, attempt
 	attempt.Status = StatusFailed
 	attempt.Error = resp.Status
 	return s.recordRetry(ctx, endpoint, attempt)
+}
+
+func (s *Service) acquireDeliverySlot(ctx context.Context) error {
+	if s.deliverySemaphore == nil {
+		return nil
+	}
+	select {
+	case s.deliverySemaphore <- struct{}{}:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (s *Service) releaseDeliverySlot() {
+	if s.deliverySemaphore == nil {
+		return
+	}
+	select {
+	case <-s.deliverySemaphore:
+	default:
+	}
 }
 
 func (s *Service) recordRetry(ctx context.Context, endpoint Endpoint, attempt DeliveryAttempt) (DeliveryAttempt, error) {
