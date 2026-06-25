@@ -45,8 +45,8 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Install browser smoke dependencies
-        run: npm run smoke:web:install
+      - name: Check browser smoke browser
+        run: google-chrome --version
 
       - name: Go tests
         run: go test ./...
@@ -67,6 +67,8 @@ jobs:
         run: npm run smoke:sdk
 
       - name: Web UI smoke
+        env:
+          PLAYWRIGHT_CHROMIUM_CHANNEL: chrome
         run: npm run smoke:web
 
       - name: Build Billtap binary

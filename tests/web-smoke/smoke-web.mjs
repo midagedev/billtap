@@ -174,9 +174,13 @@ async function readJSONResponse(response, url) {
 }
 
 async function runBrowserSmoke(baseURL, checks) {
-  const browser = await chromium.launch({
+  const launchOptions = {
     headless: process.env.PLAYWRIGHT_HEADLESS !== "0",
-  });
+  };
+  const browserChannel = process.env.PLAYWRIGHT_CHROMIUM_CHANNEL?.trim();
+  if (browserChannel) launchOptions.channel = browserChannel;
+
+  const browser = await chromium.launch(launchOptions);
   const page = await browser.newPage();
   const consoleErrors = [];
   let currentRoute = "";
