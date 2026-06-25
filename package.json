@@ -16,7 +16,7 @@
     "smoke:sample": "npm --prefix examples/sample-app run smoke",
     "smoke:sdk": "node tests/sdk-smoke/stripe-sdk-smoke.mjs",
     "smoke:web": "node tests/web-smoke/smoke-web.mjs",
-    "smoke:web:install": "playwright install --with-deps chromium"
+    "smoke:web:install": "playwright install --with-deps --only-shell chromium"
   },
   "dependencies": {
     "react": "^19.2.1",
