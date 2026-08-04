@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1577,12 +1578,21 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			writeResult(w, nil, err)
 			return
 		}
-		lineItems := p.lineItems()
+		mode := p.stringDefault("mode", "subscription")
+		lineItems, err := h.resolveCheckoutLineItems(r.Context(), p, mode)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
 		for _, item := range lineItems {
 			if err := validatePriceExists(h.billing.GetPrice(r.Context(), item.PriceID)); err != nil {
 				writeResult(w, nil, err)
 				return
 			}
+		}
+		if err := h.validateCheckoutLineItemCurrencies(r.Context(), lineItems); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
 		discounts, err := h.discountsFromParamsOrCustomer(r, p, customer)
 		if err != nil {
@@ -1598,18 +1608,30 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 		if automaticTax {
 			taxPercent = billing.ParseCustomerTaxPercent(customer.Metadata)
 		}
+		defaultTaxRates, err := h.appliedTaxRatesFromParams(p, "subscription_data[default_tax_rates]")
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
 		session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
-			CustomerID:          p.first("customer", "customer_id"),
-			Mode:                p.stringDefault("mode", "subscription"),
-			LineItems:           lineItems,
-			Discounts:           discounts,
-			SuccessURL:          p.string("success_url"),
-			CancelURL:           p.string("cancel_url"),
-			AllowPromotionCodes: p.boolDefault("allow_promotion_codes", false),
-			TrialPeriodDays:     p.int64("subscription_data[trial_period_days]"),
-			AutomaticTax:        automaticTax,
-			TaxIDCollection:     p.boolDefault("tax_id_collection[enabled]", false),
-			TaxPercent:          taxPercent,
+			CustomerID:               p.first("customer", "customer_id"),
+			Mode:                     mode,
+			LineItems:                lineItems,
+			Discounts:                discounts,
+			SuccessURL:               p.string("success_url"),
+			CancelURL:                p.string("cancel_url"),
+			AllowPromotionCodes:      p.boolDefault("allow_promotion_codes", false),
+			TrialPeriodDays:          p.int64("subscription_data[trial_period_days]"),
+			AutomaticTax:             automaticTax,
+			TaxIDCollection:          p.boolDefault("tax_id_collection[enabled]", false),
+			TaxPercent:               taxPercent,
+			DefaultTaxRates:          defaultTaxRates,
+			ClientReferenceID:        p.string("client_reference_id"),
+			PaymentIntentMetadata:    p.paymentIntentDataMetadata(),
+			SetupFutureUsage:         p.string("payment_intent_data[setup_future_usage]"),
+			PaymentIntentDescription: p.string("payment_intent_data[description]"),
+			ReceiptEmail:             p.string("payment_intent_data[receipt_email]"),
+			CaptureMethod:            p.string("payment_intent_data[capture_method]"),
 		})
 		if err == nil {
 			session.URL = h.absoluteURL(r, session.URL)
@@ -1733,11 +1755,117 @@ func billingPortalSessionPath(customerID string, sessionID string, returnURL str
 func (h *Handler) handleCheckoutCompletion(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/checkout/sessions/")
 	id, suffix, _ := strings.Cut(rest, "/")
-	if id == "" || suffix != "complete" {
+	if id == "" {
 		h.notFound(w, r)
 		return
 	}
-	h.completeCheckout(w, r, id)
+	switch suffix {
+	case "complete":
+		h.completeCheckout(w, r, id)
+	case "promotion_code":
+		h.handleCheckoutSessionPromotionCode(w, r, id)
+	default:
+		h.notFound(w, r)
+	}
+}
+
+// handleCheckoutSessionPromotionCode applies or removes a promotion code on an open
+// allow_promotion_codes checkout session (Billtap-hosted "Add promotion code" path).
+// times_redeemed is not incremented or decremented — create-path coupon evidence stores
+// 0 and neither checkout create nor complete mutates the counter.
+func (h *Handler) handleCheckoutSessionPromotionCode(w http.ResponseWriter, r *http.Request, id string) {
+	switch r.Method {
+	case http.MethodPost:
+		h.applyCheckoutSessionPromotionCode(w, r, id)
+	case http.MethodDelete:
+		h.removeCheckoutSessionPromotionCode(w, r, id)
+	default:
+		h.methodNotAllowed(w, r, "POST, DELETE")
+	}
+}
+
+func (h *Handler) applyCheckoutSessionPromotionCode(w http.ResponseWriter, r *http.Request, id string) {
+	session, err := h.billing.GetCheckoutSession(r.Context(), id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if session.Status != "open" {
+		writeResult(w, nil, fmt.Errorf("%w: Checkout session is no longer open.", billing.ErrInvalidInput))
+		return
+	}
+	if !session.AllowPromotionCodes {
+		writeResult(w, nil, fmt.Errorf("%w: Promotion codes are not enabled for this session.", billing.ErrInvalidInput))
+		return
+	}
+	if len(session.Discounts) > 0 {
+		writeResult(w, nil, fmt.Errorf("%w: A promotion code is already applied.", billing.ErrInvalidInput))
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	code := strings.TrimSpace(p.first("promotion_code"))
+	if code == "" {
+		writeResult(w, nil, fmt.Errorf("%w: This promotion code is invalid.", billing.ErrInvalidInput))
+		return
+	}
+	discount, err := h.discountFromPromotionCode(code)
+	if err != nil {
+		if errors.Is(err, billing.ErrNotFound) {
+			writeResult(w, nil, fmt.Errorf("%w: This promotion code is invalid.", billing.ErrInvalidInput))
+			return
+		}
+		// Prefer create-path messages (inactive / coupon redeem_by) when present.
+		writeResult(w, nil, err)
+		return
+	}
+	if err := h.validateDiscountAppliesToLineItems(r.Context(), session.LineItems, []billing.Discount{discount}); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	updated, err := h.billing.UpdateCheckoutSessionDiscounts(r.Context(), id, []billing.Discount{discount})
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	updated.URL = h.absoluteURL(r, updated.URL)
+	writeResult(w, h.stripeCheckoutSession(r, updated), nil)
+}
+
+func (h *Handler) removeCheckoutSessionPromotionCode(w http.ResponseWriter, r *http.Request, id string) {
+	session, err := h.billing.GetCheckoutSession(r.Context(), id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if session.Status != "open" {
+		writeResult(w, nil, fmt.Errorf("%w: Checkout session is no longer open.", billing.ErrInvalidInput))
+		return
+	}
+	if !checkoutSessionHasPromotionCodeDiscount(session.Discounts) {
+		writeResult(w, nil, fmt.Errorf("%w: No promotion code is applied.", billing.ErrInvalidInput))
+		return
+	}
+	// times_redeemed was never incremented on apply; no symmetric decrement.
+	updated, err := h.billing.UpdateCheckoutSessionDiscounts(r.Context(), id, nil)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	updated.URL = h.absoluteURL(r, updated.URL)
+	writeResult(w, h.stripeCheckoutSession(r, updated), nil)
+}
+
+func checkoutSessionHasPromotionCodeDiscount(discounts []billing.Discount) bool {
+	for _, discount := range discounts {
+		if strings.TrimSpace(discount.PromotionCodeID) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id string) {
@@ -1780,10 +1908,18 @@ func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id st
 	}
 	if session.PaymentIntentID != "" {
 		if pi, err := h.billing.GetPaymentIntent(r.Context(), session.PaymentIntentID); err == nil {
+			// setup_future_usage: attach the outcome payment method to the customer.
+			if previous.SetupFutureUsage != "" && session.CustomerID != "" && pi.PaymentMethodID != "" {
+				if _, attachErr := h.attachPaymentMethod(r.Context(), session.CustomerID, pi.PaymentMethodID); attachErr == nil {
+					// keep going; attach is best-effort for local simulation
+				}
+			}
 			result["payment_intent"] = pi
 		}
 	}
-	if h.webhooks != nil && previous.PaymentIntentID == "" {
+	// Free payment completes without a PI; still emit checkout.session.completed once.
+	alreadyCompleted := previous.Status != "open" || previous.PaymentIntentID != ""
+	if h.webhooks != nil && !alreadyCompleted {
 		result["webhook_events"] = h.emitCheckoutWebhooks(r, result)
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -1901,13 +2037,18 @@ func (h *Handler) createSubscriptionFromParamsWithCustomer(r *http.Request, defa
 	if automaticTax {
 		taxPercent = billing.ParseCustomerTaxPercent(customer.Metadata)
 	}
+	defaultTaxRates, err := h.appliedTaxRatesFromParams(p, "default_tax_rates")
+	if err != nil {
+		return billing.Subscription{}, err
+	}
 	session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
-		CustomerID:   customerID,
-		Mode:         "subscription",
-		LineItems:    items,
-		Discounts:    discounts,
-		AutomaticTax: automaticTax,
-		TaxPercent:   taxPercent,
+		CustomerID:      customerID,
+		Mode:            "subscription",
+		LineItems:       items,
+		Discounts:       discounts,
+		AutomaticTax:    automaticTax,
+		TaxPercent:      taxPercent,
+		DefaultTaxRates: defaultTaxRates,
 	})
 	if err != nil {
 		return billing.Subscription{}, err
@@ -1997,6 +2138,43 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(discounts) > 0 {
 			metadata = billing.MergeDiscountMetadata(metadata, discounts)
+		}
+		if p.hasDefaultTaxRatesParam("default_tax_rates") {
+			current, err := h.billing.GetSubscription(r.Context(), id)
+			if err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			if automaticTax, _ := billing.AutomaticTaxFromMetadata(current.Metadata); automaticTax && !p.isDefaultTaxRatesClear("default_tax_rates") {
+				writeResult(w, nil, &validationError{
+					Param:   "default_tax_rates",
+					Code:    stripeCodeParamInvalid,
+					Message: "You cannot specify both automatic_tax[enabled]=true and default_tax_rates.",
+				})
+				return
+			}
+			if p.isDefaultTaxRatesClear("default_tax_rates") {
+				if metadata == nil {
+					metadata = map[string]string{}
+				}
+				metadata[billing.MetadataDefaultTaxRates] = ""
+			} else {
+				rates, err := h.appliedTaxRatesFromParams(p, "default_tax_rates")
+				if err != nil {
+					writeResult(w, nil, err)
+					return
+				}
+				if metadata == nil {
+					metadata = map[string]string{}
+				}
+				// MergeDefaultTaxRatesMetadata writes the JSON snapshot; empty clears.
+				merged := billing.MergeDefaultTaxRatesMetadata(map[string]string{}, rates)
+				if value, ok := merged[billing.MetadataDefaultTaxRates]; ok {
+					metadata[billing.MetadataDefaultTaxRates] = value
+				} else {
+					metadata[billing.MetadataDefaultTaxRates] = ""
+				}
+			}
 		}
 		subscription, err := h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
 			Items:             items,
@@ -3908,6 +4086,13 @@ func (h *Handler) handleFixtureApply(w http.ResponseWriter, r *http.Request) {
 		result.Disputes = disputes
 		result.Summary["disputes"] = len(disputes)
 	}
+	if taxRates, err := h.applyFixtureTaxRates(pack); err != nil {
+		writeResult(w, result, err)
+		return
+	} else if len(taxRates) > 0 {
+		result.TaxRates = taxRates
+		result.Summary["tax_rates"] = len(taxRates)
+	}
 	h.emitFixtureApplyWebhooks(r, result)
 	writeJSON(w, http.StatusOK, result)
 }
@@ -3946,6 +4131,7 @@ func (h *Handler) handleFixtureValidate(w http.ResponseWriter, r *http.Request) 
 			"refunds":            len(pack.Refunds),
 			"credit_notes":       len(pack.CreditNotes),
 			"disputes":           len(pack.Disputes),
+			"tax_rates":          len(pack.TaxRates),
 		},
 	})
 }
@@ -4003,6 +4189,56 @@ func disputeFixturePayload(fixture fixtures.DisputeFixture) map[string]any {
 		"evidence_details":     map[string]any{"has_evidence": false, "submission_count": 0, "past_due": false},
 		"balance_transactions": []map[string]any{},
 		"is_charge_refundable": true,
+		"metadata":             nonNilMap(fixture.Metadata),
+		"created":              now.Unix(),
+		"livemode":             false,
+	}
+}
+
+// applyFixtureTaxRates seeds tax_rate evidence from the fixture pack (same path as disputes).
+// Same ID re-applies by overwrite for fixture idempotency.
+func (h *Handler) applyFixtureTaxRates(pack fixtures.Pack) ([]map[string]any, error) {
+	if len(pack.TaxRates) == 0 {
+		return nil, nil
+	}
+	out := make([]map[string]any, 0, len(pack.TaxRates))
+	for _, fixture := range pack.TaxRates {
+		taxRate := taxRateFixturePayload(fixture)
+		h.local.mu.Lock()
+		h.local.taxRates[fmt.Sprint(taxRate["id"])] = taxRate
+		h.local.mu.Unlock()
+		out = append(out, cloneEvidence(taxRate))
+	}
+	return out, nil
+}
+
+func taxRateFixturePayload(fixture fixtures.TaxRateFixture) map[string]any {
+	now := time.Now().UTC()
+	id := strings.TrimSpace(fixture.ID)
+	if id == "" {
+		// Match POST /v1/tax_rates id generation; do not force txr_ on explicit IDs.
+		id = "txr_" + strconv.FormatInt(now.UnixNano(), 36)
+	}
+	active := true
+	if fixture.Active != nil {
+		active = *fixture.Active
+	}
+	return map[string]any{
+		"id":                   id,
+		"object":               "tax_rate",
+		"display_name":         fixture.DisplayName,
+		"percentage":           fixture.Percentage,
+		"inclusive":            fixture.Inclusive,
+		"active":               active,
+		"country":              emptyToNil(strings.TrimSpace(fixture.Country)),
+		"state":                emptyToNil(strings.TrimSpace(fixture.State)),
+		"jurisdiction":         nil,
+		"description":          emptyToNil(strings.TrimSpace(fixture.Description)),
+		"effective_percentage": nil,
+		"flat_amount":          nil,
+		"jurisdiction_level":   nil,
+		"rate_type":            "percentage",
+		"tax_type":             nil,
 		"metadata":             nonNilMap(fixture.Metadata),
 		"created":              now.Unix(),
 		"livemode":             false,
@@ -5097,6 +5333,151 @@ func (p params) lineItems() []billing.LineItem {
 	return out
 }
 
+func (p params) paymentIntentDataMetadata() map[string]string {
+	out := map[string]string{}
+	prefix := "payment_intent_data[metadata]["
+	for key, value := range p.values {
+		if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, "]") {
+			continue
+		}
+		metaKey := strings.TrimSuffix(strings.TrimPrefix(key, prefix), "]")
+		if metaKey == "" {
+			continue
+		}
+		out[metaKey] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (p params) productDataMetadata(idx int) map[string]string {
+	out := map[string]string{}
+	prefix := fmt.Sprintf("line_items[%d][price_data][product_data][metadata][", idx)
+	for key, value := range p.values {
+		if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, "]") {
+			continue
+		}
+		metaKey := strings.TrimSuffix(strings.TrimPrefix(key, prefix), "]")
+		if metaKey == "" {
+			continue
+		}
+		out[metaKey] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// resolveCheckoutLineItems builds line items from price IDs and/or price_data (payment mode).
+func (h *Handler) resolveCheckoutLineItems(ctx context.Context, p params, mode string) ([]billing.LineItem, error) {
+	indexes := p.lineItemIndexes()
+	if len(indexes) == 0 && p.has("price") {
+		return p.lineItems(), nil
+	}
+	// Stable index order.
+	ordered := make([]int, 0, len(indexes))
+	for idx := range indexes {
+		ordered = append(ordered, idx)
+	}
+	sort.Ints(ordered)
+
+	var out []billing.LineItem
+	for _, idx := range ordered {
+		quantity := p.int64Default(fmt.Sprintf("line_items[%d][quantity]", idx), 1)
+		priceID := p.first(fmt.Sprintf("line_items[%d][price]", idx), fmt.Sprintf("lineItems[%d][price]", idx))
+		if priceID != "" {
+			out = append(out, billing.LineItem{PriceID: priceID, Quantity: quantity})
+			continue
+		}
+		if !p.hasPriceData(idx) {
+			continue
+		}
+		if mode != "payment" {
+			// Should have been rejected in validation; keep defensive.
+			return nil, unknownParam(fmt.Sprintf("line_items[%d][price_data]", idx))
+		}
+		created, err := h.createPriceFromCheckoutPriceData(ctx, p, idx)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, billing.LineItem{PriceID: created.ID, Quantity: quantity})
+	}
+	if len(out) == 0 && p.has("price") {
+		return p.lineItems(), nil
+	}
+	return out, nil
+}
+
+func (h *Handler) createPriceFromCheckoutPriceData(ctx context.Context, p params, idx int) (billing.Price, error) {
+	prefix := fmt.Sprintf("line_items[%d][price_data]", idx)
+	productID := p.string(prefix + "[product]")
+	if productID == "" {
+		product, err := h.billing.CreateProduct(ctx, billing.Product{
+			Name:        p.string(prefix + "[product_data][name]"),
+			Description: p.string(prefix + "[product_data][description]"),
+			Active:      true,
+			Metadata:    p.productDataMetadata(idx),
+		})
+		if err != nil {
+			return billing.Price{}, err
+		}
+		productID = product.ID
+	} else {
+		if err := validateProductExists(h.billing.GetProduct(ctx, productID)); err != nil {
+			return billing.Price{}, err
+		}
+	}
+
+	unitAmount := int64(0)
+	if p.has(prefix + "[unit_amount]") {
+		unitAmount = p.int64(prefix + "[unit_amount]")
+	} else {
+		parsed, err := parseUnitAmountDecimal(p.string(prefix + "[unit_amount_decimal]"))
+		if err != nil {
+			return billing.Price{}, invalidParam(prefix+"[unit_amount_decimal]", "Must be an integer amount in the smallest currency unit.")
+		}
+		unitAmount = parsed
+	}
+
+	meta := map[string]string{}
+	if taxBehavior := p.string(prefix + "[tax_behavior]"); taxBehavior != "" {
+		meta["tax_behavior"] = taxBehavior
+	}
+
+	return h.billing.CreatePrice(ctx, billing.Price{
+		ProductID:  productID,
+		Currency:   p.stringDefault(prefix+"[currency]", "usd"),
+		UnitAmount: unitAmount,
+		Active:     true,
+		Metadata:   meta,
+	})
+}
+
+func (h *Handler) validateCheckoutLineItemCurrencies(ctx context.Context, items []billing.LineItem) error {
+	currency := ""
+	for i, item := range items {
+		price, err := h.billing.GetPrice(ctx, item.PriceID)
+		if err != nil {
+			return err
+		}
+		c := strings.ToLower(strings.TrimSpace(price.Currency))
+		if c == "" {
+			continue
+		}
+		if currency == "" {
+			currency = c
+			continue
+		}
+		if c != currency {
+			return invalidParam(fmt.Sprintf("line_items[%d][price]", i), "All line items must share the same currency.")
+		}
+	}
+	return nil
+}
+
 func (p params) appliesToProducts() []string {
 	var out []string
 	seen := map[string]struct{}{}
@@ -5131,6 +5512,75 @@ func (p params) appliesToProducts() []string {
 		add(value)
 	}
 	return out
+}
+
+// defaultTaxRateIDs collects tax rate IDs from [] / [N] / bare form keys.
+// prefix is "default_tax_rates" or "subscription_data[default_tax_rates]".
+// Empty values are skipped (Emptyable clear uses a bare empty string and yields no IDs).
+func (p params) defaultTaxRateIDs(prefix string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	// Single-value [] form survives firstValues as prefix[] (not expanded).
+	if value := p.string(prefix + "[]"); value != "" {
+		for _, part := range strings.Split(value, ",") {
+			add(part)
+		}
+	}
+	// Multi-value [] form is expanded by firstValues to prefix[0], prefix[1], ...
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("%s[%d]", prefix, i)
+		if value, ok := p.values[key]; ok {
+			add(value)
+			continue
+		}
+		if i > 0 {
+			break
+		}
+	}
+	// Bare key (rare) or Emptyable clear signal handled by callers via hasDefaultTaxRatesParam.
+	if value := p.string(prefix); value != "" {
+		for _, part := range strings.Split(value, ",") {
+			add(part)
+		}
+	}
+	return out
+}
+
+// hasDefaultTaxRatesParam reports whether any default_tax_rates form key is present
+// (including Emptyable clear with an empty string value).
+func (p params) hasDefaultTaxRatesParam(prefix string) bool {
+	if _, ok := p.values[prefix]; ok {
+		return true
+	}
+	if _, ok := p.values[prefix+"[]"]; ok {
+		return true
+	}
+	for key := range p.values {
+		if strings.HasPrefix(key, prefix+"[") {
+			return true
+		}
+	}
+	return false
+}
+
+// isDefaultTaxRatesClear is true when the param is present as a single empty string
+// (Stripe Emptyable clear) and no non-empty IDs were provided.
+func (p params) isDefaultTaxRatesClear(prefix string) bool {
+	if !p.hasDefaultTaxRatesParam(prefix) {
+		return false
+	}
+	return len(p.defaultTaxRateIDs(prefix)) == 0
 }
 
 func queryInt(r *http.Request, key string) int {
@@ -5703,6 +6153,72 @@ func stripeDeleted(id string, object string) map[string]any {
 	return map[string]any{"id": id, "object": object, "deleted": true}
 }
 
+// appliedTaxRatesFromParams resolves default_tax_rates IDs against local tax rate evidence.
+func (h *Handler) appliedTaxRatesFromParams(p params, prefix string) ([]billing.AppliedTaxRate, error) {
+	ids := p.defaultTaxRateIDs(prefix)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]billing.AppliedTaxRate, 0, len(ids))
+	h.local.mu.Lock()
+	defer h.local.mu.Unlock()
+	for _, id := range ids {
+		evidence, ok := h.local.taxRates[id]
+		if !ok || evidence == nil {
+			return nil, missingTaxRate(id)
+		}
+		percentage, _ := asFloat64Evidence(evidence["percentage"])
+		inclusive, _ := evidence["inclusive"].(bool)
+		out = append(out, billing.AppliedTaxRate{
+			ID:          id,
+			DisplayName: evidenceString(evidence["display_name"]),
+			Percentage:  percentage,
+			Inclusive:   inclusive,
+		})
+	}
+	return out, nil
+}
+
+func (h *Handler) stripeTaxRateObjects(rates []billing.AppliedTaxRate) []map[string]any {
+	if rates == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(rates))
+	h.local.mu.Lock()
+	defer h.local.mu.Unlock()
+	for _, rate := range rates {
+		if evidence, ok := h.local.taxRates[rate.ID]; ok && evidence != nil {
+			out = append(out, cloneEvidence(evidence))
+			continue
+		}
+		out = append(out, synthesizeTaxRateObject(rate))
+	}
+	return out
+}
+
+func synthesizeTaxRateObject(rate billing.AppliedTaxRate) map[string]any {
+	return map[string]any{
+		"id":                   rate.ID,
+		"object":               "tax_rate",
+		"display_name":         rate.DisplayName,
+		"percentage":           rate.Percentage,
+		"inclusive":            rate.Inclusive,
+		"active":               true,
+		"country":              nil,
+		"state":                nil,
+		"jurisdiction":         nil,
+		"description":          nil,
+		"effective_percentage": nil,
+		"flat_amount":          nil,
+		"jurisdiction_level":   nil,
+		"rate_type":            "percentage",
+		"tax_type":             nil,
+		"metadata":             map[string]string{},
+		"created":              time.Now().UTC().Unix(),
+		"livemode":             false,
+	}
+}
+
 func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.CheckoutSession) map[string]any {
 	ctx := context.Background()
 	if r != nil {
@@ -5734,7 +6250,11 @@ func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.Checkou
 	eligibleBase := billing.EligibleDiscountBase(subtotal, discounts, lineAmounts)
 	amountTotal, discountAmount := billing.ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
 	amountTax := int64(0)
-	if session.AutomaticTax {
+	if len(session.DefaultTaxRates) > 0 {
+		_, _, exclusiveTotal, taxTotal := billing.ComputeTaxRateAmounts(amountTotal, session.DefaultTaxRates)
+		amountTax = taxTotal
+		amountTotal = amountTotal + exclusiveTotal
+	} else if session.AutomaticTax {
 		amountTax = billing.ExclusiveTaxAmount(amountTotal, session.TaxPercent)
 		amountTotal = amountTotal + amountTax
 	}
@@ -5755,6 +6275,8 @@ func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.Checkou
 		"cancel_url":            session.CancelURL,
 		"allow_promotion_codes": session.AllowPromotionCodes,
 		"trial_period_days":     session.TrialPeriodDays,
+		// Stripe always includes client_reference_id (string | null).
+		"client_reference_id":   emptyToNil(session.ClientReferenceID),
 		"url":                   session.URL,
 		"status":                session.Status,
 		"payment_status":        session.PaymentStatus,
@@ -5789,6 +6311,13 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 	}
 	discounts := billing.DiscountsFromMetadata(sub.Metadata)
 	automaticTax, _ := billing.AutomaticTaxFromMetadata(sub.Metadata)
+	defaultTaxRates := billing.DefaultTaxRatesFromMetadata(sub.Metadata)
+	var defaultTaxRateObjects []map[string]any
+	if h != nil {
+		defaultTaxRateObjects = h.stripeTaxRateObjects(defaultTaxRates)
+	} else {
+		defaultTaxRateObjects = synthesizeTaxRateObjects(defaultTaxRates)
+	}
 	return map[string]any{
 		"id":                   sub.ID,
 		"object":               billing.ObjectSubscription,
@@ -5817,7 +6346,19 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		"pending_update":       nil,
 		"cancellation_details": subscriptionCancellationDetails(sub),
 		"automatic_tax":        stripeSubscriptionAutomaticTax(automaticTax),
+		"default_tax_rates":    defaultTaxRateObjects,
 	}
+}
+
+func synthesizeTaxRateObjects(rates []billing.AppliedTaxRate) []map[string]any {
+	if rates == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(rates))
+	for _, rate := range rates {
+		out = append(out, synthesizeTaxRateObject(rate))
+	}
+	return out
 }
 
 func subscriptionPauseCollection(sub billing.Subscription) any {
@@ -5894,14 +6435,15 @@ func (h *Handler) stripeInvoice(ctx context.Context, invoice billing.Invoice) ma
 			intent = &pi
 		}
 	}
-	return stripeInvoiceWithPaymentIntent(invoice, intent)
+	return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, intent, h.stripeTaxRateObjects(invoice.DefaultTaxRates))
 }
 
 func (h *Handler) stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent billing.PaymentIntent) map[string]any {
+	taxRates := h.stripeTaxRateObjects(invoice.DefaultTaxRates)
 	if intent.ID == "" {
-		return stripeInvoiceWithPaymentIntent(invoice, nil)
+		return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, nil, taxRates)
 	}
-	return stripeInvoiceWithPaymentIntent(invoice, &intent)
+	return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, &intent, taxRates)
 }
 
 func (h *Handler) stripeInvoicePayments(ctx context.Context, invoice billing.Invoice, intent *billing.PaymentIntent) []map[string]any {
@@ -5921,6 +6463,10 @@ func stripeInvoice(invoice billing.Invoice) map[string]any {
 }
 
 func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.PaymentIntent) map[string]any {
+	return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, intent, nil)
+}
+
+func stripeInvoiceWithPaymentIntentAndTaxRates(invoice billing.Invoice, intent *billing.PaymentIntent, taxRateObjects []map[string]any) map[string]any {
 	paidAt := optionalPaidAt(invoice)
 	finalizedAt := optionalFinalizedAt(invoice)
 	created := unix(invoice.CreatedAt)
@@ -5935,13 +6481,46 @@ func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.Pay
 		}
 	}
 	taxValue := any(nil)
-	if invoice.AutomaticTax {
+	if invoice.AutomaticTax || len(invoice.DefaultTaxRates) > 0 {
 		taxValue = invoice.Tax
 	}
 	totalExcludingTax := invoice.Total - invoice.Tax
 	totalTaxAmounts := []map[string]any{}
 	totalTaxes := []map[string]any{}
-	if invoice.Tax > 0 {
+	defaultTaxRates := taxRateObjects
+	if defaultTaxRates == nil {
+		defaultTaxRates = synthesizeTaxRateObjects(invoice.DefaultTaxRates)
+	}
+	if len(invoice.DefaultTaxRates) > 0 {
+		// Recompute per-rate amounts from the discounted pretax base.
+		base := invoice.Subtotal - invoice.DiscountAmount
+		if base < 0 {
+			base = 0
+		}
+		// For trialing invoices totals are zeroed while subtotal may also be zero.
+		amounts, pretax, _, _ := billing.ComputeTaxRateAmounts(base, invoice.DefaultTaxRates)
+		totalExcludingTax = pretax
+		for _, entry := range amounts {
+			behavior := "exclusive"
+			if entry.Rate.Inclusive {
+				behavior = "inclusive"
+			}
+			totalTaxAmounts = append(totalTaxAmounts, map[string]any{
+				"amount":            entry.Amount,
+				"inclusive":         entry.Rate.Inclusive,
+				"tax_rate":          entry.Rate.ID,
+				"taxability_reason": nil,
+			})
+			totalTaxes = append(totalTaxes, map[string]any{
+				"amount":            entry.Amount,
+				"tax_behavior":      behavior,
+				"tax_rate_details":  map[string]any{"tax_rate": entry.Rate.ID},
+				"taxability_reason": nil,
+				"taxable_amount":    pretax,
+				"type":              "tax_rate_details",
+			})
+		}
+	} else if invoice.Tax > 0 {
 		totalTaxAmounts = []map[string]any{{
 			"amount":            invoice.Tax,
 			"inclusive":         false,
@@ -6005,7 +6584,7 @@ func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.Pay
 		"custom_fields":                    nil,
 		"default_payment_method":           emptyToNil(invoice.Metadata[billing.MetadataDefaultPaymentMethod]),
 		"default_source":                   nil,
-		"default_tax_rates":                []map[string]any{},
+		"default_tax_rates":                defaultTaxRates,
 		"due_date":                         nil,
 		"ending_balance":                   0,
 		"footer":                           nil,
@@ -6195,6 +6774,10 @@ func stripeInvoiceBillingReason(invoice billing.Invoice) string {
 
 func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
 	captureMethod := stringDefault(intent.CaptureMethod, "automatic")
+	// Stripe PaymentIntent always includes description / receipt_email /
+	// setup_future_usage as string|null (PaymentIntents.d.ts). Checkout payment
+	// mode stores the values under billtap_* metadata keys to avoid colliding
+	// with caller-supplied metadata[description] etc.
 	return map[string]any{
 		"id":                 intent.ID,
 		"object":             billing.ObjectPaymentIntent,
@@ -6206,6 +6789,9 @@ func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
 		"currency":           intent.Currency,
 		"status":             intent.Status,
 		"capture_method":     captureMethod,
+		"description":        emptyToNil(intent.Metadata["billtap_description"]),
+		"receipt_email":      emptyToNil(intent.Metadata["billtap_receipt_email"]),
+		"setup_future_usage": emptyToNil(intent.Metadata["billtap_setup_future_usage"]),
 		"payment_method":     emptyToNil(intent.PaymentMethodID),
 		"metadata":           nonNilMap(intent.Metadata),
 		"last_payment_error": paymentIntentError(intent),

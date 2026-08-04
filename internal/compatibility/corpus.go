@@ -259,13 +259,14 @@ func builtinCorpus() []caseSpec {
 			Level:           "L1",
 			ReleaseBlocking: true,
 			Reference:       "docs/API_VALIDATION_AND_ERROR_SIMULATION.md#l1---request-validation-parity-for-supported-endpoints",
+			// 2026-08-04: mode=payment now supported; case moved to setup (still unsupported)
 			Steps: []requestSpec{{
-				Name:   "create checkout session with payment mode",
+				Name:   "create checkout session with setup mode",
 				Method: http.MethodPost,
 				Path:   "/v1/checkout/sessions",
 				Params: map[string]string{
 					"customer":             "cus_missing",
-					"mode":                 "payment",
+					"mode":                 "setup",
 					"line_items[0][price]": "price_missing",
 				},
 			}},

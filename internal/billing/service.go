@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -29,6 +30,7 @@ const (
 	MetadataDiscountAppliesTo       = "billtap_discount_applies_to"
 	MetadataAutomaticTax            = "billtap_automatic_tax"
 	MetadataTaxPercent              = "billtap_tax_percent"
+	MetadataDefaultTaxRates         = "billtap_default_tax_rates"
 )
 
 type Repository interface {
@@ -50,6 +52,7 @@ type Repository interface {
 	CreateCheckoutSession(context.Context, CheckoutSession) (CheckoutSession, error)
 	GetCheckoutSession(context.Context, string) (CheckoutSession, error)
 	ListCheckoutSessions(context.Context) ([]CheckoutSession, error)
+	UpdateCheckoutSessionDiscounts(context.Context, string, []Discount) (CheckoutSession, error)
 	RecordCheckoutCompletion(context.Context, CheckoutCompletion) (CheckoutSession, error)
 
 	GetSubscription(context.Context, string) (Subscription, error)
@@ -368,6 +371,13 @@ func (s *Service) ListCheckoutSessions(ctx context.Context) ([]CheckoutSession, 
 	return s.repo.ListCheckoutSessions(ctx)
 }
 
+// UpdateCheckoutSessionDiscounts replaces open-session discounts (promotion-code apply/remove).
+// times_redeemed is not touched here — coupon create path records 0 and never increments on apply/complete.
+func (s *Service) UpdateCheckoutSessionDiscounts(ctx context.Context, id string, discounts []Discount) (CheckoutSession, error) {
+	discounts = normalizeDiscounts(discounts, s.now())
+	return s.repo.UpdateCheckoutSessionDiscounts(ctx, id, discounts)
+}
+
 func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcome string) (CheckoutSession, error) {
 	return s.completeCheckout(ctx, sessionID, outcome, CheckoutCompletionOptions{})
 }
@@ -385,7 +395,8 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	if err != nil {
 		return CheckoutSession{}, err
 	}
-	if session.PaymentIntentID != "" {
+	// Idempotent: already completed (including free payment with no PI).
+	if session.Status != "open" || session.PaymentIntentID != "" {
 		return session, nil
 	}
 
@@ -421,6 +432,11 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	discounts := normalizeDiscounts(session.Discounts, now)
 	eligibleBase := EligibleDiscountBase(subtotal, discounts, lineAmounts)
 	discountedTotal, discountAmount := ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
+
+	if session.Mode == "payment" {
+		return s.completePaymentCheckout(ctx, session, outcomeSpec, opts, currency, subtotal, discountedTotal, discountAmount, now)
+	}
+
 	periodEnd := now.AddDate(0, 1, 0)
 	paid := outcomeSpec.Paid
 	trialing := paid && session.TrialPeriodDays > 0
@@ -431,15 +447,24 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	invoiceTotal := discountedTotal
 	invoiceDiscountAmount := discountAmount
 	invoiceTax := int64(0)
-	if session.AutomaticTax && !trialing {
-		invoiceTax = ExclusiveTaxAmount(discountedTotal, session.TaxPercent)
-		invoiceTotal = discountedTotal + invoiceTax
+	invoiceDefaultTaxRates := []AppliedTaxRate(nil)
+	if !trialing {
+		if len(session.DefaultTaxRates) > 0 {
+			_, _, exclusiveTotal, taxTotal := ComputeTaxRateAmounts(discountedTotal, session.DefaultTaxRates)
+			invoiceTax = taxTotal
+			invoiceTotal = discountedTotal + exclusiveTotal
+			invoiceDefaultTaxRates = session.DefaultTaxRates
+		} else if session.AutomaticTax {
+			invoiceTax = ExclusiveTaxAmount(discountedTotal, session.TaxPercent)
+			invoiceTotal = discountedTotal + invoiceTax
+		}
 	}
 	if trialing {
 		invoiceSubtotal = 0
 		invoiceTotal = 0
 		invoiceDiscountAmount = 0
 		invoiceTax = 0
+		invoiceDefaultTaxRates = nil
 	}
 	invoiceAttemptCount := 1
 	if outcomeSpec.InvoiceAttemptCount != nil {
@@ -458,6 +483,7 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	}
 	sub.Metadata = MergeDiscountMetadata(sub.Metadata, discounts)
 	sub.Metadata = MergeTaxMetadata(sub.Metadata, session.AutomaticTax, session.TaxPercent)
+	sub.Metadata = MergeDefaultTaxRatesMetadata(sub.Metadata, session.DefaultTaxRates)
 	if trialing {
 		sub.Status = "trialing"
 		sub.Metadata["trial_period_days"] = fmt.Sprintf("%d", session.TrialPeriodDays)
@@ -465,22 +491,23 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		sub.Metadata["trial_end"] = periodEnd.Format(time.RFC3339Nano)
 	}
 	invoice := Invoice{
-		ID:             firstNonEmpty(opts.InvoiceID, id("in")),
-		Object:         ObjectInvoice,
-		CustomerID:     session.CustomerID,
-		SubscriptionID: sub.ID,
-		Status:         "paid",
-		Currency:       currency,
-		Subtotal:       invoiceSubtotal,
-		DiscountAmount: invoiceDiscountAmount,
-		Discounts:      discounts,
-		AutomaticTax:   session.AutomaticTax,
-		Tax:            invoiceTax,
-		Total:          invoiceTotal,
-		AmountDue:      0,
-		AmountPaid:     invoiceTotal,
-		AttemptCount:   1,
-		CreatedAt:      now,
+		ID:              firstNonEmpty(opts.InvoiceID, id("in")),
+		Object:          ObjectInvoice,
+		CustomerID:      session.CustomerID,
+		SubscriptionID:  sub.ID,
+		Status:          "paid",
+		Currency:        currency,
+		Subtotal:        invoiceSubtotal,
+		DiscountAmount:  invoiceDiscountAmount,
+		Discounts:       discounts,
+		AutomaticTax:    session.AutomaticTax,
+		DefaultTaxRates: invoiceDefaultTaxRates,
+		Tax:             invoiceTax,
+		Total:           invoiceTotal,
+		AmountDue:       0,
+		AmountPaid:      invoiceTotal,
+		AttemptCount:    1,
+		CreatedAt:       now,
 	}
 	intent := PaymentIntent{
 		ID:              firstNonEmpty(opts.PaymentIntentID, id("pi")),
@@ -522,6 +549,99 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		CompletedAt:   now,
 		Subscription:  sub,
 		Invoice:       invoice,
+		PaymentIntent: intent,
+	})
+}
+
+// completePaymentCheckout finishes a mode=payment checkout: no subscription/invoice;
+// one PaymentIntent for the discounted (and taxed) total. Free totals skip the PI.
+func (s *Service) completePaymentCheckout(
+	ctx context.Context,
+	session CheckoutSession,
+	outcomeSpec checkoutOutcomeSpec,
+	opts CheckoutCompletionOptions,
+	currency string,
+	subtotal int64,
+	discountedTotal int64,
+	_ int64,
+	now time.Time,
+) (CheckoutSession, error) {
+	total := discountedTotal
+	if len(session.DefaultTaxRates) > 0 {
+		_, _, exclusiveTotal, _ := ComputeTaxRateAmounts(discountedTotal, session.DefaultTaxRates)
+		total = discountedTotal + exclusiveTotal
+	} else if session.AutomaticTax {
+		total = discountedTotal + ExclusiveTaxAmount(discountedTotal, session.TaxPercent)
+	}
+	_ = subtotal
+
+	paymentStatus := outcomeSpec.PaymentStatus
+	sessionStatus := firstNonEmpty(outcomeSpec.SessionStatus, "complete")
+	paid := outcomeSpec.Paid
+
+	// Free amount: no PaymentIntent; Stripe reports no_payment_required.
+	if total == 0 && paid {
+		return s.repo.RecordCheckoutCompletion(ctx, CheckoutCompletion{
+			SessionID:     session.ID,
+			SessionStatus: sessionStatus,
+			PaymentStatus: "no_payment_required",
+			CheckoutEvent: firstNonEmpty(outcomeSpec.CheckoutEvent, "checkout.session.completed"),
+			Outcome:       outcomeSpec.Outcome,
+			CompletedAt:   now,
+		})
+	}
+
+	if paymentStatus == "" {
+		if paid {
+			paymentStatus = "paid"
+		} else {
+			paymentStatus = "unpaid"
+		}
+	}
+
+	// User payment_intent_data[metadata] only at the unprefixed surface; house
+	// fields use billtap_* so they cannot collide with customer keys like
+	// metadata[description]. Top-level PI fields are projected in stripePaymentIntent.
+	meta := copyMap(session.PaymentIntentMetadata)
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	meta["billtap_checkout_session"] = session.ID
+	if session.SetupFutureUsage != "" {
+		meta["billtap_setup_future_usage"] = session.SetupFutureUsage
+	}
+	if session.PaymentIntentDescription != "" {
+		meta["billtap_description"] = session.PaymentIntentDescription
+	}
+	if session.ReceiptEmail != "" {
+		meta["billtap_receipt_email"] = session.ReceiptEmail
+	}
+
+	intent := PaymentIntent{
+		ID:              firstNonEmpty(opts.PaymentIntentID, id("pi")),
+		Object:          ObjectPaymentIntent,
+		CustomerID:      session.CustomerID,
+		Amount:          total,
+		Currency:        currency,
+		Status:          outcomeSpec.PaymentIntentStatus,
+		CaptureMethod:   firstNonEmpty(session.CaptureMethod, "automatic"),
+		PaymentMethodID: outcomeSpec.PaymentMethodID,
+		Metadata:        meta,
+		CreatedAt:       now,
+	}
+	if !paid {
+		intent.FailureCode = outcomeSpec.FailureCode
+		intent.DeclineCode = outcomeSpec.DeclineCode
+		intent.FailureMessage = outcomeSpec.FailureMessage
+	}
+
+	return s.repo.RecordCheckoutCompletion(ctx, CheckoutCompletion{
+		SessionID:     session.ID,
+		SessionStatus: sessionStatus,
+		PaymentStatus: paymentStatus,
+		CheckoutEvent: firstNonEmpty(outcomeSpec.CheckoutEvent, "checkout.session.completed"),
+		Outcome:       outcomeSpec.Outcome,
+		CompletedAt:   now,
 		PaymentIntent: intent,
 	})
 }
@@ -1916,8 +2036,13 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 	eligibleBase := EligibleDiscountBase(subtotal, discounts, lineAmounts)
 	total, discountAmount := ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
 	automaticTax, taxPercent := AutomaticTaxFromMetadata(sub.Metadata)
+	defaultTaxRates := DefaultTaxRatesFromMetadata(sub.Metadata)
 	tax := int64(0)
-	if automaticTax {
+	if len(defaultTaxRates) > 0 {
+		_, _, exclusiveTotal, taxTotal := ComputeTaxRateAmounts(total, defaultTaxRates)
+		tax = taxTotal
+		total = total + exclusiveTotal
+	} else if automaticTax {
 		tax = ExclusiveTaxAmount(total, taxPercent)
 		total = total + tax
 	}
@@ -1945,22 +2070,23 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 	}
 	renewalFailed := renewalOutcome != ""
 	invoice := Invoice{
-		ID:             id("in"),
-		Object:         ObjectInvoice,
-		CustomerID:     sub.CustomerID,
-		SubscriptionID: sub.ID,
-		Status:         "paid",
-		Currency:       currency,
-		Subtotal:       subtotal,
-		DiscountAmount: discountAmount,
-		Discounts:      discounts,
-		AutomaticTax:   automaticTax,
-		Tax:            tax,
-		Total:          total,
-		AmountDue:      0,
-		AmountPaid:     total,
-		AttemptCount:   1,
-		CreatedAt:      at,
+		ID:              id("in"),
+		Object:          ObjectInvoice,
+		CustomerID:      sub.CustomerID,
+		SubscriptionID:  sub.ID,
+		Status:          "paid",
+		Currency:        currency,
+		Subtotal:        subtotal,
+		DiscountAmount:  discountAmount,
+		Discounts:       discounts,
+		AutomaticTax:    automaticTax && len(defaultTaxRates) == 0,
+		DefaultTaxRates: defaultTaxRates,
+		Tax:             tax,
+		Total:           total,
+		AmountDue:       0,
+		AmountPaid:      total,
+		AttemptCount:    1,
+		CreatedAt:       at,
 	}
 	if renewalFailed {
 		invoice.Status = "open"
@@ -2354,6 +2480,64 @@ func ExclusiveTaxAmount(amountAfterDiscount int64, taxPercent float64) int64 {
 	return int64(math.Round(float64(amountAfterDiscount) * taxPercent / 100.0))
 }
 
+// TaxRateAmount is one computed tax line.
+type TaxRateAmount struct {
+	Rate   AppliedTaxRate
+	Amount int64
+}
+
+// ComputeTaxRateAmounts applies rate snapshots to a discounted base.
+// pretax = base - sum(inclusive amounts); total = base + sum(exclusive amounts).
+// Amounts are returned in the same order as rates.
+func ComputeTaxRateAmounts(base int64, rates []AppliedTaxRate) (amounts []TaxRateAmount, pretax, exclusiveTotal, taxTotal int64) {
+	if base < 0 {
+		base = 0
+	}
+	if len(rates) == 0 {
+		return nil, base, 0, 0
+	}
+	inclusiveSum := 0.0
+	for _, rate := range rates {
+		if rate.Inclusive && rate.Percentage > 0 {
+			inclusiveSum += rate.Percentage
+		}
+	}
+	// First pass: inclusive amounts (base already includes them).
+	inclusiveByIndex := make([]int64, len(rates))
+	inclusiveTotal := int64(0)
+	for i, rate := range rates {
+		if !rate.Inclusive {
+			continue
+		}
+		amount := int64(0)
+		if base > 0 && rate.Percentage > 0 && inclusiveSum > 0 {
+			amount = int64(math.Round(float64(base) * rate.Percentage / (100.0 + inclusiveSum)))
+		}
+		inclusiveByIndex[i] = amount
+		inclusiveTotal += amount
+	}
+	pretax = base - inclusiveTotal
+	if pretax < 0 {
+		pretax = 0
+	}
+	// Second pass: exclusive amounts on pretax; emit full list in rate order.
+	amounts = make([]TaxRateAmount, 0, len(rates))
+	for i, rate := range rates {
+		amount := inclusiveByIndex[i]
+		if !rate.Inclusive {
+			if pretax > 0 && rate.Percentage > 0 {
+				amount = int64(math.Round(float64(pretax) * rate.Percentage / 100.0))
+			} else {
+				amount = 0
+			}
+			exclusiveTotal += amount
+		}
+		amounts = append(amounts, TaxRateAmount{Rate: rate, Amount: amount})
+		taxTotal += amount
+	}
+	return amounts, pretax, exclusiveTotal, taxTotal
+}
+
 // MergeTaxMetadata snapshots automatic tax flags onto subscription metadata.
 func MergeTaxMetadata(metadata map[string]string, automaticTax bool, taxPercent float64) map[string]string {
 	if !automaticTax {
@@ -2380,6 +2564,46 @@ func AutomaticTaxFromMetadata(metadata map[string]string) (bool, float64) {
 		percent = 0
 	}
 	return true, percent
+}
+
+// MergeDefaultTaxRatesMetadata snapshots applied default tax rates onto subscription metadata.
+// An empty rates slice removes any existing snapshot.
+func MergeDefaultTaxRatesMetadata(metadata map[string]string, rates []AppliedTaxRate) map[string]string {
+	if len(rates) == 0 {
+		if metadata == nil {
+			return metadata
+		}
+		delete(metadata, MetadataDefaultTaxRates)
+		return metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	raw, err := json.Marshal(rates)
+	if err != nil {
+		return metadata
+	}
+	metadata[MetadataDefaultTaxRates] = string(raw)
+	return metadata
+}
+
+// DefaultTaxRatesFromMetadata restores applied default tax rate snapshots from subscription metadata.
+func DefaultTaxRatesFromMetadata(metadata map[string]string) []AppliedTaxRate {
+	if metadata == nil {
+		return nil
+	}
+	raw := strings.TrimSpace(metadata[MetadataDefaultTaxRates])
+	if raw == "" {
+		return nil
+	}
+	var rates []AppliedTaxRate
+	if err := json.Unmarshal([]byte(raw), &rates); err != nil {
+		return nil
+	}
+	if len(rates) == 0 {
+		return nil
+	}
+	return rates
 }
 
 func ClearDiscountMetadata(metadata map[string]string) map[string]string {
@@ -2494,6 +2718,10 @@ func billingTimelineEntry(seed, action, message, objectType, objectID, customerI
 	}
 }
 
+// CheckoutCompletion records terminal checkout state.
+// Subscription and Invoice use zero-value (empty ID) when absent — payment mode
+// omits both; free payment also omits PaymentIntent. Callers and storage skip
+// INSERT/timeline when the relevant ID is empty (avoids pointer churn at use sites).
 type CheckoutCompletion struct {
 	SessionID     string
 	SessionStatus string

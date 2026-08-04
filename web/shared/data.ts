@@ -365,6 +365,7 @@ export const dashboardObjects: Record<DashboardObjectType, DashboardObjectRecord
 
 export const checkoutSession = {
   id: "cs_test_checkout_demo",
+  mode: "subscription",
   customer: "cus_test_workspace",
   customerEmail: "owner@demo.local",
   plan: "Team Annual",
@@ -374,6 +375,8 @@ export const checkoutSession = {
   amountTotal: "$1,188.00",
   status: "open",
   paymentStatus: "unpaid",
+  allowPromotionCodes: false,
+  promotionCodeApplied: false,
   subscriptionId: "sub_test_pending",
   subscriptionStatus: "not created",
   invoiceId: "in_test_pending",

@@ -27,6 +27,7 @@ type Pack struct {
 	Refunds           []RefundFixture       `json:"refunds" yaml:"refunds"`
 	CreditNotes       []CreditNoteFixture   `json:"credit_notes" yaml:"credit_notes"`
 	Disputes          []DisputeFixture      `json:"disputes" yaml:"disputes"`
+	TaxRates          []TaxRateFixture      `json:"tax_rates" yaml:"tax_rates"`
 	Assertions        []Expectation         `json:"assertions" yaml:"assertions"`
 }
 
@@ -181,6 +182,20 @@ type DisputeFixture struct {
 	Metadata map[string]string `json:"metadata" yaml:"metadata"`
 }
 
+// TaxRateFixture seeds a local tax_rate evidence object (same path as disputes).
+// Explicit ID is stored as-is so product/checkout metadata can reference it.
+type TaxRateFixture struct {
+	ID          string            `json:"id,omitempty" yaml:"id,omitempty"`
+	DisplayName string            `json:"display_name" yaml:"display_name"`
+	Percentage  float64           `json:"percentage" yaml:"percentage"`
+	Inclusive   bool              `json:"inclusive,omitempty" yaml:"inclusive,omitempty"`
+	Country     string            `json:"country,omitempty" yaml:"country,omitempty"`
+	State       string            `json:"state,omitempty" yaml:"state,omitempty"`
+	Description string            `json:"description,omitempty" yaml:"description,omitempty"`
+	Active      *bool             `json:"active,omitempty" yaml:"active,omitempty"` // default true
+	Metadata    map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
 type ApplyResult struct {
 	ID                string                    `json:"id"`
 	Object            string                    `json:"object"`
@@ -198,6 +213,7 @@ type ApplyResult struct {
 	Refunds           []billing.Refund          `json:"refunds,omitempty"`
 	CreditNotes       []billing.CreditNote      `json:"creditNotes,omitempty"`
 	Disputes          []map[string]any          `json:"disputes,omitempty"`
+	TaxRates          []map[string]any          `json:"tax_rates,omitempty"`
 	Assertions        *AssertionReport          `json:"assertions,omitempty"`
 	Summary           map[string]int            `json:"summary"`
 }

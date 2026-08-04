@@ -34,6 +34,7 @@ export type CheckoutLineItem = {
 
 export type CheckoutSessionSummary = {
   id: string;
+  mode: string;
   customer: string;
   customerEmail: string;
   plan: string;
@@ -44,6 +45,8 @@ export type CheckoutSessionSummary = {
   amountTotal: string;
   status: string;
   paymentStatus: string;
+  allowPromotionCodes: boolean;
+  promotionCodeApplied: boolean;
   subscriptionId: string;
   subscriptionStatus: string;
   invoiceId: string;
@@ -838,16 +841,18 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
   const discountAmount = readNumber(totalDetails, ["amount_discount", "amountDiscount"], 0);
   const taxAmount = readNumber(totalDetails, ["amount_tax", "amountTax"], 0);
   const taxEnabled = automaticTax?.enabled === true;
+  const mode = readString(session, ["mode"], fixtureSession.mode);
 
   return {
     id: readString(session, ["id"], fallbackId),
+    mode,
     customer: readObjectId(session.customer) ?? readString(session, ["customer_id", "customer"], fixtureSession.customer),
     customerEmail:
       readString(customer, ["email"], "") ||
       readString(session, ["customer_email", "customerEmail"], fixtureSession.customerEmail),
     plan:
       readString(price, ["nickname", "lookup_key"], "") ||
-      readString(session, ["plan", "plan_name", "planName"], fixtureSession.plan),
+      readString(session, ["plan", "plan_name", "planName"], mode === "payment" ? "One-time payment" : fixtureSession.plan),
     price:
       amountTotal ||
       amountSubtotal ||
@@ -860,13 +865,21 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
       readString(session, ["price", "amount"], fixtureSession.amountTotal),
     status: readString(session, ["status"], fixtureSession.status),
     paymentStatus: readString(session, ["payment_status", "paymentStatus"], fixtureSession.paymentStatus),
-    subscriptionId: readObjectId(session.subscription) ?? readString(subscription, ["id"], fixtureSession.subscriptionId),
-    subscriptionStatus: readString(subscription, ["status"], fixtureSession.subscriptionStatus),
+    allowPromotionCodes: session.allow_promotion_codes === true || session.allowPromotionCodes === true,
+    promotionCodeApplied: hasPromotionCodeDiscount(session),
+    subscriptionId:
+      mode === "payment"
+        ? ""
+        : readObjectId(session.subscription) ?? readString(subscription, ["id"], fixtureSession.subscriptionId),
+    subscriptionStatus:
+      mode === "payment" ? "" : readString(subscription, ["status"], fixtureSession.subscriptionStatus),
     invoiceId:
-      readObjectId(session.invoice) ??
-      readObjectId(session.latest_invoice) ??
-      readString(invoice, ["id"], fixtureSession.invoiceId),
-    invoiceStatus: readString(invoice, ["status"], fixtureSession.invoiceStatus),
+      mode === "payment"
+        ? ""
+        : readObjectId(session.invoice) ??
+          readObjectId(session.latest_invoice) ??
+          readString(invoice, ["id"], fixtureSession.invoiceId),
+    invoiceStatus: mode === "payment" ? "" : readString(invoice, ["status"], fixtureSession.invoiceStatus),
     paymentIntentId:
       readObjectId(session.payment_intent) ??
       readString(paymentIntent, ["id"], fixtureSession.paymentIntentId),
@@ -876,6 +889,58 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
       readString(session, ["billtap_return_url", "return_url", "returnUrl", "success_url", "successUrl"], fixtureSession.returnUrl),
     lineItems: normalizeLineItems(root, session),
   };
+}
+
+function hasPromotionCodeDiscount(session: Record<string, unknown>): boolean {
+  const discounts = readArray(session, ["discounts"]);
+  if (!discounts) return false;
+  return discounts.some((entry) => {
+    const record = asRecord(entry);
+    if (!record) return false;
+    const code = record.promotion_code ?? record.promotionCode;
+    return typeof code === "string" && code.length > 0;
+  });
+}
+
+export type CheckoutPromotionCodeResult = {
+  session?: CheckoutSessionSummary;
+  error?: string;
+};
+
+export async function applyCheckoutPromotionCode(
+  sessionId: string,
+  code: string,
+): Promise<CheckoutPromotionCodeResult> {
+  return checkoutPromotionCodeRequest(sessionId, {
+    method: "POST",
+    body: new URLSearchParams({ promotion_code: code }),
+  });
+}
+
+export async function removeCheckoutPromotionCode(sessionId: string): Promise<CheckoutPromotionCodeResult> {
+  return checkoutPromotionCodeRequest(sessionId, { method: "DELETE" });
+}
+
+async function checkoutPromotionCodeRequest(
+  sessionId: string,
+  init: RequestInit,
+): Promise<CheckoutPromotionCodeResult> {
+  try {
+    const response = await fetch(
+      apiHref(`/api/checkout/sessions/${encodeURIComponent(sessionId)}/promotion_code`),
+      { ...init, headers: { Accept: "application/json", ...init.headers } },
+    );
+    const body: unknown = await response.json().catch(() => undefined);
+    if (!response.ok) {
+      const record = asRecord(body);
+      const errorRecord = asRecord(record?.error);
+      const message = readString(errorRecord, ["message"], "") || `${response.status} ${response.statusText}`;
+      return { error: message };
+    }
+    return { session: normalizeCheckoutSession(body, sessionId) };
+  } catch (error) {
+    return { error: errorMessage(error) };
+  }
 }
 
 function normalizeLineItems(root: Record<string, unknown> | undefined, session: Record<string, unknown>): CheckoutLineItem[] {

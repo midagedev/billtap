@@ -813,6 +813,39 @@ code {
   margin-top: 18px;
 }
 
+.promo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.promo-input {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Reads as a quiet inline action, like Stripe's "Add promotion code" link. */
+.promo-link {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #4f46e5;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.promo-link:hover {
+  text-decoration: underline;
+}
+
+.promo-error {
+  margin: 0;
+  color: #b91c1c;
+  font-size: 13px;
+}
+
 /* Amount rows read as a receipt, not as editable fields: no per-row box, just a
    rule between rows. */
 .summary-breakdown {

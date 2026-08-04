@@ -138,6 +138,40 @@ applies exclusively after discounts (absent metadata means 0% with status
 `complete`, matching Stripe's no-registration behavior). Address- or
 jurisdiction-based calculation is not modeled.
 
+Revised 2026-08-05 (consumer one-time payment adoption): `mode=payment` is
+now supported alongside `mode=subscription` (`setup` still rejected — the
+release-blocking invalid-mode case moved to `setup`). Payment-mode sessions
+accept `line_items[i][price_data][...]` (`currency` required; one of
+`product` / `product_data[name]`; one of `unit_amount` /
+`unit_amount_decimal`, integer minor units only; `recurring` rejected in
+payment mode), `payment_intent_data[setup_future_usage|description|
+receipt_email|capture_method|metadata[...]]`, and `client_reference_id`
+(now always serialized as `string | null` in both modes). `price_data`
+creates real local Product/Price evidence. Completion creates no
+subscription and no invoice: it creates one PaymentIntent for the
+discounted (and taxed) total, sets `payment_status=paid` (free totals:
+`no_payment_required`, no PaymentIntent), emits `checkout.session.completed`,
+and exposes `description` / `receipt_email` / `setup_future_usage` as
+top-level PaymentIntent fields (`string | null`); caller-supplied
+`payment_intent_data[metadata]` round-trips without billtap key injection
+(internal snapshots use `billtap_*` keys). `payment_intent_data` is rejected
+in subscription mode and `subscription_data` in payment mode. The hosted
+checkout page renders payment-mode sessions without subscription/invoice
+rows and labels the plan slot "One-time payment" when no nickname exists.
+
+Revised 2026-08-05 (hosted promotion-code entry): the hosted checkout page
+shows an "Add promotion code" control on open `allow_promotion_codes`
+sessions, backed by Billtap-specific
+`POST/DELETE /api/checkout/sessions/{id}/promotion_code` (form
+`promotion_code=<code>`; `promo_` IDs also accepted). Apply validates the
+code through the same path as creation-time `discounts[0][promotion_code]`
+(existence, active, coupon `redeem_by`, `applies_to[products]` line-item
+match) and stores the discount on the open session so serialized totals and
+subsequent completion reflect it; only one code may be applied at a time and
+removal restores the original totals. Sessions created without
+`allow_promotion_codes` reject application. `times_redeemed` remains
+untouched, matching the creation path.
+
 ### Tax Rates and Customer Tax IDs
 
 - `POST /v1/tax_rates`
@@ -150,11 +184,28 @@ jurisdiction-based calculation is not modeled.
 - `DELETE /v1/customers/{id}/tax_ids/{id}`
 
 Added 2026-08-04: local evidence stores in stripe-node v22 shapes. Tax rates
-are pure evidence and are not wired into totals (automatic tax uses the
-customer-metadata simulation above). Tax IDs carry `verified` status without
-provider verification. The Stripe Tax API family
+were originally pure evidence and were not wired into totals (automatic tax
+uses the customer-metadata simulation above). Tax IDs carry `verified` status
+without provider verification. The Stripe Tax API family
 (`/v1/tax/calculations|registrations|settings|transactions`) remains
 unimplemented and returns `unsupported_endpoint`.
+
+Revised 2026-08-04 (consumer default_tax_rates adoption): tax rates now apply
+to real billing totals. Checkout sessions accept
+`subscription_data[default_tax_rates][]`, and subscriptions accept
+`default_tax_rates` on create and update (Emptyable: a single empty string
+clears previously set rates), all as arrays of `txr_*` IDs resolved against
+the local tax-rate evidence at creation time (`resource_missing` when
+unknown). Rates snapshot onto the session/subscription/invoice
+(`billtap_default_tax_rates` subscription metadata) and drive
+inclusive/exclusive math after discounts through completion and renewal
+invoices: inclusive amounts extract as `base × pct / (100 + Σ inclusive pct)`,
+exclusive amounts add on the pretax base. Subscriptions serialize
+`default_tax_rates` as full TaxRate objects; invoices populate
+`default_tax_rates` and per-rate `total_taxes`/`total_tax_amounts` entries
+with real `txr_*` IDs and `taxability_reason: null`. `automatic_tax[enabled]`
+and `default_tax_rates` are mutually exclusive (400 `parameter_invalid`).
+Invoice previews still do not apply either tax path.
 
 ### Subscriptions
 

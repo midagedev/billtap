@@ -354,6 +354,86 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
   );
   report.objects.taxedCustomer = pick(taxedCustomer, ["id", "object", "email"]);
 
+  const defaultTaxRatesCheckout = await check(
+    "default_tax_rates checkout + subscription + invoice",
+    async () => {
+      const txr = await stripe.taxRates.create({
+        display_name: "VAT",
+        percentage: 10,
+        inclusive: false,
+      });
+      assertEqual(txr.object, "tax_rate", "default tax rate object");
+      assertEqual(txr.percentage, 10, "default tax rate percentage");
+
+      const session = await stripe.checkout.sessions.create({
+        customer: customer.id,
+        mode: "subscription",
+        line_items: [{ price: price.id, quantity: 1 }],
+        subscription_data: {
+          default_tax_rates: [txr.id],
+        },
+        success_url: "http://127.0.0.1/default-tax-success",
+        cancel_url: "http://127.0.0.1/default-tax-cancel",
+      });
+      assertEqual(
+        session.object,
+        "checkout.session",
+        "default tax checkout session object",
+      );
+      // unit_amount 4200 * 10% exclusive tax = 420
+      assertEqual(
+        session.total_details?.amount_tax,
+        420,
+        "default tax checkout total_details.amount_tax",
+      );
+      assertEqual(
+        session.amount_total,
+        4620,
+        "default tax checkout amount_total",
+      );
+
+      const completed = await stripe.rawRequest(
+        "POST",
+        `/v1/checkout/sessions/${encodeURIComponent(session.id)}/complete`,
+        { outcome: "payment_succeeded" },
+      );
+      const subscriptionId =
+        completed.session?.subscription || completed.subscription?.id;
+      const invoiceId = completed.session?.invoice || completed.invoice?.id;
+      assertEqual(
+        Boolean(subscriptionId),
+        true,
+        "default tax completed subscription id",
+      );
+      assertEqual(Boolean(invoiceId), true, "default tax completed invoice id");
+
+      const subscription = await stripe.subscriptions.retrieve(subscriptionId);
+      assertEqual(
+        subscription.default_tax_rates?.[0]?.id,
+        txr.id,
+        "subscription default_tax_rates[0].id",
+      );
+
+      const invoice = await stripe.invoices.retrieve(invoiceId);
+      assertEqual(
+        invoice.total_taxes?.[0]?.tax_rate_details?.tax_rate,
+        txr.id,
+        "invoice total_taxes tax_rate",
+      );
+      assertEqual(
+        invoice.default_tax_rates?.[0]?.percentage,
+        10,
+        "invoice default_tax_rates[0].percentage",
+      );
+      return txr;
+    },
+  );
+  report.objects.defaultTaxRate = pick(defaultTaxRatesCheckout, [
+    "id",
+    "object",
+    "percentage",
+  ]);
+
   const webhookEndpoint = await check(
     "webhook endpoint create/retrieve/list",
     async () => {
@@ -554,6 +634,98 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
       "payment method list should return a sandbox card",
     );
   });
+
+  const paymentCheckout = await check(
+    "checkout payment mode with price_data + payment_intent_data",
+    async () => {
+      const created = await stripe.checkout.sessions.create({
+        customer: customer.id,
+        mode: "payment",
+        client_reference_id: "ref_sdk_1",
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: { name: "Extra export" },
+              unit_amount: 12900,
+            },
+            quantity: 1,
+          },
+        ],
+        payment_intent_data: {
+          setup_future_usage: "off_session",
+          metadata: { order_id: "ord_1" },
+        },
+        success_url: "http://127.0.0.1/pay-success",
+        cancel_url: "http://127.0.0.1/pay-cancel",
+      });
+      assertEqual(created.object, "checkout.session", "payment session object");
+      assertEqual(created.mode, "payment", "payment session mode");
+      assertEqual(
+        created.client_reference_id,
+        "ref_sdk_1",
+        "payment session client_reference_id",
+      );
+      assertEqual(created.amount_total, 12900, "payment session amount_total");
+
+      await stripe.rawRequest(
+        "POST",
+        `/v1/checkout/sessions/${encodeURIComponent(created.id)}/complete`,
+        { outcome: "payment_succeeded" },
+      );
+      const retrieved = await stripe.checkout.sessions.retrieve(created.id);
+      assertEqual(
+        retrieved.payment_status,
+        "paid",
+        "payment mode payment_status",
+      );
+      assert(
+        retrieved.payment_intent,
+        "payment mode should include payment_intent",
+      );
+      assertEqual(
+        retrieved.subscription,
+        null,
+        "payment mode subscription should be null",
+      );
+
+      const pi = await stripe.paymentIntents.retrieve(
+        retrieved.payment_intent,
+      );
+      assertEqual(pi.amount, 12900, "payment mode PI amount");
+      // Caller metadata round-trips unchanged (no unprefixed house keys).
+      assertEqual(pi.metadata?.order_id, "ord_1", "payment mode PI metadata");
+      assertEqual(
+        pi.metadata?.setup_future_usage,
+        undefined,
+        "payment mode PI metadata must not leak unprefixed setup_future_usage",
+      );
+      // Stripe PI top-level fields (string|null).
+      assertEqual(
+        pi.setup_future_usage,
+        "off_session",
+        "payment mode PI setup_future_usage",
+      );
+      assertEqual(
+        Object.prototype.hasOwnProperty.call(pi, "description"),
+        true,
+        "payment mode PI description key present",
+      );
+      assertEqual(
+        Object.prototype.hasOwnProperty.call(pi, "receipt_email"),
+        true,
+        "payment mode PI receipt_email key present",
+      );
+      return retrieved;
+    },
+  );
+  report.objects.paymentCheckoutSession = pick(paymentCheckout, [
+    "id",
+    "object",
+    "mode",
+    "payment_status",
+    "payment_intent",
+  ]);
 
   const checkoutEvent = await check("event list/retrieve", async () => {
     const events = await stripe.events.list({

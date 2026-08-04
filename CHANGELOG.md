@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- Added a promotion-code input to the hosted checkout page for
+  `allow_promotion_codes` sessions, backed by Billtap-specific
+  `POST/DELETE /api/checkout/sessions/{id}/promotion_code`: applying a valid
+  code attaches the coupon discount to the open session (refreshing the
+  Subtotal/Discount/Total breakdown before completion), invalid, inactive,
+  expired, product-restricted-no-match, and duplicate applications return
+  inline errors, and removal restores the original totals.
+- Added a top-level `tax_rates` fixture pack key that seeds local tax-rate
+  evidence (same path as disputes): explicit IDs are stored as-is so seeded
+  products and checkout `default_tax_rates` can reference them, re-applying
+  a pack overwrites by ID, and apply/validate summaries report the count.
+- Added checkout `mode=payment` for one-time payments: `line_items` accept
+  inline `price_data` (creating real local product/price evidence),
+  `payment_intent_data` (`setup_future_usage`, `description`,
+  `receipt_email`, `capture_method`, `metadata`) and `client_reference_id`
+  are accepted, completion creates a single PaymentIntent (no subscription,
+  no invoice) with `payment_status=paid` or `no_payment_required` for free
+  totals, PaymentIntents expose `description`/`receipt_email`/
+  `setup_future_usage` as top-level fields, and the hosted checkout page
+  renders payment-mode sessions without subscription/invoice rows. `setup`
+  mode remains rejected.
+- Wired tax rates into real billing totals: checkout sessions accept
+  `subscription_data[default_tax_rates][]` and subscriptions accept
+  `default_tax_rates` on create/update (empty string clears), resolving
+  `txr_*` IDs against local tax-rate evidence and snapshotting them onto the
+  session, subscription, and invoices. Inclusive and exclusive rates use
+  Stripe-style math after discounts through completion and renewal invoices,
+  subscriptions serialize `default_tax_rates` as TaxRate objects, invoices
+  emit per-rate `total_taxes`/`total_tax_amounts` with real rate IDs, and
+  `automatic_tax` remains mutually exclusive with `default_tax_rates`.
 - Added a simulated Stripe Tax surface in stripe-node v22 shapes: checkout
   sessions accept `automatic_tax[enabled]` and `tax_id_collection[enabled]`,
   the tax rate snapshots from customer metadata `tax_percent` at creation
