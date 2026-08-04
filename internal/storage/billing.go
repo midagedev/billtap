@@ -461,6 +461,16 @@ func (s *SQLiteStore) ListCheckoutSessions(ctx context.Context) ([]billing.Check
 	return out, rows.Err()
 }
 
+func (s *SQLiteStore) UpdateCheckoutSessionDiscounts(ctx context.Context, id string, discounts []billing.Discount) (billing.CheckoutSession, error) {
+	if _, err := s.GetCheckoutSession(ctx, id); err != nil {
+		return billing.CheckoutSession{}, err
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE checkout_sessions SET discounts = ? WHERE id = ?`, encodeDiscounts(discounts), id); err != nil {
+		return billing.CheckoutSession{}, err
+	}
+	return s.GetCheckoutSession(ctx, id)
+}
+
 func (s *SQLiteStore) RecordCheckoutCompletion(ctx context.Context, c billing.CheckoutCompletion) (billing.CheckoutSession, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

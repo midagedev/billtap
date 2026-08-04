@@ -52,6 +52,7 @@ type Repository interface {
 	CreateCheckoutSession(context.Context, CheckoutSession) (CheckoutSession, error)
 	GetCheckoutSession(context.Context, string) (CheckoutSession, error)
 	ListCheckoutSessions(context.Context) ([]CheckoutSession, error)
+	UpdateCheckoutSessionDiscounts(context.Context, string, []Discount) (CheckoutSession, error)
 	RecordCheckoutCompletion(context.Context, CheckoutCompletion) (CheckoutSession, error)
 
 	GetSubscription(context.Context, string) (Subscription, error)
@@ -368,6 +369,13 @@ func (s *Service) GetCheckoutSession(ctx context.Context, id string) (CheckoutSe
 
 func (s *Service) ListCheckoutSessions(ctx context.Context) ([]CheckoutSession, error) {
 	return s.repo.ListCheckoutSessions(ctx)
+}
+
+// UpdateCheckoutSessionDiscounts replaces open-session discounts (promotion-code apply/remove).
+// times_redeemed is not touched here — coupon create path records 0 and never increments on apply/complete.
+func (s *Service) UpdateCheckoutSessionDiscounts(ctx context.Context, id string, discounts []Discount) (CheckoutSession, error) {
+	discounts = normalizeDiscounts(discounts, s.now())
+	return s.repo.UpdateCheckoutSessionDiscounts(ctx, id, discounts)
 }
 
 func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcome string) (CheckoutSession, error) {

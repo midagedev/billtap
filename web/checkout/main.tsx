@@ -8,9 +8,11 @@ import {
   SurfaceHeader,
 } from "../shared/components";
 import {
+  applyCheckoutPromotionCode,
   completeCheckout,
   getCheckoutSessionId,
   loadCheckoutSession,
+  removeCheckoutPromotionCode,
   type CheckoutCompletion,
   type CheckoutSessionSummary,
   type DataSource,
@@ -42,6 +44,11 @@ function CheckoutApp() {
   const [completion, setCompletion] = useState<CheckoutCompletion>();
   const [isLoading, setIsLoading] = useState(true);
   const [isCompleting, setIsCompleting] = useState(false);
+  const [promoOpen, setPromoOpen] = useState(false);
+  const [promoCode, setPromoCode] = useState("");
+  const [promoBusy, setPromoBusy] = useState(false);
+  const [promoError, setPromoError] = useState<string>();
+  const [appliedPromoCode, setAppliedPromoCode] = useState<string>();
   const [cardNumber, setCardNumber] = useState("4242424242424242");
   const [cardExpiry, setCardExpiry] = useState("12/34");
   const [cardCvc, setCardCvc] = useState("123");
@@ -94,12 +101,44 @@ function CheckoutApp() {
     : false;
   const showLineItems = source === "fixture";
   const showBreakdown = Boolean(session.amountDiscount || session.amountTax);
+  const showPromotionCode =
+    source === "api" && session.allowPromotionCodes && session.status === "open";
 
   useEffect(() => {
     if (!paymentSucceeded || !window.opener) return;
     window.opener.postMessage({ success: true, data: "결제성공" }, "*");
     window.opener.focus?.();
   }, [paymentSucceeded]);
+
+  async function handleApplyPromotionCode() {
+    const code = promoCode.trim();
+    if (!code) return;
+    setPromoBusy(true);
+    setPromoError(undefined);
+    const result = await applyCheckoutPromotionCode(session.id, code);
+    setPromoBusy(false);
+    if (!result.session) {
+      setPromoError(result.error ?? "Failed to apply promotion code");
+      return;
+    }
+    setSession(result.session);
+    setAppliedPromoCode(code);
+    setPromoCode("");
+    setPromoOpen(false);
+  }
+
+  async function handleRemovePromotionCode() {
+    setPromoBusy(true);
+    setPromoError(undefined);
+    const result = await removeCheckoutPromotionCode(session.id);
+    setPromoBusy(false);
+    if (!result.session) {
+      setPromoError(result.error ?? "Failed to remove promotion code");
+      return;
+    }
+    setSession(result.session);
+    setAppliedPromoCode(undefined);
+  }
 
   async function handleCompleteCheckout() {
     setIsCompleting(true);
@@ -224,6 +263,74 @@ function CheckoutApp() {
             </div>
           ) : null}
           {showBreakdown && !showLineItems ? breakdownList : null}
+
+          {showPromotionCode ? (
+            <div className="summary-lines">
+              <span className="section-kicker">Promotion code</span>
+              {session.promotionCodeApplied ? (
+                <div className="promo-row">
+                  <StatusPill tone="good">
+                    {appliedPromoCode ?? "Promotion code"} applied
+                  </StatusPill>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={promoBusy}
+                    onClick={handleRemovePromotionCode}
+                  >
+                    {promoBusy ? "Removing..." : "Remove"}
+                  </button>
+                </div>
+              ) : promoOpen ? (
+                <div className="promo-row">
+                  <input
+                    className="text-input promo-input"
+                    value={promoCode}
+                    onChange={(event) => setPromoCode(event.target.value)}
+                    placeholder="Enter code"
+                    aria-label="Promotion code"
+                    disabled={promoBusy}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") handleApplyPromotionCode();
+                    }}
+                  />
+                  <button
+                    className="button"
+                    type="button"
+                    disabled={promoBusy || !promoCode.trim()}
+                    onClick={handleApplyPromotionCode}
+                  >
+                    {promoBusy ? "Applying..." : "Apply"}
+                  </button>
+                  <button
+                    className="button secondary"
+                    type="button"
+                    disabled={promoBusy}
+                    onClick={() => {
+                      setPromoOpen(false);
+                      setPromoCode("");
+                      setPromoError(undefined);
+                    }}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <button
+                  className="promo-link"
+                  type="button"
+                  onClick={() => setPromoOpen(true)}
+                >
+                  Add promotion code
+                </button>
+              )}
+              {promoError ? (
+                <p className="promo-error" role="alert">
+                  {promoError}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="confirmation-strip">
             <StatusPill tone={outcome.tone}>{outcome.status}</StatusPill>

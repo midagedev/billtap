@@ -1755,11 +1755,117 @@ func billingPortalSessionPath(customerID string, sessionID string, returnURL str
 func (h *Handler) handleCheckoutCompletion(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/checkout/sessions/")
 	id, suffix, _ := strings.Cut(rest, "/")
-	if id == "" || suffix != "complete" {
+	if id == "" {
 		h.notFound(w, r)
 		return
 	}
-	h.completeCheckout(w, r, id)
+	switch suffix {
+	case "complete":
+		h.completeCheckout(w, r, id)
+	case "promotion_code":
+		h.handleCheckoutSessionPromotionCode(w, r, id)
+	default:
+		h.notFound(w, r)
+	}
+}
+
+// handleCheckoutSessionPromotionCode applies or removes a promotion code on an open
+// allow_promotion_codes checkout session (Billtap-hosted "Add promotion code" path).
+// times_redeemed is not incremented or decremented — create-path coupon evidence stores
+// 0 and neither checkout create nor complete mutates the counter.
+func (h *Handler) handleCheckoutSessionPromotionCode(w http.ResponseWriter, r *http.Request, id string) {
+	switch r.Method {
+	case http.MethodPost:
+		h.applyCheckoutSessionPromotionCode(w, r, id)
+	case http.MethodDelete:
+		h.removeCheckoutSessionPromotionCode(w, r, id)
+	default:
+		h.methodNotAllowed(w, r, "POST, DELETE")
+	}
+}
+
+func (h *Handler) applyCheckoutSessionPromotionCode(w http.ResponseWriter, r *http.Request, id string) {
+	session, err := h.billing.GetCheckoutSession(r.Context(), id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if session.Status != "open" {
+		writeResult(w, nil, fmt.Errorf("%w: Checkout session is no longer open.", billing.ErrInvalidInput))
+		return
+	}
+	if !session.AllowPromotionCodes {
+		writeResult(w, nil, fmt.Errorf("%w: Promotion codes are not enabled for this session.", billing.ErrInvalidInput))
+		return
+	}
+	if len(session.Discounts) > 0 {
+		writeResult(w, nil, fmt.Errorf("%w: A promotion code is already applied.", billing.ErrInvalidInput))
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	code := strings.TrimSpace(p.first("promotion_code"))
+	if code == "" {
+		writeResult(w, nil, fmt.Errorf("%w: This promotion code is invalid.", billing.ErrInvalidInput))
+		return
+	}
+	discount, err := h.discountFromPromotionCode(code)
+	if err != nil {
+		if errors.Is(err, billing.ErrNotFound) {
+			writeResult(w, nil, fmt.Errorf("%w: This promotion code is invalid.", billing.ErrInvalidInput))
+			return
+		}
+		// Prefer create-path messages (inactive / coupon redeem_by) when present.
+		writeResult(w, nil, err)
+		return
+	}
+	if err := h.validateDiscountAppliesToLineItems(r.Context(), session.LineItems, []billing.Discount{discount}); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	updated, err := h.billing.UpdateCheckoutSessionDiscounts(r.Context(), id, []billing.Discount{discount})
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	updated.URL = h.absoluteURL(r, updated.URL)
+	writeResult(w, h.stripeCheckoutSession(r, updated), nil)
+}
+
+func (h *Handler) removeCheckoutSessionPromotionCode(w http.ResponseWriter, r *http.Request, id string) {
+	session, err := h.billing.GetCheckoutSession(r.Context(), id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if session.Status != "open" {
+		writeResult(w, nil, fmt.Errorf("%w: Checkout session is no longer open.", billing.ErrInvalidInput))
+		return
+	}
+	if !checkoutSessionHasPromotionCodeDiscount(session.Discounts) {
+		writeResult(w, nil, fmt.Errorf("%w: No promotion code is applied.", billing.ErrInvalidInput))
+		return
+	}
+	// times_redeemed was never incremented on apply; no symmetric decrement.
+	updated, err := h.billing.UpdateCheckoutSessionDiscounts(r.Context(), id, nil)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	updated.URL = h.absoluteURL(r, updated.URL)
+	writeResult(w, h.stripeCheckoutSession(r, updated), nil)
+}
+
+func checkoutSessionHasPromotionCodeDiscount(discounts []billing.Discount) bool {
+	for _, discount := range discounts {
+		if strings.TrimSpace(discount.PromotionCodeID) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id string) {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Added a promotion-code input to the hosted checkout page for
+  `allow_promotion_codes` sessions, backed by Billtap-specific
+  `POST/DELETE /api/checkout/sessions/{id}/promotion_code`: applying a valid
+  code attaches the coupon discount to the open session (refreshing the
+  Subtotal/Discount/Total breakdown before completion), invalid, inactive,
+  expired, product-restricted-no-match, and duplicate applications return
+  inline errors, and removal restores the original totals.
 - Added a top-level `tax_rates` fixture pack key that seeds local tax-rate
   evidence (same path as disputes): explicit IDs are stored as-is so seeded
   products and checkout `default_tax_rates` can reference them, re-applying

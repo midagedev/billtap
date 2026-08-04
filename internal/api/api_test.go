@@ -4360,6 +4360,281 @@ func TestCouponAppliesToProductsAndCheckoutSessionAmounts(t *testing.T) {
 	}
 }
 
+func TestCheckoutSessionPromotionCodeApplyRemoveAndErrors(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"promo-session@example.test"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Promo Plan"}})
+	productOther := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Other Plan"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"4000"},
+		"recurring[interval]": {"month"},
+	})
+	coupon := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/coupons", url.Values{
+		"id":          {"coupon_promo_25"},
+		"percent_off": {"25"},
+		"duration":    {"once"},
+	})
+	promo := postForm[struct {
+		ID   string `json:"id"`
+		Code string `json:"code"`
+	}](t, handler, "/v1/promotion_codes", url.Values{
+		"coupon": {coupon.ID},
+		"code":   {"SAVE25"},
+	})
+
+	// 1. allow_promotion_codes session + apply → 200, amount_discount, GET persists, complete invoice.
+	session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+		"allow_promotion_codes":   {"true"},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	sessionID := fmt.Sprint(session["id"])
+	if session["amount_total"] != float64(4000) {
+		t.Fatalf("pre-promo amount_total = %#v, want 4000", session["amount_total"])
+	}
+
+	applied := postForm[map[string]any](t, handler, "/api/checkout/sessions/"+sessionID+"/promotion_code", url.Values{
+		"promotion_code": {promo.Code},
+	})
+	// 25% of 4000 = 1000 discount → total 3000
+	if applied["amount_subtotal"] != float64(4000) || applied["amount_total"] != float64(3000) {
+		t.Fatalf("applied session amounts = subtotal=%#v total=%#v, want 4000/3000", applied["amount_subtotal"], applied["amount_total"])
+	}
+	details, ok := applied["total_details"].(map[string]any)
+	if !ok || details["amount_discount"] != float64(1000) {
+		t.Fatalf("applied total_details = %#v, want amount_discount=1000", applied["total_details"])
+	}
+	discountList, ok := applied["discounts"].([]any)
+	if !ok || len(discountList) != 1 {
+		t.Fatalf("applied discounts = %#v, want one entry", applied["discounts"])
+	}
+	discountRef, _ := discountList[0].(map[string]any)
+	if discountRef["promotion_code"] != promo.ID || discountRef["coupon"] != coupon.ID {
+		t.Fatalf("applied discount ref = %#v, want promo=%s coupon=%s", discountRef, promo.ID, coupon.ID)
+	}
+
+	fetched := getJSON[map[string]any](t, handler, "/v1/checkout/sessions/"+sessionID)
+	fetchedDetails, _ := fetched["total_details"].(map[string]any)
+	if fetchedDetails["amount_discount"] != float64(1000) || fetched["amount_total"] != float64(3000) {
+		t.Fatalf("GET after apply = total=%#v details=%#v, want discount persisted", fetched["amount_total"], fetchedDetails)
+	}
+
+	// 2. DELETE → empty discounts, amount_discount 0.
+	removed := deleteJSON[map[string]any](t, handler, "/api/checkout/sessions/"+sessionID+"/promotion_code")
+	removedDetails, _ := removed["total_details"].(map[string]any)
+	if removedDetails["amount_discount"] != float64(0) || removed["amount_total"] != float64(4000) {
+		t.Fatalf("removed session = total=%#v details=%#v, want full price restored", removed["amount_total"], removedDetails)
+	}
+	removedDiscounts, ok := removed["discounts"].([]any)
+	if !ok || len(removedDiscounts) != 0 {
+		t.Fatalf("removed discounts = %#v, want empty array", removed["discounts"])
+	}
+
+	// Re-apply and complete; invoice must reflect session discount.
+	_ = postForm[map[string]any](t, handler, "/api/checkout/sessions/"+sessionID+"/promotion_code", url.Values{
+		"promotion_code": {promo.ID}, // promo_ id also accepted
+	})
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+sessionID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+	var completed billing.CheckoutSession
+	if err := json.Unmarshal(completion["session"], &completed); err != nil {
+		t.Fatalf("decode completed session: %v", err)
+	}
+	invoice := getJSON[struct {
+		Subtotal             int64            `json:"subtotal"`
+		Total                int64            `json:"total"`
+		AmountPaid           int64            `json:"amount_paid"`
+		TotalDiscountAmounts []map[string]any `json:"total_discount_amounts"`
+	}](t, handler, "/v1/invoices/"+completed.InvoiceID)
+	if invoice.Subtotal != 4000 || invoice.Total != 3000 || invoice.AmountPaid != 3000 || len(invoice.TotalDiscountAmounts) != 1 {
+		t.Fatalf("completed invoice = %#v, want 25%% off 4000", invoice)
+	}
+	if amount, _ := invoice.TotalDiscountAmounts[0]["amount"].(float64); amount != 1000 {
+		t.Fatalf("invoice discount amount = %#v, want 1000", invoice.TotalDiscountAmounts[0])
+	}
+
+	// 3. Error cases.
+	// Missing session → 404 resource_missing.
+	status, body := postFormStatus(t, handler, "/api/checkout/sessions/cs_missing/promotion_code", url.Values{
+		"promotion_code": {"SAVE25"},
+	})
+	if status != http.StatusNotFound {
+		t.Fatalf("missing session status = %d body = %s, want 404", status, body)
+	}
+	missing := decodeErrorBody(t, body)
+	if missing.Error.Code != "resource_missing" {
+		t.Fatalf("missing session error = %#v, want resource_missing", missing.Error)
+	}
+
+	// Completed session → 400.
+	status, body = postFormStatus(t, handler, "/api/checkout/sessions/"+sessionID+"/promotion_code", url.Values{
+		"promotion_code": {"SAVE25"},
+	})
+	if status != http.StatusBadRequest || !strings.Contains(body, "Checkout session is no longer open.") {
+		t.Fatalf("completed session apply status = %d body = %s, want 400 no longer open", status, body)
+	}
+
+	// allow_promotion_codes=false → 400.
+	noPromoSession := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+		"allow_promotion_codes":   {"false"},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	status, body = postFormStatus(t, handler, "/api/checkout/sessions/"+fmt.Sprint(noPromoSession["id"])+"/promotion_code", url.Values{
+		"promotion_code": {"SAVE25"},
+	})
+	if status != http.StatusBadRequest || !strings.Contains(body, "Promotion codes are not enabled for this session.") {
+		t.Fatalf("allow_promotion_codes=false status = %d body = %s", status, body)
+	}
+
+	// Missing code → 400.
+	openSession := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+		"allow_promotion_codes":   {"true"},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	openID := fmt.Sprint(openSession["id"])
+	status, body = postFormStatus(t, handler, "/api/checkout/sessions/"+openID+"/promotion_code", url.Values{
+		"promotion_code": {"DOESNOTEXIST"},
+	})
+	if status != http.StatusBadRequest || !strings.Contains(body, "This promotion code is invalid.") {
+		t.Fatalf("missing code status = %d body = %s, want invalid", status, body)
+	}
+
+	// Duplicate apply → 400.
+	_ = postForm[map[string]any](t, handler, "/api/checkout/sessions/"+openID+"/promotion_code", url.Values{
+		"promotion_code": {"SAVE25"},
+	})
+	status, body = postFormStatus(t, handler, "/api/checkout/sessions/"+openID+"/promotion_code", url.Values{
+		"promotion_code": {"SAVE25"},
+	})
+	if status != http.StatusBadRequest || !strings.Contains(body, "A promotion code is already applied.") {
+		t.Fatalf("duplicate apply status = %d body = %s", status, body)
+	}
+
+	// applies_to mismatch → 400 (same create-path message).
+	scopedCoupon := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/coupons", url.Values{
+		"id":                     {"coupon_promo_scoped"},
+		"percent_off":            {"50"},
+		"duration":               {"once"},
+		"applies_to[products][]": {productOther.ID},
+	})
+	scopedPromo := postForm[struct {
+		ID   string `json:"id"`
+		Code string `json:"code"`
+	}](t, handler, "/v1/promotion_codes", url.Values{
+		"coupon": {scopedCoupon.ID},
+		"code":   {"SCOPEDONLY"},
+	})
+	mismatchSession := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID}, // product, not productOther
+		"line_items[0][quantity]": {"1"},
+		"allow_promotion_codes":   {"true"},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	status, body = postFormStatus(t, handler, "/api/checkout/sessions/"+fmt.Sprint(mismatchSession["id"])+"/promotion_code", url.Values{
+		"promotion_code": {scopedPromo.Code},
+	})
+	if status != http.StatusBadRequest || !strings.Contains(body, "This coupon cannot be applied because it does not apply to any of the products in this session.") {
+		t.Fatalf("applies_to mismatch status = %d body = %s", status, body)
+	}
+
+	// Coupon-direct discount cannot be removed via this endpoint.
+	couponSession := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+		"discounts[0][coupon]":    {coupon.ID},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	status, body = deleteStatus(t, handler, "/api/checkout/sessions/"+fmt.Sprint(couponSession["id"])+"/promotion_code")
+	if status != http.StatusBadRequest || !strings.Contains(body, "No promotion code is applied.") {
+		t.Fatalf("coupon-direct delete status = %d body = %s", status, body)
+	}
+}
+
+func TestCheckoutSessionPromotionCodeWithDefaultTaxRates(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"promo-tax@example.test"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Taxed Promo Plan"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"5000"},
+		"recurring[interval]": {"month"},
+	})
+	taxRate := postForm[map[string]any](t, handler, "/v1/tax_rates", url.Values{
+		"display_name": {"VAT"},
+		"percentage":   {"10"},
+		"inclusive":    {"false"},
+	})
+	coupon := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/coupons", url.Values{
+		"id":          {"coupon_promo_tax_20"},
+		"percent_off": {"20"},
+		"duration":    {"once"},
+	})
+	promo := postForm[struct {
+		Code string `json:"code"`
+	}](t, handler, "/v1/promotion_codes", url.Values{
+		"coupon": {coupon.ID},
+		"code":   {"TAX20"},
+	})
+
+	// Subtotal 5000, no discount yet, 10% tax → 5500.
+	session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                               {customer.ID},
+		"line_items[0][price]":                   {price.ID},
+		"line_items[0][quantity]":                {"1"},
+		"allow_promotion_codes":                  {"true"},
+		"subscription_data[default_tax_rates][]": {fmt.Sprint(taxRate["id"])},
+		"success_url":                            {"http://app.test/success"},
+		"cancel_url":                             {"http://app.test/cancel"},
+	})
+	sessionID := fmt.Sprint(session["id"])
+	if session["amount_total"] != float64(5500) {
+		t.Fatalf("pre-promo taxed total = %#v, want 5500", session["amount_total"])
+	}
+
+	// 20% off 5000 = 1000 discount → base 4000, 10% tax = 400, total 4400.
+	applied := postForm[map[string]any](t, handler, "/api/checkout/sessions/"+sessionID+"/promotion_code", url.Values{
+		"promotion_code": {promo.Code},
+	})
+	if applied["amount_subtotal"] != float64(5000) || applied["amount_total"] != float64(4400) {
+		t.Fatalf("promo+tax amounts = subtotal=%#v total=%#v, want 5000/4400", applied["amount_subtotal"], applied["amount_total"])
+	}
+	details, ok := applied["total_details"].(map[string]any)
+	if !ok || details["amount_discount"] != float64(1000) || details["amount_tax"] != float64(400) {
+		t.Fatalf("promo+tax total_details = %#v, want discount=1000 tax=400", applied["total_details"])
+	}
+}
+
 func TestStripeCompatCatalogAndPortalEndpoints(t *testing.T) {
 	handler := newTestHandler(t)
 
@@ -6457,6 +6732,14 @@ func deleteJSON[T any](t *testing.T, handler http.Handler, path string) T {
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	return decodeResponse[T](t, rec)
+}
+
+func deleteStatus(t *testing.T, handler http.Handler, path string) (int, string) {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodDelete, path, nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	return rec.Code, rec.Body.String()
 }
 
 type stripeAPIErrorBody struct {

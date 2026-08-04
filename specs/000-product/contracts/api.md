@@ -159,6 +159,19 @@ in subscription mode and `subscription_data` in payment mode. The hosted
 checkout page renders payment-mode sessions without subscription/invoice
 rows and labels the plan slot "One-time payment" when no nickname exists.
 
+Revised 2026-08-05 (hosted promotion-code entry): the hosted checkout page
+shows an "Add promotion code" control on open `allow_promotion_codes`
+sessions, backed by Billtap-specific
+`POST/DELETE /api/checkout/sessions/{id}/promotion_code` (form
+`promotion_code=<code>`; `promo_` IDs also accepted). Apply validates the
+code through the same path as creation-time `discounts[0][promotion_code]`
+(existence, active, coupon `redeem_by`, `applies_to[products]` line-item
+match) and stores the discount on the open session so serialized totals and
+subsequent completion reflect it; only one code may be applied at a time and
+removal restores the original totals. Sessions created without
+`allow_promotion_codes` reject application. `times_redeemed` remains
+untouched, matching the creation path.
+
 ### Tax Rates and Customer Tax IDs
 
 - `POST /v1/tax_rates`

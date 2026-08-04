@@ -375,6 +375,8 @@ export const checkoutSession = {
   amountTotal: "$1,188.00",
   status: "open",
   paymentStatus: "unpaid",
+  allowPromotionCodes: false,
+  promotionCodeApplied: false,
   subscriptionId: "sub_test_pending",
   subscriptionStatus: "not created",
   invoiceId: "in_test_pending",
