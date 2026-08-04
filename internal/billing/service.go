@@ -2289,10 +2289,13 @@ func ApplyDiscountsWithEligibleBase(subtotal int64, eligibleBase int64, currency
 	discount := discounts[0]
 	amount := int64(0)
 	if discount.PercentOff > 0 {
-		if discount.PercentOff > 100 {
-			discount.PercentOff = 100
+		percentOff := discount.PercentOff
+		if percentOff > 100 {
+			percentOff = 100
 		}
-		amount = eligibleBase * discount.PercentOff / 100
+		// Stripe-compatible: round half away from zero (math.Round).
+		// Integer percents that divide evenly keep the prior integer-division result.
+		amount = int64(math.Round(float64(eligibleBase) * percentOff / 100.0))
 	} else if discount.AmountOff > 0 {
 		if discount.Currency == "" || strings.EqualFold(discount.Currency, currency) {
 			amount = discount.AmountOff
@@ -2317,7 +2320,7 @@ func MergeDiscountMetadata(metadata map[string]string, discounts []Discount) map
 	discount := normalizeDiscounts(discounts, time.Now().UTC())[0]
 	metadata[MetadataDiscountCouponID] = discount.CouponID
 	metadata[MetadataDiscountPromotionCodeID] = discount.PromotionCodeID
-	metadata[MetadataDiscountPercentOff] = strconv.FormatInt(discount.PercentOff, 10)
+	metadata[MetadataDiscountPercentOff] = strconv.FormatFloat(discount.PercentOff, 'f', -1, 64)
 	metadata[MetadataDiscountAmountOff] = strconv.FormatInt(discount.AmountOff, 10)
 	metadata[MetadataDiscountCurrency] = strings.ToLower(discount.Currency)
 	metadata[MetadataDiscountDuration] = discount.Duration
@@ -2404,7 +2407,7 @@ func DiscountsFromMetadata(metadata map[string]string) []Discount {
 	}
 	couponID := strings.TrimSpace(metadata[MetadataDiscountCouponID])
 	promotionCodeID := strings.TrimSpace(metadata[MetadataDiscountPromotionCodeID])
-	percentOff, _ := strconv.ParseInt(strings.TrimSpace(metadata[MetadataDiscountPercentOff]), 10, 64)
+	percentOff, _ := strconv.ParseFloat(strings.TrimSpace(metadata[MetadataDiscountPercentOff]), 64)
 	amountOff, _ := strconv.ParseInt(strings.TrimSpace(metadata[MetadataDiscountAmountOff]), 10, 64)
 	if couponID == "" && promotionCodeID == "" && percentOff == 0 && amountOff == 0 {
 		return nil

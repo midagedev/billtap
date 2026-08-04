@@ -4902,6 +4902,11 @@ func (p params) int64(key string) int64 {
 	return value
 }
 
+func (p params) float64(key string) float64 {
+	value, _ := strconv.ParseFloat(p.string(key), 64)
+	return value
+}
+
 func (p params) int64Default(key string, fallback int64) int64 {
 	if value := p.int64(key); value != 0 {
 		return value

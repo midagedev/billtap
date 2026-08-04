@@ -85,7 +85,7 @@ type Discount struct {
 	Object            string            `json:"object,omitempty"`
 	CouponID          string            `json:"coupon,omitempty"`
 	PromotionCodeID   string            `json:"promotion_code,omitempty"`
-	PercentOff        int64             `json:"percent_off,omitempty"`
+	PercentOff        float64           `json:"percent_off,omitempty"`
 	AmountOff         int64             `json:"amount_off,omitempty"`
 	Currency          string            `json:"currency,omitempty"`
 	Duration          string            `json:"duration,omitempty"`

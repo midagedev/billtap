@@ -186,6 +186,7 @@ type paramSpec struct {
 	Required      []string
 	RequiredAny   [][]string
 	Int64Params   []string
+	FloatParams   []string
 	BoolParams    []string
 	EnumParams    map[string][]string
 	NonNegative   []string
@@ -236,6 +237,11 @@ func (p params) validate(spec paramSpec) error {
 			return err
 		}
 	}
+	for _, key := range spec.FloatParams {
+		if err := p.validateFloat64(key); err != nil {
+			return err
+		}
+	}
 	for _, key := range spec.BoolParams {
 		if err := p.validateBool(key); err != nil {
 			return err
@@ -283,6 +289,17 @@ func (p params) validateInt64(key string) error {
 	return nil
 }
 
+func (p params) validateFloat64(key string) error {
+	if !p.has(key) {
+		return nil
+	}
+	if _, err := strconv.ParseFloat(p.string(key), 64); err != nil {
+		// Same invalid-error shape as Int64Params ("Expected an integer.").
+		return invalidParam(key, "Expected an integer.")
+	}
+	return nil
+}
+
 func (p params) validateMin(key string, min int64) error {
 	if !p.has(key) {
 		return nil
@@ -293,6 +310,22 @@ func (p params) validateMin(key string, min int64) error {
 	}
 	if value < min {
 		return invalidParam(key, fmt.Sprintf("Must be at least %d.", min))
+	}
+	return nil
+}
+
+// validatePositiveFloat enforces value > 0 for float form params, using the same
+// error message shape as Positive/validateMin(min=1).
+func (p params) validatePositiveFloat(key string) error {
+	if !p.has(key) {
+		return nil
+	}
+	value, err := strconv.ParseFloat(p.string(key), 64)
+	if err != nil {
+		return invalidParam(key, "Expected an integer.")
+	}
+	if value <= 0 {
+		return invalidParam(key, "Must be at least 1.")
 	}
 	return nil
 }
@@ -1285,8 +1318,10 @@ func validateCouponCreate(p params) error {
 			"max_redemptions",
 		},
 		AllowedRegex: []*regexp.Regexp{couponAppliesToParamRE},
-		Int64Params:  []string{"percent_off", "amount_off", "duration_in_months", "redeem_by", "max_redemptions"},
-		Positive:     []string{"percent_off", "amount_off", "duration_in_months", "max_redemptions"},
+		// percent_off is a Stripe number (may be fractional, e.g. 12.5).
+		Int64Params:  []string{"amount_off", "duration_in_months", "redeem_by", "max_redemptions"},
+		FloatParams:  []string{"percent_off"},
+		Positive:     []string{"amount_off", "duration_in_months", "max_redemptions"},
 		EnumParams: map[string][]string{
 			"duration": {"forever", "once", "repeating"},
 		},
@@ -1297,8 +1332,13 @@ func validateCouponCreate(p params) error {
 	if !p.hasAny("percent_off", "amount_off") {
 		return missingParam("percent_off")
 	}
-	if p.has("percent_off") && p.int64("percent_off") > 100 {
-		return invalidParam("percent_off", "Must be at most 100.")
+	if p.has("percent_off") {
+		if err := p.validatePositiveFloat("percent_off"); err != nil {
+			return err
+		}
+		if p.float64("percent_off") > 100 {
+			return invalidParam("percent_off", "Must be at most 100.")
+		}
 	}
 	if p.has("amount_off") && !p.has("currency") {
 		return missingParam("currency")

@@ -3495,9 +3495,9 @@ func TestExpandedStripeSurfaceSimulations(t *testing.T) {
 	})
 
 	coupon := postForm[struct {
-		ID         string `json:"id"`
-		Object     string `json:"object"`
-		PercentOff int64  `json:"percent_off"`
+		ID         string  `json:"id"`
+		Object     string  `json:"object"`
+		PercentOff float64 `json:"percent_off"`
 	}](t, handler, "/v1/coupons", url.Values{
 		"id":          {"coupon_launch"},
 		"percent_off": {"25"},

@@ -108,7 +108,7 @@ func discountFromCouponEvidence(id string, coupon map[string]any) (billing.Disco
 			return billing.Discount{}, fmt.Errorf("%w: coupon is not valid", billing.ErrInvalidInput)
 		}
 	}
-	percentOff, _ := asInt64Evidence(coupon["percent_off"])
+	percentOff, _ := asFloat64Evidence(coupon["percent_off"])
 	amountOff, _ := asInt64Evidence(coupon["amount_off"])
 	createdAt := time.Now().UTC()
 	if created, ok := asInt64Evidence(coupon["created"]); ok && created > 0 {

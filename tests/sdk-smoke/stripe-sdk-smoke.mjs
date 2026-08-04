@@ -200,6 +200,60 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
     "rate_type",
   ]);
 
+  const decimalCoupon = await check(
+    "coupon percent_off decimal create/retrieve + checkout discount",
+    async () => {
+      const created = await stripe.coupons.create({
+        percent_off: 12.5,
+        duration: "once",
+      });
+      assertEqual(created.object, "coupon", "decimal coupon object");
+      assertEqual(created.percent_off, 12.5, "created coupon percent_off");
+
+      const retrieved = await stripe.coupons.retrieve(created.id);
+      assertEqual(retrieved.percent_off, 12.5, "retrieved coupon percent_off");
+
+      // 12.5% of 8000 = 1000 discount
+      const discountPrice = await stripe.prices.create({
+        product: product.id,
+        currency: "usd",
+        unit_amount: 8000,
+        recurring: { interval: "month" },
+        metadata: {
+          billtap_smoke: "stripe_sdk",
+          run_id: runId,
+          purpose: "decimal_percent_off",
+        },
+      });
+      const session = await stripe.checkout.sessions.create({
+        customer: customer.id,
+        mode: "subscription",
+        line_items: [{ price: discountPrice.id, quantity: 1 }],
+        discounts: [{ coupon: created.id }],
+        success_url: "http://127.0.0.1/decimal-coupon-success",
+        cancel_url: "http://127.0.0.1/decimal-coupon-cancel",
+      });
+      assertEqual(
+        session.object,
+        "checkout.session",
+        "decimal coupon checkout session object",
+      );
+      assertEqual(
+        session.total_details?.amount_discount,
+        1000,
+        "decimal coupon total_details.amount_discount",
+      );
+      assertEqual(session.amount_total, 7000, "decimal coupon amount_total");
+      return created;
+    },
+  );
+  report.objects.decimalCoupon = pick(decimalCoupon, [
+    "id",
+    "object",
+    "percent_off",
+    "duration",
+  ]);
+
   const customerTaxID = await check(
     "customer tax id create/retrieve/list/delete",
     async () => {

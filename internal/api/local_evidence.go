@@ -72,7 +72,7 @@ func (h *Handler) handleCoupons(w http.ResponseWriter, r *http.Request) {
 			"livemode":           false,
 		}
 		if p.has("percent_off") {
-			coupon["percent_off"] = p.int64("percent_off")
+			coupon["percent_off"] = p.float64("percent_off")
 		}
 		if p.has("amount_off") {
 			coupon["amount_off"] = p.int64("amount_off")
@@ -907,6 +907,26 @@ func asInt64Evidence(value any) (int64, bool) {
 		return int64(v), true
 	case string:
 		parsed, err := strconv.ParseInt(v, 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func asFloat64Evidence(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case string:
+		parsed, err := strconv.ParseFloat(v, 64)
 		return parsed, err == nil
 	default:
 		return 0, false
