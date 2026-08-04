@@ -574,7 +574,7 @@ function normalizePortalInvoice(value: unknown): Invoice[] {
     id,
     period: formatDateField(record, ["created_at", "createdAt", "created"]) ?? "Invoice",
     amount:
-      readMoney(record, ["total", "amount_paid", "amount_due", "subtotal"], ["currency"]) ??
+      readRecordMoney(record, ["total", "amount_paid", "amount_due", "subtotal"]) ??
       "$0.00",
     status: readString(record, ["status"], "draft"),
   }];
@@ -850,7 +850,7 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
       readString(session, ["plan", "plan_name", "planName"], fixtureSession.plan),
     price:
       amountTotal ||
-      readMoney(session, ["amount_total", "amountSubtotal", "amount_total"], ["currency"]) ||
+      amountSubtotal ||
       readString(session, ["price", "amount"], fixtureSession.price),
     amountSubtotal: amountSubtotal || amountTotal || fixtureSession.amountSubtotal,
     amountDiscount: discountAmount > 0 ? formatMinorAmount(discountAmount, currency) : undefined,
@@ -891,7 +891,7 @@ function normalizeLineItems(root: Record<string, unknown> | undefined, session: 
         readString(record, ["label", "description", "name"], "") ||
         readString(price, ["nickname", "lookup_key"], "Line item"),
       amount:
-        readMoney(record, ["amount_total", "amount", "unit_amount"], ["currency"]) ||
+        readRecordMoney(record, ["amount_total", "amount", "unit_amount"]) ||
         readString(record, ["display_amount"], fixtureSession.price),
     };
   });
@@ -1084,8 +1084,8 @@ function normalizeObjectRecord(record: Record<string, unknown>, type: DashboardO
           ["Customer", customer],
           ["Subscription", subscription],
           ["Payment intent", paymentIntent],
-          ["Amount due", readMoney(record, ["amount_due", "amountDue"], ["currency"])],
-          ["Amount paid", readMoney(record, ["amount_paid", "amountPaid"], ["currency"])],
+          ["Amount due", readRecordMoney(record, ["amount_due", "amountDue"])],
+          ["Amount paid", readRecordMoney(record, ["amount_paid", "amountPaid"])],
           ["Attempt count", readString(record, ["attempt_count", "attemptCount"], "")],
           ["Next payment attempt", formatDateField(record, ["next_payment_attempt", "nextPaymentAttempt"])],
         ]),
@@ -1200,14 +1200,14 @@ function objectStatus(record: Record<string, unknown>, type: DashboardObjectType
 function objectAmount(record: Record<string, unknown>, type: DashboardObjectType): string | undefined {
   if (type === "invoices") {
     return (
-      readMoney(record, ["total", "amount_due", "amountDue", "subtotal"], ["currency"]) ||
+      readRecordMoney(record, ["total", "amount_due", "amountDue", "subtotal"]) ||
       undefined
     );
   }
   if (type === "paymentIntents") {
-    return readMoney(record, ["amount"], ["currency"]) || undefined;
+    return readRecordMoney(record, ["amount"]) || undefined;
   }
-  return readMoney(record, ["amount_total", "amountTotal", "total"], ["currency"]) || undefined;
+  return readRecordMoney(record, ["amount_total", "amountTotal", "total"]) || undefined;
 }
 
 function compactFields(items: Array<[string, string | undefined]>): { label: string; value: string }[] {
@@ -1468,15 +1468,10 @@ function readMinorMoney(record: Record<string, unknown> | undefined, keys: strin
   return formatMinorAmount(amount, currency);
 }
 
-function readMoney(record: Record<string, unknown> | undefined, amountKeys: string[], currencyKeys: string[]): string | undefined {
-  const amount = readNumber(record, amountKeys, Number.NaN);
-  if (Number.isNaN(amount)) return undefined;
-  const currency = readString(record, currencyKeys, "usd").toUpperCase();
-  const normalized = amount > 999 ? amount / 100 : amount;
-  return new Intl.NumberFormat("en-US", {
-    style: "currency",
-    currency,
-  }).format(normalized);
+// Money fields on Stripe-shaped records are integer minor units, and the record
+// carries the currency they are denominated in.
+function readRecordMoney(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  return readMinorMoney(record, keys, readString(record, ["currency"], "usd"));
 }
 
 function readString(record: Record<string, unknown> | undefined, keys: string[], fallback: string): string {
