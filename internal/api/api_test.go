@@ -4411,6 +4411,186 @@ func TestInvoiceBackedOneTimePaymentFlow(t *testing.T) {
 	}
 }
 
+func TestInvoiceEmailSendEvidence(t *testing.T) {
+	handler := newTestHandler(t)
+
+	type invoiceResponse struct {
+		ID       string            `json:"id"`
+		Object   string            `json:"object"`
+		Status   string            `json:"status"`
+		Customer string            `json:"customer"`
+		Metadata map[string]string `json:"metadata"`
+	}
+	type errorEnvelope struct {
+		Error struct {
+			Type    string `json:"type"`
+			Message string `json:"message"`
+			Code    string `json:"code"`
+		} `json:"error"`
+	}
+
+	seedOpenInvoice := func(t *testing.T, customerID string, collectionMethod string) invoiceResponse {
+		t.Helper()
+		invoice := postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":          {customerID},
+			"currency":          {"usd"},
+			"collection_method": {collectionMethod},
+			"description":       {"Email evidence"},
+		})
+		postForm[struct {
+			ID string `json:"id"`
+		}](t, handler, "/v1/invoiceitems", url.Values{
+			"customer":    {customerID},
+			"invoice":     {invoice.ID},
+			"amount":      {"2500"},
+			"currency":    {"usd"},
+			"description": {"Line"},
+		})
+		return invoice
+	}
+
+	// 1) draft invoice send → 400 requiring finalize
+	draftCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"draft-send@example.test"},
+	})
+	draftInvoice := seedOpenInvoice(t, draftCustomer.ID, "send_invoice")
+	draftStatus, draftBody := postFormStatus(t, handler, "/v1/invoices/"+draftInvoice.ID+"/send", nil)
+	if draftStatus != http.StatusBadRequest {
+		t.Fatalf("draft send status = %d body = %s, want 400", draftStatus, draftBody)
+	}
+	var draftErr errorEnvelope
+	if err := json.Unmarshal([]byte(draftBody), &draftErr); err != nil {
+		t.Fatalf("decode draft send error: %v body=%s", err, draftBody)
+	}
+	if draftErr.Error.Type != "invalid_request_error" || !strings.Contains(draftErr.Error.Message, "Invoice must be finalized before it can be sent.") {
+		t.Fatalf("draft send error = %#v, want finalize-required message", draftErr.Error)
+	}
+
+	// 2) send_invoice finalize → invoice.finalized then invoice.sent + email metadata
+	sendCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"send-invoice@example.test"},
+	})
+	sendInvoice := seedOpenInvoice(t, sendCustomer.ID, "send_invoice")
+	finalized := postForm[invoiceResponse](t, handler, "/v1/invoices/"+sendInvoice.ID+"/finalize", nil)
+	if finalized.Status != "open" {
+		t.Fatalf("finalized send_invoice = %#v, want open", finalized)
+	}
+	if finalized.Metadata["billtap_email_sent_at"] == "" {
+		t.Fatalf("finalized metadata missing billtap_email_sent_at: %#v", finalized.Metadata)
+	}
+	if finalized.Metadata["billtap_email_recipient"] != "send-invoice@example.test" {
+		t.Fatalf("finalized recipient = %q, want customer email", finalized.Metadata["billtap_email_recipient"])
+	}
+	if _, err := time.Parse(time.RFC3339, finalized.Metadata["billtap_email_sent_at"]); err != nil {
+		t.Fatalf("billtap_email_sent_at = %q, want RFC3339: %v", finalized.Metadata["billtap_email_sent_at"], err)
+	}
+
+	eventsAfterFinalize := getJSON[struct {
+		Object string           `json:"object"`
+		Data   []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events")
+	var finalizeOrder []string
+	for _, event := range eventsAfterFinalize.Data {
+		if event.Type == "invoice.finalized" || event.Type == "invoice.sent" {
+			// only track events for this invoice object id in payload when possible
+			var payload map[string]any
+			if err := json.Unmarshal(event.Data.Object, &payload); err == nil {
+				if id, _ := payload["id"].(string); id == sendInvoice.ID {
+					finalizeOrder = append(finalizeOrder, event.Type)
+				}
+			}
+		}
+	}
+	finalizedIdx, sentIdx := -1, -1
+	for i, eventType := range finalizeOrder {
+		switch eventType {
+		case "invoice.finalized":
+			if finalizedIdx < 0 {
+				finalizedIdx = i
+			}
+		case "invoice.sent":
+			if sentIdx < 0 {
+				sentIdx = i
+			}
+		}
+	}
+	if finalizedIdx < 0 || sentIdx < 0 || finalizedIdx >= sentIdx {
+		t.Fatalf("event order for send_invoice finalize = %#v, want invoice.finalized before invoice.sent", finalizeOrder)
+	}
+
+	// 3) explicit send on open charge_automatically invoice → 200 + invoice.sent + metadata
+	autoCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"auto-send@example.test"},
+	})
+	autoInvoice := seedOpenInvoice(t, autoCustomer.ID, "charge_automatically")
+	_ = postForm[invoiceResponse](t, handler, "/v1/invoices/"+autoInvoice.ID+"/finalize", nil)
+	sent := postForm[invoiceResponse](t, handler, "/v1/invoices/"+autoInvoice.ID+"/send", nil)
+	if sent.Object != "invoice" || sent.Status != "open" {
+		t.Fatalf("explicit send = %#v, want open invoice object", sent)
+	}
+	if sent.Metadata["billtap_email_sent_at"] == "" || sent.Metadata["billtap_email_recipient"] != "auto-send@example.test" {
+		t.Fatalf("explicit send metadata = %#v, want email evidence", sent.Metadata)
+	}
+	sentEvents := getJSON[struct {
+		Object string           `json:"object"`
+		Data   []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=invoice.sent")
+	foundSent := false
+	for _, event := range sentEvents.Data {
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data.Object, &payload); err != nil {
+			continue
+		}
+		if id, _ := payload["id"].(string); id == autoInvoice.ID {
+			foundSent = true
+			break
+		}
+	}
+	if !foundSent {
+		t.Fatalf("events missing invoice.sent for explicit send of %s", autoInvoice.ID)
+	}
+
+	// 4) paid invoice send → 200 + invoice.sent + metadata refresh (Stripe allows re-send)
+	paid := postForm[invoiceResponse](t, handler, "/v1/invoices/"+autoInvoice.ID+"/pay", nil)
+	if paid.Status != "paid" {
+		t.Fatalf("paid invoice = %#v, want paid", paid)
+	}
+	priorSentAt := paid.Metadata["billtap_email_sent_at"]
+	if priorSentAt == "" {
+		t.Fatalf("paid invoice missing prior send evidence: %#v", paid.Metadata)
+	}
+	// Ensure timestamp can move forward on re-send.
+	time.Sleep(1100 * time.Millisecond)
+	paidSent := postForm[invoiceResponse](t, handler, "/v1/invoices/"+autoInvoice.ID+"/send", nil)
+	if paidSent.Object != "invoice" || paidSent.Status != "paid" {
+		t.Fatalf("paid send = %#v, want paid invoice object", paidSent)
+	}
+	if paidSent.Metadata["billtap_email_sent_at"] == "" || paidSent.Metadata["billtap_email_recipient"] != "auto-send@example.test" {
+		t.Fatalf("paid send metadata = %#v, want refreshed email evidence", paidSent.Metadata)
+	}
+	if paidSent.Metadata["billtap_email_sent_at"] == priorSentAt {
+		t.Fatalf("paid re-send did not refresh billtap_email_sent_at: %q", priorSentAt)
+	}
+	paidSentEvents := getJSON[struct {
+		Object string           `json:"object"`
+		Data   []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=invoice.sent")
+	paidSentCount := 0
+	for _, event := range paidSentEvents.Data {
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data.Object, &payload); err != nil {
+			continue
+		}
+		if id, _ := payload["id"].(string); id == autoInvoice.ID {
+			paidSentCount++
+		}
+	}
+	// explicit open send + paid re-send
+	if paidSentCount < 2 {
+		t.Fatalf("invoice.sent events for %s = %d, want at least 2 (open + paid re-send)", autoInvoice.ID, paidSentCount)
+	}
+}
+
 func TestCustomerSearchAndNestedSubscriptionRoutes(t *testing.T) {
 	handler := newTestHandler(t)
 

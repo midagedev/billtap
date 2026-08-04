@@ -925,6 +925,11 @@ func validateInvoiceFinalize(p params) error {
 	})
 }
 
+func validateInvoiceSend(p params) error {
+	// Stripe InvoiceSendInvoiceParams only accepts expand (handled globally).
+	return p.validate(paramSpec{})
+}
+
 func validateInvoicePreview(p params) error {
 	if err := p.validate(paramSpec{
 		Allowed: []string{

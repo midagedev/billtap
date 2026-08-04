@@ -795,6 +795,56 @@ func (s *Service) FinalizeInvoice(ctx context.Context, invoiceID string) (Invoic
 	return InvoicePaymentResult{Invoice: updatedInvoice, PaymentIntent: createdIntent}, nil
 }
 
+// SendInvoice records local email-send evidence for an open invoice.
+// No real email is delivered; metadata and timeline/webhook consumers observe the attempt.
+func (s *Service) SendInvoice(ctx context.Context, invoiceID string) (Invoice, error) {
+	if strings.TrimSpace(invoiceID) == "" {
+		return Invoice{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
+	}
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	switch strings.ToLower(strings.TrimSpace(invoice.Status)) {
+	case "open", "paid":
+		// Stripe allows send for open and paid (paid emails omit payment reference).
+	case "draft":
+		return Invoice{}, fmt.Errorf("%w: Invoice must be finalized before it can be sent.", ErrInvalidInput)
+	case "void", "uncollectible":
+		return Invoice{}, fmt.Errorf("%w: Invoice is no longer open.", ErrInvalidInput)
+	default:
+		return Invoice{}, fmt.Errorf("%w: Invoice is no longer open.", ErrInvalidInput)
+	}
+
+	at := s.now().UTC()
+	invoice.Metadata = copyMap(invoice.Metadata)
+	if invoice.Metadata == nil {
+		invoice.Metadata = map[string]string{}
+	}
+	invoice.Metadata["billtap_email_sent_at"] = at.Format(time.RFC3339)
+	if invoice.CustomerID != "" {
+		if customer, err := s.repo.GetCustomer(ctx, invoice.CustomerID); err == nil {
+			if email := strings.TrimSpace(customer.Email); email != "" {
+				invoice.Metadata["billtap_email_recipient"] = email
+			}
+		}
+	}
+	return s.repo.UpdateInvoice(ctx, invoice, []TimelineEntry{billingTimelineEntry(
+		"invoice_sent_"+invoice.ID+"_"+at.Format(time.RFC3339Nano),
+		"invoice.sent",
+		"Invoice email evidence recorded",
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoice.send", "status": invoice.Status},
+		at,
+	)})
+}
+
 func (s *Service) PayInvoice(ctx context.Context, invoiceID string, opts InvoicePaymentOptions) (InvoicePaymentResult, error) {
 	if strings.TrimSpace(invoiceID) == "" {
 		return InvoicePaymentResult{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)

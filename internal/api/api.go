@@ -2668,8 +2668,36 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 			if result.PaymentIntent.ID != "" {
 				h.emitPaymentIntentWebhook(r, "payment_intent.created", result.PaymentIntent)
 			}
+			// send_invoice collection: leave local email evidence after finalized (order: finalized → sent).
+			if stringDefault(result.Invoice.Metadata["collection_method"], "charge_automatically") == "send_invoice" {
+				if sent, sendErr := h.billing.SendInvoice(r.Context(), result.Invoice.ID); sendErr == nil {
+					result.Invoice = sent
+					h.emitGenericWebhook(r, "invoice.sent", sent.ID, h.stripeInvoice(r.Context(), sent), webhooks.SourceAPI)
+				}
+			}
 		}
 		writeResult(w, h.stripeInvoiceWithPaymentIntent(result.Invoice, result.PaymentIntent), err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "send" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceSend(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.SendInvoice(r.Context(), id)
+		if err == nil {
+			h.emitGenericWebhook(r, "invoice.sent", invoice.ID, h.stripeInvoice(r.Context(), invoice), webhooks.SourceAPI)
+		}
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "pay" {

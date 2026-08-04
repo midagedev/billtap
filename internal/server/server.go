@@ -105,6 +105,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/checkout/", s.handleHostedCheckout)
 	s.mux.HandleFunc("/portal", s.handleHostedPortal)
 	s.mux.HandleFunc("/portal/", s.handleHostedPortal)
+	s.mux.HandleFunc("/invoices/", s.handleHostedInvoice)
 	s.mux.HandleFunc("/assets/", s.handleAssets)
 }
 
@@ -339,6 +340,23 @@ func (s *Server) handleHostedPortal(w http.ResponseWriter, r *http.Request) {
 	} else if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}
+	http.Redirect(w, r, target, http.StatusFound)
+}
+
+// handleHostedInvoice serves the local hosted_invoice_url path as a redirect to the
+// invoice API resource. No PDF or real hosted page is rendered.
+func (s *Server) handleHostedInvoice(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w)
+		return
+	}
+	rest := strings.Trim(strings.TrimPrefix(r.URL.Path, "/invoices/"), "/")
+	parts := strings.Split(rest, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] != "hosted" {
+		http.NotFound(w, r)
+		return
+	}
+	target := s.prefixedPath(r, "/v1/invoices/"+parts[0])
 	http.Redirect(w, r, target, http.StatusFound)
 }
 
