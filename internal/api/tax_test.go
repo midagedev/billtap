@@ -6,10 +6,12 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/hckim/billtap/internal/billing"
+	"github.com/hckim/billtap/internal/fixtures"
 )
 
 func TestTaxRatesEvidenceCRUD(t *testing.T) {
@@ -799,5 +801,135 @@ func TestDefaultTaxRatesErrors(t *testing.T) {
 	})
 	if okSession["amount_total"] != float64(3300) {
 		t.Fatalf("indexed form amount_total = %#v, want 3300", okSession["amount_total"])
+	}
+}
+
+func TestFixtureTaxRatesApplyGetAndValidate(t *testing.T) {
+	handler := newTestHandler(t)
+
+	pack := map[string]any{
+		"name": "tax-rate-fixture",
+		"tax_rates": []map[string]any{
+			{
+				"id":           "txr_fixture_ex",
+				"display_name": "Sales Tax",
+				"percentage":   10.0,
+				"inclusive":    false,
+				"country":      "US",
+				"state":        "CA",
+			},
+			{
+				// Auto-generated txr_ id; inclusive for field round-trip.
+				"display_name": "VAT Inclusive",
+				"percentage":   20.0,
+				"inclusive":    true,
+			},
+		},
+	}
+
+	// validate endpoint summary includes tax_rates count.
+	validation := postJSON[struct {
+		Valid   bool           `json:"valid"`
+		Summary map[string]int `json:"summary"`
+	}](t, handler, "/api/fixtures/validate", pack)
+	if !validation.Valid || validation.Summary["tax_rates"] != 2 {
+		t.Fatalf("fixture validation = %#v, want valid with tax_rates=2", validation)
+	}
+
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if applied.Summary["tax_rates"] != 2 || len(applied.TaxRates) != 2 {
+		t.Fatalf("fixture apply summary/tax_rates = summary=%#v tax_rates=%#v, want 2", applied.Summary, applied.TaxRates)
+	}
+
+	// Explicit ID round-trip.
+	explicit := getJSON[map[string]any](t, handler, "/v1/tax_rates/txr_fixture_ex")
+	if explicit["id"] != "txr_fixture_ex" || explicit["percentage"] != float64(10) || explicit["inclusive"] != false {
+		t.Fatalf("GET explicit tax_rate = %#v, want id/percentage/inclusive round-trip", explicit)
+	}
+	if explicit["display_name"] != "Sales Tax" || explicit["active"] != true {
+		t.Fatalf("GET explicit tax_rate fields = %#v", explicit)
+	}
+
+	// Auto ID: one of the applied rates is not the explicit id and has inclusive=true.
+	var autoID string
+	for _, rate := range applied.TaxRates {
+		id := fmt.Sprint(rate["id"])
+		if id != "txr_fixture_ex" {
+			autoID = id
+			if rate["inclusive"] != true || rate["percentage"] != float64(20) {
+				t.Fatalf("auto tax_rate payload = %#v, want inclusive 20%%", rate)
+			}
+			if !strings.HasPrefix(id, "txr_") {
+				t.Fatalf("auto tax_rate id = %q, want txr_ prefix", id)
+			}
+			break
+		}
+	}
+	if autoID == "" {
+		t.Fatalf("applied tax_rates = %#v, want one auto-generated id", applied.TaxRates)
+	}
+	autoFetched := getJSON[map[string]any](t, handler, "/v1/tax_rates/"+autoID)
+	if autoFetched["id"] != autoID || autoFetched["inclusive"] != true || autoFetched["percentage"] != float64(20) {
+		t.Fatalf("GET auto tax_rate = %#v", autoFetched)
+	}
+
+	// Re-apply same pack: idempotent overwrite for explicit ID, no error.
+	reapplied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", pack)
+	if reapplied.Summary["tax_rates"] != 2 {
+		t.Fatalf("re-apply summary tax_rates = %#v, want 2", reapplied.Summary)
+	}
+	again := getJSON[map[string]any](t, handler, "/v1/tax_rates/txr_fixture_ex")
+	if again["percentage"] != float64(10) || again["display_name"] != "Sales Tax" {
+		t.Fatalf("re-apply GET = %#v, want stable explicit tax rate", again)
+	}
+}
+
+func TestFixtureTaxRatesCheckoutDefaultTaxRates(t *testing.T) {
+	handler := newTestHandler(t)
+
+	// Seed exclusive 10% tax rate via fixture pack.
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", map[string]any{
+		"name": "tax-rate-checkout",
+		"tax_rates": []map[string]any{{
+			"id":           "txr_fixture_checkout",
+			"display_name": "Sales",
+			"percentage":   10.0,
+			"inclusive":    false,
+		}},
+		"products": []map[string]any{{
+			"id":   "prod_fixture_tax",
+			"name": "Taxed Plan",
+		}},
+		"prices": []map[string]any{{
+			"id":          "price_fixture_tax",
+			"product":     "prod_fixture_tax",
+			"currency":    "usd",
+			"unit_amount": 1000,
+			"interval":    "month",
+		}},
+		"customers": []map[string]any{{
+			"id":    "cus_fixture_tax",
+			"email": "fixture-tax@example.test",
+		}},
+	})
+	if applied.Summary["tax_rates"] != 1 {
+		t.Fatalf("apply summary = %#v, want tax_rates=1", applied.Summary)
+	}
+
+	// 10% exclusive on subtotal 1000 → tax 100.
+	session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                               {"cus_fixture_tax"},
+		"line_items[0][price]":                   {"price_fixture_tax"},
+		"line_items[0][quantity]":                {"1"},
+		"subscription_data[default_tax_rates][]": {"txr_fixture_checkout"},
+		"success_url":                            {"http://app.test/success"},
+		"cancel_url":                             {"http://app.test/cancel"},
+	})
+	details, _ := session["total_details"].(map[string]any)
+	if details["amount_tax"] != float64(100) {
+		t.Fatalf("amount_tax = %#v, want 100 (10%% of 1000)", details["amount_tax"])
+	}
+	if session["amount_total"] != float64(1100) {
+		t.Fatalf("amount_total = %#v, want 1100", session["amount_total"])
 	}
 }

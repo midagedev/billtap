@@ -831,6 +831,11 @@ func validatePack(pack Pack) error {
 			problems = append(problems, fmt.Sprintf("disputes[%d].amount must be non-negative", idx))
 		}
 	}
+	for idx, taxRate := range pack.TaxRates {
+		if strings.TrimSpace(taxRate.DisplayName) == "" {
+			problems = append(problems, fmt.Sprintf("tax_rates[%d].display_name is required", idx))
+		}
+	}
 	if len(problems) > 0 {
 		return fmt.Errorf("%w: %s", ErrInvalidFixture, strings.Join(problems, "; "))
 	}

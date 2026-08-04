@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Added a top-level `tax_rates` fixture pack key that seeds local tax-rate
+  evidence (same path as disputes): explicit IDs are stored as-is so seeded
+  products and checkout `default_tax_rates` can reference them, re-applying
+  a pack overwrites by ID, and apply/validate summaries report the count.
 - Added checkout `mode=payment` for one-time payments: `line_items` accept
   inline `price_data` (creating real local product/price evidence),
   `payment_intent_data` (`setup_future_usage`, `description`,

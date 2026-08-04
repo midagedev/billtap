@@ -3980,6 +3980,13 @@ func (h *Handler) handleFixtureApply(w http.ResponseWriter, r *http.Request) {
 		result.Disputes = disputes
 		result.Summary["disputes"] = len(disputes)
 	}
+	if taxRates, err := h.applyFixtureTaxRates(pack); err != nil {
+		writeResult(w, result, err)
+		return
+	} else if len(taxRates) > 0 {
+		result.TaxRates = taxRates
+		result.Summary["tax_rates"] = len(taxRates)
+	}
 	h.emitFixtureApplyWebhooks(r, result)
 	writeJSON(w, http.StatusOK, result)
 }
@@ -4018,6 +4025,7 @@ func (h *Handler) handleFixtureValidate(w http.ResponseWriter, r *http.Request) 
 			"refunds":            len(pack.Refunds),
 			"credit_notes":       len(pack.CreditNotes),
 			"disputes":           len(pack.Disputes),
+			"tax_rates":          len(pack.TaxRates),
 		},
 	})
 }
@@ -4075,6 +4083,56 @@ func disputeFixturePayload(fixture fixtures.DisputeFixture) map[string]any {
 		"evidence_details":     map[string]any{"has_evidence": false, "submission_count": 0, "past_due": false},
 		"balance_transactions": []map[string]any{},
 		"is_charge_refundable": true,
+		"metadata":             nonNilMap(fixture.Metadata),
+		"created":              now.Unix(),
+		"livemode":             false,
+	}
+}
+
+// applyFixtureTaxRates seeds tax_rate evidence from the fixture pack (same path as disputes).
+// Same ID re-applies by overwrite for fixture idempotency.
+func (h *Handler) applyFixtureTaxRates(pack fixtures.Pack) ([]map[string]any, error) {
+	if len(pack.TaxRates) == 0 {
+		return nil, nil
+	}
+	out := make([]map[string]any, 0, len(pack.TaxRates))
+	for _, fixture := range pack.TaxRates {
+		taxRate := taxRateFixturePayload(fixture)
+		h.local.mu.Lock()
+		h.local.taxRates[fmt.Sprint(taxRate["id"])] = taxRate
+		h.local.mu.Unlock()
+		out = append(out, cloneEvidence(taxRate))
+	}
+	return out, nil
+}
+
+func taxRateFixturePayload(fixture fixtures.TaxRateFixture) map[string]any {
+	now := time.Now().UTC()
+	id := strings.TrimSpace(fixture.ID)
+	if id == "" {
+		// Match POST /v1/tax_rates id generation; do not force txr_ on explicit IDs.
+		id = "txr_" + strconv.FormatInt(now.UnixNano(), 36)
+	}
+	active := true
+	if fixture.Active != nil {
+		active = *fixture.Active
+	}
+	return map[string]any{
+		"id":                   id,
+		"object":               "tax_rate",
+		"display_name":         fixture.DisplayName,
+		"percentage":           fixture.Percentage,
+		"inclusive":            fixture.Inclusive,
+		"active":               active,
+		"country":              emptyToNil(strings.TrimSpace(fixture.Country)),
+		"state":                emptyToNil(strings.TrimSpace(fixture.State)),
+		"jurisdiction":         nil,
+		"description":          emptyToNil(strings.TrimSpace(fixture.Description)),
+		"effective_percentage": nil,
+		"flat_amount":          nil,
+		"jurisdiction_level":   nil,
+		"rate_type":            "percentage",
+		"tax_type":             nil,
 		"metadata":             nonNilMap(fixture.Metadata),
 		"created":              now.Unix(),
 		"livemode":             false,
