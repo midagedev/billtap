@@ -67,16 +67,23 @@ function CheckoutApp() {
   }, [sessionId]);
 
   const confirmation = useMemo(() => {
+    const isPayment = session.mode === "payment";
     if (outcome.id === "success")
-      return "subscription active · invoice paid · payment intent succeeded";
+      return isPayment
+        ? "checkout complete · payment intent succeeded"
+        : "subscription active · invoice paid · payment intent succeeded";
     if (outcome.id === "pending")
-      return "checkout pending · invoice open · async payment awaiting settlement";
+      return isPayment
+        ? "checkout pending · async payment awaiting settlement"
+        : "checkout pending · invoice open · async payment awaiting settlement";
     if (outcome.id === "action")
       return "payment intent requires_action · challenge event queued";
     if (outcome.id === "cancel")
       return "checkout canceled · return URL selected";
-    return "checkout failed · invoice open · retry path available";
-  }, [outcome.id]);
+    return isPayment
+      ? "checkout failed · retry path available"
+      : "checkout failed · invoice open · retry path available";
+  }, [outcome.id, session.mode]);
 
   const statusTone = completion
     ? toneForState(completion.session.paymentIntentStatus)
@@ -389,18 +396,22 @@ function CheckoutApp() {
             <span>Checkout session</span>
             <strong>{session.status}</strong>
           </li>
-          <li>
-            <span>{session.subscriptionId}</span>
-            <StatusPill tone={toneForState(session.subscriptionStatus)}>
-              {session.subscriptionStatus}
-            </StatusPill>
-          </li>
-          <li>
-            <span>{session.invoiceId}</span>
-            <StatusPill tone={toneForState(session.invoiceStatus)}>
-              {session.invoiceStatus}
-            </StatusPill>
-          </li>
+          {session.subscriptionId ? (
+            <li>
+              <span>{session.subscriptionId}</span>
+              <StatusPill tone={toneForState(session.subscriptionStatus)}>
+                {session.subscriptionStatus}
+              </StatusPill>
+            </li>
+          ) : null}
+          {session.invoiceId ? (
+            <li>
+              <span>{session.invoiceId}</span>
+              <StatusPill tone={toneForState(session.invoiceStatus)}>
+                {session.invoiceStatus}
+              </StatusPill>
+            </li>
+          ) : null}
           <li>
             <span>{session.paymentIntentId}</span>
             <StatusPill tone={toneForState(session.paymentIntentStatus)}>

@@ -118,14 +118,22 @@ type CheckoutSession struct {
 	TaxPercent      float64    `json:"tax_percent,omitempty"`
 	// default_tax_rates_snapshot avoids collision with Stripe's default_tax_rates array of TaxRate objects.
 	DefaultTaxRates []AppliedTaxRate `json:"default_tax_rates_snapshot,omitempty"`
-	URL             string           `json:"url"`
-	Status          string           `json:"status"`
-	PaymentStatus   string           `json:"payment_status"`
-	SubscriptionID  string           `json:"subscription,omitempty"`
-	InvoiceID       string           `json:"invoice,omitempty"`
-	PaymentIntentID string           `json:"payment_intent,omitempty"`
-	CreatedAt       time.Time        `json:"created_at"`
-	CompletedAt     *time.Time       `json:"completed_at,omitempty"`
+	// ClientReferenceID is Stripe's client_reference_id (always present on API responses as string|null).
+	ClientReferenceID string `json:"client_reference_id,omitempty"`
+	// Payment-mode payment_intent_data snapshot fields (persisted as JSON in payment_intent_data).
+	PaymentIntentMetadata    map[string]string `json:"-"`
+	SetupFutureUsage         string            `json:"-"`
+	PaymentIntentDescription string            `json:"-"`
+	ReceiptEmail             string            `json:"-"`
+	CaptureMethod            string            `json:"-"`
+	URL                      string            `json:"url"`
+	Status                   string            `json:"status"`
+	PaymentStatus            string            `json:"payment_status"`
+	SubscriptionID           string            `json:"subscription,omitempty"`
+	InvoiceID                string            `json:"invoice,omitempty"`
+	PaymentIntentID          string            `json:"payment_intent,omitempty"`
+	CreatedAt                time.Time         `json:"created_at"`
+	CompletedAt              *time.Time        `json:"completed_at,omitempty"`
 }
 
 // AppliedTaxRate is a creation-time snapshot of a tax rate applied to billing math.

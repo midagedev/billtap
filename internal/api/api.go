@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1577,12 +1578,21 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			writeResult(w, nil, err)
 			return
 		}
-		lineItems := p.lineItems()
+		mode := p.stringDefault("mode", "subscription")
+		lineItems, err := h.resolveCheckoutLineItems(r.Context(), p, mode)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
 		for _, item := range lineItems {
 			if err := validatePriceExists(h.billing.GetPrice(r.Context(), item.PriceID)); err != nil {
 				writeResult(w, nil, err)
 				return
 			}
+		}
+		if err := h.validateCheckoutLineItemCurrencies(r.Context(), lineItems); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
 		}
 		discounts, err := h.discountsFromParamsOrCustomer(r, p, customer)
 		if err != nil {
@@ -1604,18 +1614,24 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			return
 		}
 		session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
-			CustomerID:          p.first("customer", "customer_id"),
-			Mode:                p.stringDefault("mode", "subscription"),
-			LineItems:           lineItems,
-			Discounts:           discounts,
-			SuccessURL:          p.string("success_url"),
-			CancelURL:           p.string("cancel_url"),
-			AllowPromotionCodes: p.boolDefault("allow_promotion_codes", false),
-			TrialPeriodDays:     p.int64("subscription_data[trial_period_days]"),
-			AutomaticTax:        automaticTax,
-			TaxIDCollection:     p.boolDefault("tax_id_collection[enabled]", false),
-			TaxPercent:          taxPercent,
-			DefaultTaxRates:     defaultTaxRates,
+			CustomerID:               p.first("customer", "customer_id"),
+			Mode:                     mode,
+			LineItems:                lineItems,
+			Discounts:                discounts,
+			SuccessURL:               p.string("success_url"),
+			CancelURL:                p.string("cancel_url"),
+			AllowPromotionCodes:      p.boolDefault("allow_promotion_codes", false),
+			TrialPeriodDays:          p.int64("subscription_data[trial_period_days]"),
+			AutomaticTax:             automaticTax,
+			TaxIDCollection:          p.boolDefault("tax_id_collection[enabled]", false),
+			TaxPercent:               taxPercent,
+			DefaultTaxRates:          defaultTaxRates,
+			ClientReferenceID:        p.string("client_reference_id"),
+			PaymentIntentMetadata:    p.paymentIntentDataMetadata(),
+			SetupFutureUsage:         p.string("payment_intent_data[setup_future_usage]"),
+			PaymentIntentDescription: p.string("payment_intent_data[description]"),
+			ReceiptEmail:             p.string("payment_intent_data[receipt_email]"),
+			CaptureMethod:            p.string("payment_intent_data[capture_method]"),
 		})
 		if err == nil {
 			session.URL = h.absoluteURL(r, session.URL)
@@ -1786,10 +1802,18 @@ func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id st
 	}
 	if session.PaymentIntentID != "" {
 		if pi, err := h.billing.GetPaymentIntent(r.Context(), session.PaymentIntentID); err == nil {
+			// setup_future_usage: attach the outcome payment method to the customer.
+			if previous.SetupFutureUsage != "" && session.CustomerID != "" && pi.PaymentMethodID != "" {
+				if _, attachErr := h.attachPaymentMethod(r.Context(), session.CustomerID, pi.PaymentMethodID); attachErr == nil {
+					// keep going; attach is best-effort for local simulation
+				}
+			}
 			result["payment_intent"] = pi
 		}
 	}
-	if h.webhooks != nil && previous.PaymentIntentID == "" {
+	// Free payment completes without a PI; still emit checkout.session.completed once.
+	alreadyCompleted := previous.Status != "open" || previous.PaymentIntentID != ""
+	if h.webhooks != nil && !alreadyCompleted {
 		result["webhook_events"] = h.emitCheckoutWebhooks(r, result)
 	}
 	writeJSON(w, http.StatusOK, result)
@@ -5145,6 +5169,151 @@ func (p params) lineItems() []billing.LineItem {
 	return out
 }
 
+func (p params) paymentIntentDataMetadata() map[string]string {
+	out := map[string]string{}
+	prefix := "payment_intent_data[metadata]["
+	for key, value := range p.values {
+		if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, "]") {
+			continue
+		}
+		metaKey := strings.TrimSuffix(strings.TrimPrefix(key, prefix), "]")
+		if metaKey == "" {
+			continue
+		}
+		out[metaKey] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (p params) productDataMetadata(idx int) map[string]string {
+	out := map[string]string{}
+	prefix := fmt.Sprintf("line_items[%d][price_data][product_data][metadata][", idx)
+	for key, value := range p.values {
+		if !strings.HasPrefix(key, prefix) || !strings.HasSuffix(key, "]") {
+			continue
+		}
+		metaKey := strings.TrimSuffix(strings.TrimPrefix(key, prefix), "]")
+		if metaKey == "" {
+			continue
+		}
+		out[metaKey] = value
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// resolveCheckoutLineItems builds line items from price IDs and/or price_data (payment mode).
+func (h *Handler) resolveCheckoutLineItems(ctx context.Context, p params, mode string) ([]billing.LineItem, error) {
+	indexes := p.lineItemIndexes()
+	if len(indexes) == 0 && p.has("price") {
+		return p.lineItems(), nil
+	}
+	// Stable index order.
+	ordered := make([]int, 0, len(indexes))
+	for idx := range indexes {
+		ordered = append(ordered, idx)
+	}
+	sort.Ints(ordered)
+
+	var out []billing.LineItem
+	for _, idx := range ordered {
+		quantity := p.int64Default(fmt.Sprintf("line_items[%d][quantity]", idx), 1)
+		priceID := p.first(fmt.Sprintf("line_items[%d][price]", idx), fmt.Sprintf("lineItems[%d][price]", idx))
+		if priceID != "" {
+			out = append(out, billing.LineItem{PriceID: priceID, Quantity: quantity})
+			continue
+		}
+		if !p.hasPriceData(idx) {
+			continue
+		}
+		if mode != "payment" {
+			// Should have been rejected in validation; keep defensive.
+			return nil, unknownParam(fmt.Sprintf("line_items[%d][price_data]", idx))
+		}
+		created, err := h.createPriceFromCheckoutPriceData(ctx, p, idx)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, billing.LineItem{PriceID: created.ID, Quantity: quantity})
+	}
+	if len(out) == 0 && p.has("price") {
+		return p.lineItems(), nil
+	}
+	return out, nil
+}
+
+func (h *Handler) createPriceFromCheckoutPriceData(ctx context.Context, p params, idx int) (billing.Price, error) {
+	prefix := fmt.Sprintf("line_items[%d][price_data]", idx)
+	productID := p.string(prefix + "[product]")
+	if productID == "" {
+		product, err := h.billing.CreateProduct(ctx, billing.Product{
+			Name:        p.string(prefix + "[product_data][name]"),
+			Description: p.string(prefix + "[product_data][description]"),
+			Active:      true,
+			Metadata:    p.productDataMetadata(idx),
+		})
+		if err != nil {
+			return billing.Price{}, err
+		}
+		productID = product.ID
+	} else {
+		if err := validateProductExists(h.billing.GetProduct(ctx, productID)); err != nil {
+			return billing.Price{}, err
+		}
+	}
+
+	unitAmount := int64(0)
+	if p.has(prefix + "[unit_amount]") {
+		unitAmount = p.int64(prefix + "[unit_amount]")
+	} else {
+		parsed, err := parseUnitAmountDecimal(p.string(prefix + "[unit_amount_decimal]"))
+		if err != nil {
+			return billing.Price{}, invalidParam(prefix+"[unit_amount_decimal]", "Must be an integer amount in the smallest currency unit.")
+		}
+		unitAmount = parsed
+	}
+
+	meta := map[string]string{}
+	if taxBehavior := p.string(prefix + "[tax_behavior]"); taxBehavior != "" {
+		meta["tax_behavior"] = taxBehavior
+	}
+
+	return h.billing.CreatePrice(ctx, billing.Price{
+		ProductID:  productID,
+		Currency:   p.stringDefault(prefix+"[currency]", "usd"),
+		UnitAmount: unitAmount,
+		Active:     true,
+		Metadata:   meta,
+	})
+}
+
+func (h *Handler) validateCheckoutLineItemCurrencies(ctx context.Context, items []billing.LineItem) error {
+	currency := ""
+	for i, item := range items {
+		price, err := h.billing.GetPrice(ctx, item.PriceID)
+		if err != nil {
+			return err
+		}
+		c := strings.ToLower(strings.TrimSpace(price.Currency))
+		if c == "" {
+			continue
+		}
+		if currency == "" {
+			currency = c
+			continue
+		}
+		if c != currency {
+			return invalidParam(fmt.Sprintf("line_items[%d][price]", i), "All line items must share the same currency.")
+		}
+	}
+	return nil
+}
+
 func (p params) appliesToProducts() []string {
 	var out []string
 	seen := map[string]struct{}{}
@@ -5942,6 +6111,8 @@ func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.Checkou
 		"cancel_url":            session.CancelURL,
 		"allow_promotion_codes": session.AllowPromotionCodes,
 		"trial_period_days":     session.TrialPeriodDays,
+		// Stripe always includes client_reference_id (string | null).
+		"client_reference_id":   emptyToNil(session.ClientReferenceID),
 		"url":                   session.URL,
 		"status":                session.Status,
 		"payment_status":        session.PaymentStatus,
@@ -6439,6 +6610,10 @@ func stripeInvoiceBillingReason(invoice billing.Invoice) string {
 
 func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
 	captureMethod := stringDefault(intent.CaptureMethod, "automatic")
+	// Stripe PaymentIntent always includes description / receipt_email /
+	// setup_future_usage as string|null (PaymentIntents.d.ts). Checkout payment
+	// mode stores the values under billtap_* metadata keys to avoid colliding
+	// with caller-supplied metadata[description] etc.
 	return map[string]any{
 		"id":                 intent.ID,
 		"object":             billing.ObjectPaymentIntent,
@@ -6450,6 +6625,9 @@ func stripePaymentIntent(intent billing.PaymentIntent) map[string]any {
 		"currency":           intent.Currency,
 		"status":             intent.Status,
 		"capture_method":     captureMethod,
+		"description":        emptyToNil(intent.Metadata["billtap_description"]),
+		"receipt_email":      emptyToNil(intent.Metadata["billtap_receipt_email"]),
+		"setup_future_usage": emptyToNil(intent.Metadata["billtap_setup_future_usage"]),
 		"payment_method":     emptyToNil(intent.PaymentMethodID),
 		"metadata":           nonNilMap(intent.Metadata),
 		"last_payment_error": paymentIntentError(intent),

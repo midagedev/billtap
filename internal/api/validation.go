@@ -20,8 +20,16 @@ var (
 	expandParamRE              = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
 	enabledEventsParamRE       = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
 	retryBackoffParamRE        = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
-	checkoutLineItemRE         = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
-	legacyLineItemParamRE      = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
+	checkoutLineItemRE    = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
+	legacyLineItemParamRE = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
+	// price_data nested keys for payment-mode one-off line items (Stripe Checkout Sessions).
+	checkoutPriceDataRE = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[(currency|unit_amount|unit_amount_decimal|tax_behavior|product)\]$`)
+	checkoutPriceDataProductDataRE = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[product_data\]\[(name|description)\]$`)
+	checkoutPriceDataProductMetaRE = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[product_data\]\[metadata\]\[[^\]]+\]$`)
+	checkoutPriceDataRecurringRE   = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[recurring\]\[(interval|interval_count)\]$`)
+	// payment_intent_data for payment-mode sessions (nested metadata keys unexpanded by firstValues).
+	checkoutPaymentIntentDataRE = regexp.MustCompile(`^payment_intent_data\[(setup_future_usage|description|receipt_email|capture_method)\]$`)
+	checkoutPaymentIntentMetaRE = regexp.MustCompile(`^payment_intent_data\[metadata\]\[[^\]]+\]$`)
 	// Accept trial_period_days and default_tax_rates in [] / [N] forms
 	// (firstValues leaves single-value [] keys unexpanded).
 	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days|default_tax_rates)\](\[\d*\])?$`)
@@ -704,18 +712,40 @@ func validateCheckoutSessionCreate(p params) error {
 			"promotion_code",
 			"automatic_tax[enabled]",
 			"tax_id_collection[enabled]",
+			"client_reference_id",
 		},
-		AllowedRegex: []*regexp.Regexp{checkoutLineItemRE, legacyLineItemParamRE, checkoutSubscriptionDataRE, discountParamRE},
-		RequiredAny:  [][]string{{"customer", "customer_id"}},
-		Int64Params:  []string{"subscription_data[trial_period_days]"},
-		BoolParams:   []string{"allow_promotion_codes", "automatic_tax[enabled]", "tax_id_collection[enabled]"},
-		EnumParams:   map[string][]string{"mode": {"subscription"}},
-		Positive:     []string{"subscription_data[trial_period_days]"},
+		AllowedRegex: []*regexp.Regexp{
+			checkoutLineItemRE,
+			legacyLineItemParamRE,
+			checkoutPriceDataRE,
+			checkoutPriceDataProductDataRE,
+			checkoutPriceDataProductMetaRE,
+			checkoutPriceDataRecurringRE,
+			checkoutPaymentIntentDataRE,
+			checkoutPaymentIntentMetaRE,
+			checkoutSubscriptionDataRE,
+			discountParamRE,
+		},
+		RequiredAny: [][]string{{"customer", "customer_id"}},
+		Int64Params: []string{"subscription_data[trial_period_days]"},
+		BoolParams:  []string{"allow_promotion_codes", "automatic_tax[enabled]", "tax_id_collection[enabled]"},
+		EnumParams: map[string][]string{
+			"mode": {"subscription", "payment"},
+			"payment_intent_data[setup_future_usage]": {"off_session", "on_session"},
+			"payment_intent_data[capture_method]":     {"automatic", "automatic_async", "manual"},
+		},
+		Positive: []string{"subscription_data[trial_period_days]"},
 	}); err != nil {
 		return err
 	}
-	if err := validateDefaultTaxRatesVsAutomaticTax(p, "subscription_data[default_tax_rates]", p.boolDefault("automatic_tax[enabled]", false)); err != nil {
+	mode := p.stringDefault("mode", "subscription")
+	if err := validateCheckoutModeCrossParams(p, mode); err != nil {
 		return err
+	}
+	if mode == "subscription" {
+		if err := validateDefaultTaxRatesVsAutomaticTax(p, "subscription_data[default_tax_rates]", p.boolDefault("automatic_tax[enabled]", false)); err != nil {
+			return err
+		}
 	}
 	lineItemIndexes := p.lineItemIndexes()
 	if len(lineItemIndexes) == 0 && !p.has("price") {
@@ -726,11 +756,154 @@ func validateCheckoutSessionCreate(p params) error {
 		if err := p.validateMin(quantityKey, 1); err != nil {
 			return err
 		}
-		if p.has(quantityKey) && !p.has(fmt.Sprintf("line_items[%d][price]", idx)) {
-			return missingParam(fmt.Sprintf("line_items[%d][price]", idx))
+		priceKey := fmt.Sprintf("line_items[%d][price]", idx)
+		hasPrice := p.has(priceKey)
+		hasPriceData := p.hasPriceData(idx)
+		if mode == "payment" {
+			if !hasPrice && !hasPriceData {
+				if p.has(quantityKey) {
+					return missingParam(priceKey)
+				}
+				return missingParam(fmt.Sprintf("line_items[%d][price]", idx))
+			}
+			if hasPriceData {
+				if err := validateCheckoutPriceData(p, idx, mode); err != nil {
+					return err
+				}
+			}
+			continue
+		}
+		// subscription mode: price required when quantity is present; price_data stays unknown-style reject.
+		if hasPriceData {
+			return unknownParam(fmt.Sprintf("line_items[%d][price_data]", idx))
+		}
+		if p.has(quantityKey) && !hasPrice {
+			return missingParam(priceKey)
 		}
 	}
 	return nil
+}
+
+func validateCheckoutModeCrossParams(p params, mode string) error {
+	hasPaymentIntentData := false
+	hasSubscriptionData := false
+	for key := range p.values {
+		if strings.HasPrefix(key, "payment_intent_data[") {
+			hasPaymentIntentData = true
+		}
+		if strings.HasPrefix(key, "subscription_data[") {
+			hasSubscriptionData = true
+		}
+	}
+	if mode == "subscription" && hasPaymentIntentData {
+		return invalidParam("payment_intent_data", "You cannot use payment_intent_data in subscription mode.")
+	}
+	if mode == "payment" && hasSubscriptionData {
+		return invalidParam("subscription_data", "You cannot use subscription_data in payment mode.")
+	}
+	return nil
+}
+
+func validateCheckoutPriceData(p params, idx int, mode string) error {
+	prefix := fmt.Sprintf("line_items[%d][price_data]", idx)
+	currencyKey := prefix + "[currency]"
+	if !p.has(currencyKey) {
+		return missingParam(currencyKey)
+	}
+	unitAmountKey := prefix + "[unit_amount]"
+	unitAmountDecimalKey := prefix + "[unit_amount_decimal]"
+	hasUnitAmount := p.has(unitAmountKey)
+	hasUnitAmountDecimal := p.has(unitAmountDecimalKey)
+	if hasUnitAmount == hasUnitAmountDecimal {
+		if hasUnitAmount {
+			return invalidParam(unitAmountKey, "Only one of unit_amount or unit_amount_decimal may be provided.")
+		}
+		return missingParam(unitAmountKey)
+	}
+	if hasUnitAmount {
+		if err := p.validateMin(unitAmountKey, 0); err != nil {
+			return err
+		}
+	}
+	if hasUnitAmountDecimal {
+		if _, err := parseUnitAmountDecimal(p.string(unitAmountDecimalKey)); err != nil {
+			return invalidParam(unitAmountDecimalKey, "Must be an integer amount in the smallest currency unit.")
+		}
+	}
+	if err := p.validateEnum(prefix+"[tax_behavior]", []string{"exclusive", "inclusive", "unspecified"}); err != nil {
+		return err
+	}
+	productKey := prefix + "[product]"
+	productDataNameKey := prefix + "[product_data][name]"
+	hasProduct := p.has(productKey)
+	hasProductData := p.has(productDataNameKey) || p.hasPriceDataProductData(idx)
+	if hasProduct == hasProductData {
+		if hasProduct {
+			return invalidParam(productKey, "Only one of product or product_data may be provided.")
+		}
+		return missingParam(productDataNameKey)
+	}
+	if hasProductData && !p.has(productDataNameKey) {
+		return missingParam(productDataNameKey)
+	}
+	if p.has(prefix + "[recurring][interval]") || p.has(prefix+"[recurring][interval_count]") {
+		if mode == "payment" {
+			return invalidParam(prefix+"[recurring]", "Recurring price_data is not supported in payment mode.")
+		}
+	}
+	if p.has(prefix + "[recurring][interval_count]") {
+		if err := p.validateMin(prefix+"[recurring][interval_count]", 1); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (p params) hasPriceData(idx int) bool {
+	prefix := fmt.Sprintf("line_items[%d][price_data]", idx)
+	for key := range p.values {
+		if strings.HasPrefix(key, prefix+"[") {
+			return true
+		}
+	}
+	return false
+}
+
+func (p params) hasPriceDataProductData(idx int) bool {
+	prefix := fmt.Sprintf("line_items[%d][price_data][product_data]", idx)
+	for key := range p.values {
+		if strings.HasPrefix(key, prefix+"[") {
+			return true
+		}
+	}
+	return false
+}
+
+// parseUnitAmountDecimal accepts integer minor-unit strings only (no fractional part).
+// Stripe allows up to 12 decimal places; billtap simplifies: non-integral values are 400.
+func parseUnitAmountDecimal(raw string) (int64, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return 0, fmt.Errorf("empty")
+	}
+	if strings.ContainsAny(raw, "eE") {
+		return 0, fmt.Errorf("scientific notation")
+	}
+	if strings.Contains(raw, ".") {
+		parts := strings.SplitN(raw, ".", 2)
+		if len(parts) != 2 {
+			return 0, fmt.Errorf("invalid decimal")
+		}
+		frac := strings.TrimRight(parts[1], "0")
+		if frac != "" {
+			return 0, fmt.Errorf("non-integer decimal")
+		}
+		raw = parts[0]
+		if raw == "" || raw == "-" || raw == "+" {
+			raw = "0"
+		}
+	}
+	return strconv.ParseInt(raw, 10, 64)
 }
 
 func validateSubscriptionCreate(p params) error {
@@ -1461,10 +1634,18 @@ func validateHistoricalReplay(p params) error {
 
 func (p params) lineItemIndexes() map[int]struct{} {
 	indexes := map[int]struct{}{}
+	patterns := []*regexp.Regexp{
+		checkoutLineItemRE,
+		legacyLineItemParamRE,
+		checkoutPriceDataRE,
+		checkoutPriceDataProductDataRE,
+		checkoutPriceDataProductMetaRE,
+		checkoutPriceDataRecurringRE,
+	}
 	for key := range p.values {
-		for _, pattern := range []*regexp.Regexp{checkoutLineItemRE, legacyLineItemParamRE} {
+		for _, pattern := range patterns {
 			matches := pattern.FindStringSubmatch(key)
-			if len(matches) != 3 {
+			if len(matches) < 2 {
 				continue
 			}
 			idx, err := strconv.Atoi(matches[1])

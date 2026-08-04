@@ -365,6 +365,7 @@ export const dashboardObjects: Record<DashboardObjectType, DashboardObjectRecord
 
 export const checkoutSession = {
   id: "cs_test_checkout_demo",
+  mode: "subscription",
   customer: "cus_test_workspace",
   customerEmail: "owner@demo.local",
   plan: "Team Annual",

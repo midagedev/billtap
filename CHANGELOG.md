@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added checkout `mode=payment` for one-time payments: `line_items` accept
+  inline `price_data` (creating real local product/price evidence),
+  `payment_intent_data` (`setup_future_usage`, `description`,
+  `receipt_email`, `capture_method`, `metadata`) and `client_reference_id`
+  are accepted, completion creates a single PaymentIntent (no subscription,
+  no invoice) with `payment_status=paid` or `no_payment_required` for free
+  totals, PaymentIntents expose `description`/`receipt_email`/
+  `setup_future_usage` as top-level fields, and the hosted checkout page
+  renders payment-mode sessions without subscription/invoice rows. `setup`
+  mode remains rejected.
 - Wired tax rates into real billing totals: checkout sessions accept
   `subscription_data[default_tax_rates][]` and subscriptions accept
   `default_tax_rates` on create/update (empty string clears), resolving

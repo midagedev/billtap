@@ -34,6 +34,7 @@ export type CheckoutLineItem = {
 
 export type CheckoutSessionSummary = {
   id: string;
+  mode: string;
   customer: string;
   customerEmail: string;
   plan: string;
@@ -838,16 +839,18 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
   const discountAmount = readNumber(totalDetails, ["amount_discount", "amountDiscount"], 0);
   const taxAmount = readNumber(totalDetails, ["amount_tax", "amountTax"], 0);
   const taxEnabled = automaticTax?.enabled === true;
+  const mode = readString(session, ["mode"], fixtureSession.mode);
 
   return {
     id: readString(session, ["id"], fallbackId),
+    mode,
     customer: readObjectId(session.customer) ?? readString(session, ["customer_id", "customer"], fixtureSession.customer),
     customerEmail:
       readString(customer, ["email"], "") ||
       readString(session, ["customer_email", "customerEmail"], fixtureSession.customerEmail),
     plan:
       readString(price, ["nickname", "lookup_key"], "") ||
-      readString(session, ["plan", "plan_name", "planName"], fixtureSession.plan),
+      readString(session, ["plan", "plan_name", "planName"], mode === "payment" ? "One-time payment" : fixtureSession.plan),
     price:
       amountTotal ||
       amountSubtotal ||
@@ -860,13 +863,19 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
       readString(session, ["price", "amount"], fixtureSession.amountTotal),
     status: readString(session, ["status"], fixtureSession.status),
     paymentStatus: readString(session, ["payment_status", "paymentStatus"], fixtureSession.paymentStatus),
-    subscriptionId: readObjectId(session.subscription) ?? readString(subscription, ["id"], fixtureSession.subscriptionId),
-    subscriptionStatus: readString(subscription, ["status"], fixtureSession.subscriptionStatus),
+    subscriptionId:
+      mode === "payment"
+        ? ""
+        : readObjectId(session.subscription) ?? readString(subscription, ["id"], fixtureSession.subscriptionId),
+    subscriptionStatus:
+      mode === "payment" ? "" : readString(subscription, ["status"], fixtureSession.subscriptionStatus),
     invoiceId:
-      readObjectId(session.invoice) ??
-      readObjectId(session.latest_invoice) ??
-      readString(invoice, ["id"], fixtureSession.invoiceId),
-    invoiceStatus: readString(invoice, ["status"], fixtureSession.invoiceStatus),
+      mode === "payment"
+        ? ""
+        : readObjectId(session.invoice) ??
+          readObjectId(session.latest_invoice) ??
+          readString(invoice, ["id"], fixtureSession.invoiceId),
+    invoiceStatus: mode === "payment" ? "" : readString(invoice, ["status"], fixtureSession.invoiceStatus),
     paymentIntentId:
       readObjectId(session.payment_intent) ??
       readString(paymentIntent, ["id"], fixtureSession.paymentIntentId),

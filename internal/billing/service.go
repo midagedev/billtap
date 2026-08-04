@@ -387,7 +387,8 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	if err != nil {
 		return CheckoutSession{}, err
 	}
-	if session.PaymentIntentID != "" {
+	// Idempotent: already completed (including free payment with no PI).
+	if session.Status != "open" || session.PaymentIntentID != "" {
 		return session, nil
 	}
 
@@ -423,6 +424,11 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	discounts := normalizeDiscounts(session.Discounts, now)
 	eligibleBase := EligibleDiscountBase(subtotal, discounts, lineAmounts)
 	discountedTotal, discountAmount := ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
+
+	if session.Mode == "payment" {
+		return s.completePaymentCheckout(ctx, session, outcomeSpec, opts, currency, subtotal, discountedTotal, discountAmount, now)
+	}
+
 	periodEnd := now.AddDate(0, 1, 0)
 	paid := outcomeSpec.Paid
 	trialing := paid && session.TrialPeriodDays > 0
@@ -535,6 +541,99 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		CompletedAt:   now,
 		Subscription:  sub,
 		Invoice:       invoice,
+		PaymentIntent: intent,
+	})
+}
+
+// completePaymentCheckout finishes a mode=payment checkout: no subscription/invoice;
+// one PaymentIntent for the discounted (and taxed) total. Free totals skip the PI.
+func (s *Service) completePaymentCheckout(
+	ctx context.Context,
+	session CheckoutSession,
+	outcomeSpec checkoutOutcomeSpec,
+	opts CheckoutCompletionOptions,
+	currency string,
+	subtotal int64,
+	discountedTotal int64,
+	_ int64,
+	now time.Time,
+) (CheckoutSession, error) {
+	total := discountedTotal
+	if len(session.DefaultTaxRates) > 0 {
+		_, _, exclusiveTotal, _ := ComputeTaxRateAmounts(discountedTotal, session.DefaultTaxRates)
+		total = discountedTotal + exclusiveTotal
+	} else if session.AutomaticTax {
+		total = discountedTotal + ExclusiveTaxAmount(discountedTotal, session.TaxPercent)
+	}
+	_ = subtotal
+
+	paymentStatus := outcomeSpec.PaymentStatus
+	sessionStatus := firstNonEmpty(outcomeSpec.SessionStatus, "complete")
+	paid := outcomeSpec.Paid
+
+	// Free amount: no PaymentIntent; Stripe reports no_payment_required.
+	if total == 0 && paid {
+		return s.repo.RecordCheckoutCompletion(ctx, CheckoutCompletion{
+			SessionID:     session.ID,
+			SessionStatus: sessionStatus,
+			PaymentStatus: "no_payment_required",
+			CheckoutEvent: firstNonEmpty(outcomeSpec.CheckoutEvent, "checkout.session.completed"),
+			Outcome:       outcomeSpec.Outcome,
+			CompletedAt:   now,
+		})
+	}
+
+	if paymentStatus == "" {
+		if paid {
+			paymentStatus = "paid"
+		} else {
+			paymentStatus = "unpaid"
+		}
+	}
+
+	// User payment_intent_data[metadata] only at the unprefixed surface; house
+	// fields use billtap_* so they cannot collide with customer keys like
+	// metadata[description]. Top-level PI fields are projected in stripePaymentIntent.
+	meta := copyMap(session.PaymentIntentMetadata)
+	if meta == nil {
+		meta = map[string]string{}
+	}
+	meta["billtap_checkout_session"] = session.ID
+	if session.SetupFutureUsage != "" {
+		meta["billtap_setup_future_usage"] = session.SetupFutureUsage
+	}
+	if session.PaymentIntentDescription != "" {
+		meta["billtap_description"] = session.PaymentIntentDescription
+	}
+	if session.ReceiptEmail != "" {
+		meta["billtap_receipt_email"] = session.ReceiptEmail
+	}
+
+	intent := PaymentIntent{
+		ID:              firstNonEmpty(opts.PaymentIntentID, id("pi")),
+		Object:          ObjectPaymentIntent,
+		CustomerID:      session.CustomerID,
+		Amount:          total,
+		Currency:        currency,
+		Status:          outcomeSpec.PaymentIntentStatus,
+		CaptureMethod:   firstNonEmpty(session.CaptureMethod, "automatic"),
+		PaymentMethodID: outcomeSpec.PaymentMethodID,
+		Metadata:        meta,
+		CreatedAt:       now,
+	}
+	if !paid {
+		intent.FailureCode = outcomeSpec.FailureCode
+		intent.DeclineCode = outcomeSpec.DeclineCode
+		intent.FailureMessage = outcomeSpec.FailureMessage
+	}
+
+	return s.repo.RecordCheckoutCompletion(ctx, CheckoutCompletion{
+		SessionID:     session.ID,
+		SessionStatus: sessionStatus,
+		PaymentStatus: paymentStatus,
+		CheckoutEvent: firstNonEmpty(outcomeSpec.CheckoutEvent, "checkout.session.completed"),
+		Outcome:       outcomeSpec.Outcome,
+		CompletedAt:   now,
 		PaymentIntent: intent,
 	})
 }
@@ -2611,6 +2710,10 @@ func billingTimelineEntry(seed, action, message, objectType, objectID, customerI
 	}
 }
 
+// CheckoutCompletion records terminal checkout state.
+// Subscription and Invoice use zero-value (empty ID) when absent — payment mode
+// omits both; free payment also omits PaymentIntent. Callers and storage skip
+// INSERT/timeline when the relevant ID is empty (avoids pointer churn at use sites).
 type CheckoutCompletion struct {
 	SessionID     string
 	SessionStatus string

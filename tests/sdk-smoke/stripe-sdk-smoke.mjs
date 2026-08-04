@@ -635,6 +635,98 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
     );
   });
 
+  const paymentCheckout = await check(
+    "checkout payment mode with price_data + payment_intent_data",
+    async () => {
+      const created = await stripe.checkout.sessions.create({
+        customer: customer.id,
+        mode: "payment",
+        client_reference_id: "ref_sdk_1",
+        line_items: [
+          {
+            price_data: {
+              currency: "usd",
+              product_data: { name: "Extra export" },
+              unit_amount: 12900,
+            },
+            quantity: 1,
+          },
+        ],
+        payment_intent_data: {
+          setup_future_usage: "off_session",
+          metadata: { order_id: "ord_1" },
+        },
+        success_url: "http://127.0.0.1/pay-success",
+        cancel_url: "http://127.0.0.1/pay-cancel",
+      });
+      assertEqual(created.object, "checkout.session", "payment session object");
+      assertEqual(created.mode, "payment", "payment session mode");
+      assertEqual(
+        created.client_reference_id,
+        "ref_sdk_1",
+        "payment session client_reference_id",
+      );
+      assertEqual(created.amount_total, 12900, "payment session amount_total");
+
+      await stripe.rawRequest(
+        "POST",
+        `/v1/checkout/sessions/${encodeURIComponent(created.id)}/complete`,
+        { outcome: "payment_succeeded" },
+      );
+      const retrieved = await stripe.checkout.sessions.retrieve(created.id);
+      assertEqual(
+        retrieved.payment_status,
+        "paid",
+        "payment mode payment_status",
+      );
+      assert(
+        retrieved.payment_intent,
+        "payment mode should include payment_intent",
+      );
+      assertEqual(
+        retrieved.subscription,
+        null,
+        "payment mode subscription should be null",
+      );
+
+      const pi = await stripe.paymentIntents.retrieve(
+        retrieved.payment_intent,
+      );
+      assertEqual(pi.amount, 12900, "payment mode PI amount");
+      // Caller metadata round-trips unchanged (no unprefixed house keys).
+      assertEqual(pi.metadata?.order_id, "ord_1", "payment mode PI metadata");
+      assertEqual(
+        pi.metadata?.setup_future_usage,
+        undefined,
+        "payment mode PI metadata must not leak unprefixed setup_future_usage",
+      );
+      // Stripe PI top-level fields (string|null).
+      assertEqual(
+        pi.setup_future_usage,
+        "off_session",
+        "payment mode PI setup_future_usage",
+      );
+      assertEqual(
+        Object.prototype.hasOwnProperty.call(pi, "description"),
+        true,
+        "payment mode PI description key present",
+      );
+      assertEqual(
+        Object.prototype.hasOwnProperty.call(pi, "receipt_email"),
+        true,
+        "payment mode PI receipt_email key present",
+      );
+      return retrieved;
+    },
+  );
+  report.objects.paymentCheckoutSession = pick(paymentCheckout, [
+    "id",
+    "object",
+    "mode",
+    "payment_status",
+    "payment_intent",
+  ]);
+
   const checkoutEvent = await check("event list/retrieve", async () => {
     const events = await stripe.events.list({
       type: "checkout.session.completed",
