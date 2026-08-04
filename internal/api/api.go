@@ -90,6 +90,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/coupons/", h.handleCoupon)
 	h.mux.HandleFunc("/v1/promotion_codes", h.handlePromotionCodes)
 	h.mux.HandleFunc("/v1/promotion_codes/", h.handlePromotionCode)
+	h.mux.HandleFunc("/v1/tax_rates", h.handleTaxRates)
+	h.mux.HandleFunc("/v1/tax_rates/", h.handleTaxRate)
 	h.mux.HandleFunc("/v1/prices/search", h.handlePriceSearch)
 	h.mux.HandleFunc("/v1/prices", h.handlePrices)
 	h.mux.HandleFunc("/v1/prices/", h.handlePrice)
@@ -389,6 +391,8 @@ func (h *Handler) handleCustomerSubresource(w http.ResponseWriter, r *http.Reque
 		h.handleCustomerSubscriptions(w, r, customerID)
 	case "discount":
 		h.handleCustomerDiscount(w, r, customerID)
+	case "tax_ids":
+		h.handleCustomerTaxIDs(w, r, customerID, "")
 	default:
 		if strings.HasPrefix(subresource, "cash_balance_transactions/") {
 			h.handleCustomerCashBalanceTransactions(w, r, customerID, strings.TrimPrefix(subresource, "cash_balance_transactions/"))
@@ -400,6 +404,10 @@ func (h *Handler) handleCustomerSubresource(w http.ResponseWriter, r *http.Reque
 		}
 		if strings.HasPrefix(subresource, "subscriptions/") {
 			h.handleCustomerSubscription(w, r, customerID, strings.TrimPrefix(subresource, "subscriptions/"))
+			return
+		}
+		if strings.HasPrefix(subresource, "tax_ids/") {
+			h.handleCustomerTaxIDs(w, r, customerID, strings.TrimPrefix(subresource, "tax_ids/"))
 			return
 		}
 		h.notFound(w, r)
@@ -1585,6 +1593,11 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			writeResult(w, nil, err)
 			return
 		}
+		automaticTax := p.boolDefault("automatic_tax[enabled]", false)
+		taxPercent := float64(0)
+		if automaticTax {
+			taxPercent = billing.ParseCustomerTaxPercent(customer.Metadata)
+		}
 		session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
 			CustomerID:          p.first("customer", "customer_id"),
 			Mode:                p.stringDefault("mode", "subscription"),
@@ -1594,6 +1607,9 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			CancelURL:           p.string("cancel_url"),
 			AllowPromotionCodes: p.boolDefault("allow_promotion_codes", false),
 			TrialPeriodDays:     p.int64("subscription_data[trial_period_days]"),
+			AutomaticTax:        automaticTax,
+			TaxIDCollection:     p.boolDefault("tax_id_collection[enabled]", false),
+			TaxPercent:          taxPercent,
 		})
 		if err == nil {
 			session.URL = h.absoluteURL(r, session.URL)
@@ -1880,11 +1896,18 @@ func (h *Handler) createSubscriptionFromParamsWithCustomer(r *http.Request, defa
 		}
 		completionOptions.At = clock.FrozenTime
 	}
+	automaticTax := p.boolDefault("automatic_tax[enabled]", false)
+	taxPercent := float64(0)
+	if automaticTax {
+		taxPercent = billing.ParseCustomerTaxPercent(customer.Metadata)
+	}
 	session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
-		CustomerID: customerID,
-		Mode:       "subscription",
-		LineItems:  items,
-		Discounts:  discounts,
+		CustomerID:   customerID,
+		Mode:         "subscription",
+		LineItems:    items,
+		Discounts:    discounts,
+		AutomaticTax: automaticTax,
+		TaxPercent:   taxPercent,
 	})
 	if err != nil {
 		return billing.Subscription{}, err
@@ -2294,7 +2317,7 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		"attempt_count":                    0,
 		"attempted":                        false,
 		"auto_advance":                     false,
-		"automatic_tax":                    stripeAutomaticTax(),
+		"automatic_tax":                    stripeInvoiceAutomaticTax(false),
 		"automatically_finalizes_at":       nil,
 		"billing_reason":                   billingReason,
 		"charge":                           nil,
@@ -2330,6 +2353,7 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		"tax":                              nil,
 		"test_clock":                       testClock,
 		"total_tax_amounts":                []map[string]any{},
+		"total_taxes":                      []map[string]any{},
 		"transfer_data":                    nil,
 		"webhooks_delivered_at":            nil,
 		"billtap_preview": map[string]any{
@@ -5676,6 +5700,11 @@ func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.Checkou
 	discounts := session.Discounts
 	eligibleBase := billing.EligibleDiscountBase(subtotal, discounts, lineAmounts)
 	amountTotal, discountAmount := billing.ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
+	amountTax := int64(0)
+	if session.AutomaticTax {
+		amountTax = billing.ExclusiveTaxAmount(amountTotal, session.TaxPercent)
+		amountTotal = amountTotal + amountTax
+	}
 	discountRefs := make([]map[string]any, 0, len(discounts))
 	for _, discount := range discounts {
 		discountRefs = append(discountRefs, map[string]any{
@@ -5709,9 +5738,14 @@ func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.Checkou
 		"total_details": map[string]any{
 			"amount_discount": discountAmount,
 			"amount_shipping": 0,
-			"amount_tax":      0,
+			"amount_tax":      amountTax,
 		},
-		"discounts": discountRefs,
+		"discounts":     discountRefs,
+		"automatic_tax": stripeCheckoutAutomaticTax(session.AutomaticTax),
+		"tax_id_collection": map[string]any{
+			"enabled":  session.TaxIDCollection,
+			"required": "never",
+		},
 	}
 }
 
@@ -5721,6 +5755,7 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		items = append(items, h.stripeSubscriptionItem(r, sub, item, idx))
 	}
 	discounts := billing.DiscountsFromMetadata(sub.Metadata)
+	automaticTax, _ := billing.AutomaticTaxFromMetadata(sub.Metadata)
 	return map[string]any{
 		"id":                   sub.ID,
 		"object":               billing.ObjectSubscription,
@@ -5748,6 +5783,7 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		"pause_collection":     subscriptionPauseCollection(sub),
 		"pending_update":       nil,
 		"cancellation_details": subscriptionCancellationDetails(sub),
+		"automatic_tax":        stripeSubscriptionAutomaticTax(automaticTax),
 	}
 }
 
@@ -5865,6 +5901,29 @@ func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.Pay
 			"client_secret": invoice.PaymentIntentID + "_secret_billtap",
 		}
 	}
+	taxValue := any(nil)
+	if invoice.AutomaticTax {
+		taxValue = invoice.Tax
+	}
+	totalExcludingTax := invoice.Total - invoice.Tax
+	totalTaxAmounts := []map[string]any{}
+	totalTaxes := []map[string]any{}
+	if invoice.Tax > 0 {
+		totalTaxAmounts = []map[string]any{{
+			"amount":            invoice.Tax,
+			"inclusive":         false,
+			"tax_rate":          "txr_billtap_simulated",
+			"taxability_reason": "standard_rated",
+		}}
+		totalTaxes = []map[string]any{{
+			"amount":            invoice.Tax,
+			"tax_behavior":      "exclusive",
+			"tax_rate_details":  map[string]any{"tax_rate": "txr_billtap_simulated"},
+			"taxability_reason": "standard_rated",
+			"taxable_amount":    totalExcludingTax,
+			"type":              "tax_rate_details",
+		}}
+	}
 	return map[string]any{
 		"id":                               invoice.ID,
 		"object":                           billing.ObjectInvoice,
@@ -5879,7 +5938,7 @@ func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.Pay
 		"discounts":                        discounts,
 		"total_discount_amounts":           discountAmounts(invoice.Discounts, invoice.DiscountAmount),
 		"total":                            invoice.Total,
-		"total_excluding_tax":              invoice.Total,
+		"total_excluding_tax":              totalExcludingTax,
 		"amount_due":                       invoice.AmountDue,
 		"amount_paid":                      invoice.AmountPaid,
 		"amount_remaining":                 invoice.AmountDue,
@@ -5887,7 +5946,7 @@ func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.Pay
 		"attempt_count":                    invoice.AttemptCount,
 		"attempted":                        invoice.AttemptCount > 0,
 		"auto_advance":                     false,
-		"automatic_tax":                    stripeAutomaticTax(),
+		"automatic_tax":                    stripeInvoiceAutomaticTax(invoice.AutomaticTax),
 		"automatically_finalizes_at":       nil,
 		"billing_reason":                   stripeInvoiceBillingReason(invoice),
 		"collection_method":                stringDefault(invoice.Metadata["collection_method"], "charge_automatically"),
@@ -5936,9 +5995,10 @@ func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.Pay
 		"shipping_details":                 nil,
 		"starting_balance":                 0,
 		"statement_descriptor":             nil,
-		"tax":                              nil,
+		"tax":                              taxValue,
 		"test_clock":                       nil,
-		"total_tax_amounts":                []map[string]any{},
+		"total_tax_amounts":                totalTaxAmounts,
+		"total_taxes":                      totalTaxes,
 		"transfer_data":                    nil,
 		"webhooks_delivered_at":            nil,
 		"livemode":                         false,
@@ -6025,10 +6085,46 @@ func stripeInvoiceStatusTransitions(finalizedAt any, paidAt any) map[string]any 
 	}
 }
 
-func stripeAutomaticTax() map[string]any {
+// stripeCheckoutAutomaticTax matches Checkout.Session.AutomaticTax (stripe-node v22).
+func stripeCheckoutAutomaticTax(enabled bool) map[string]any {
+	provider := any(nil)
+	status := any(nil)
+	if enabled {
+		provider = "stripe"
+		status = "complete"
+	}
 	return map[string]any{
-		"enabled": false,
-		"status":  nil,
+		"enabled":   enabled,
+		"liability": nil,
+		"provider":  provider,
+		"status":    status,
+	}
+}
+
+// stripeInvoiceAutomaticTax matches Invoice.AutomaticTax (stripe-node v22).
+func stripeInvoiceAutomaticTax(enabled bool) map[string]any {
+	provider := any(nil)
+	status := any(nil)
+	if enabled {
+		provider = "stripe"
+		status = "complete"
+	}
+	return map[string]any{
+		"disabled_reason": nil,
+		"enabled":         enabled,
+		"liability":       nil,
+		"provider":        provider,
+		"status":          status,
+	}
+}
+
+// stripeSubscriptionAutomaticTax matches Subscription.AutomaticTax (stripe-node v22).
+// Subscription form has no status/provider keys.
+func stripeSubscriptionAutomaticTax(enabled bool) map[string]any {
+	return map[string]any{
+		"disabled_reason": nil,
+		"enabled":         enabled,
+		"liability":       nil,
 	}
 }
 

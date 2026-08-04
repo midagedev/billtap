@@ -16,24 +16,24 @@ const (
 )
 
 var (
-	metadataParamRE             = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
-	expandParamRE               = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
-	enabledEventsParamRE        = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
-	retryBackoffParamRE         = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
-	checkoutLineItemRE          = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
-	legacyLineItemParamRE       = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
-	checkoutSubscriptionDataRE  = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
-	discountParamRE             = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
-	subscriptionItemRE          = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
-	cancellationDetailsRE       = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
-	paymentMethodTypesRE        = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
-	automaticPaymentMethodsRE   = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
-	paymentMethodOptionsRE      = regexp.MustCompile(`^payment_method_options\[.+\]$`)
-	accountNestedParamRE        = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
-	eventTypeFilterParamRE      = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
-	portalFlowDataParamRE       = regexp.MustCompile(`^flow_data(\[[^\]]+\])+$`)
+	metadataParamRE            = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
+	expandParamRE              = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
+	enabledEventsParamRE       = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
+	retryBackoffParamRE        = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
+	checkoutLineItemRE         = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
+	legacyLineItemParamRE      = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
+	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
+	discountParamRE            = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
+	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
+	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
+	paymentMethodTypesRE       = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
+	automaticPaymentMethodsRE  = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
+	paymentMethodOptionsRE     = regexp.MustCompile(`^payment_method_options\[.+\]$`)
+	accountNestedParamRE       = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
+	eventTypeFilterParamRE     = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
+	portalFlowDataParamRE      = regexp.MustCompile(`^flow_data(\[[^\]]+\])+$`)
 	// Allow empty brackets for Stripe array form applies_to[products][].
-	couponAppliesToParamRE = regexp.MustCompile(`^applies_to(\[[^\]]*\])+$`)
+	couponAppliesToParamRE      = regexp.MustCompile(`^applies_to(\[[^\]]*\])+$`)
 	promotionRestrictionParamRE = regexp.MustCompile(`^restrictions(\[[^\]]+\])+$`)
 	schedulePhaseParamRE        = regexp.MustCompile(`^phases\[\d+\]\[(start_date|end_date|iterations|items|plans)\].*$`)
 	invoicePreviewItemParamRE   = regexp.MustCompile(`^((subscription_details|subscriptionDetails)\[items\]\[\d+\]\[(id|price|price_id|quantity)\]|(subscription_items|items)\[\d+\]\[(id|price|price_id|quantity)\])$`)
@@ -656,11 +656,23 @@ func validateApplicationFeeRefundUpdate(p params) error {
 
 func validateCheckoutSessionCreate(p params) error {
 	if err := p.validate(paramSpec{
-		Allowed:      []string{"customer", "customer_id", "mode", "success_url", "cancel_url", "price", "allow_promotion_codes", "coupon", "promotion_code"},
+		Allowed: []string{
+			"customer",
+			"customer_id",
+			"mode",
+			"success_url",
+			"cancel_url",
+			"price",
+			"allow_promotion_codes",
+			"coupon",
+			"promotion_code",
+			"automatic_tax[enabled]",
+			"tax_id_collection[enabled]",
+		},
 		AllowedRegex: []*regexp.Regexp{checkoutLineItemRE, legacyLineItemParamRE, checkoutSubscriptionDataRE, discountParamRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
 		Int64Params:  []string{"subscription_data[trial_period_days]"},
-		BoolParams:   []string{"allow_promotion_codes"},
+		BoolParams:   []string{"allow_promotion_codes", "automatic_tax[enabled]", "tax_id_collection[enabled]"},
 		EnumParams:   map[string][]string{"mode": {"subscription"}},
 		Positive:     []string{"subscription_data[trial_period_days]"},
 	}); err != nil {
@@ -697,10 +709,12 @@ func validateSubscriptionCreate(p params) error {
 			"test_clock",
 			"coupon",
 			"promotion_code",
+			"automatic_tax[enabled]",
 		},
 		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, discountParamRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
 		Int64Params:  []string{"days_until_due", "cancel_at", "billing_cycle_anchor"},
+		BoolParams:   []string{"automatic_tax[enabled]"},
 		Positive:     []string{"days_until_due"},
 		EnumParams: map[string][]string{
 			"collection_method": {"charge_automatically", "send_invoice"},
@@ -1210,6 +1224,45 @@ func validatePaymentMethodUpdate(p params) error {
 			"billing_details[name]",
 		},
 		AllowMetadata: true,
+	})
+}
+
+func validateTaxRateCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"display_name",
+			"percentage",
+			"inclusive",
+			"active",
+			"country",
+			"state",
+			"jurisdiction",
+			"description",
+		},
+		Required:      []string{"display_name", "percentage", "inclusive"},
+		BoolParams:    []string{"inclusive", "active"},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	if _, err := strconv.ParseFloat(p.string("percentage"), 64); err != nil {
+		return invalidParam("percentage", "Expected a number.")
+	}
+	return nil
+}
+
+func validateTaxRateUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"active", "display_name", "description"},
+		BoolParams:    []string{"active"},
+		AllowMetadata: true,
+	})
+}
+
+func validateCustomerTaxIDCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:  []string{"type", "value"},
+		Required: []string{"type", "value"},
 	})
 }
 

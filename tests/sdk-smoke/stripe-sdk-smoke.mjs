@@ -178,6 +178,128 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
   });
   report.objects.price = pick(price, ["id", "object", "product", "lookup_key"]);
 
+  const taxRate = await check("tax rate create/retrieve", async () => {
+    const created = await stripe.taxRates.create({
+      display_name: `SDK Smoke Tax ${runId}`,
+      percentage: 10,
+      inclusive: false,
+    });
+    assertEqual(created.object, "tax_rate", "tax rate object");
+    assertEqual(created.percentage, 10, "tax rate percentage");
+    assertEqual(created.rate_type, "percentage", "tax rate rate_type");
+    assertEqual(created.flat_amount, null, "tax rate flat_amount");
+
+    const retrieved = await stripe.taxRates.retrieve(created.id);
+    assertEqual(retrieved.id, created.id, "retrieved tax rate id");
+    return created;
+  });
+  report.objects.taxRate = pick(taxRate, [
+    "id",
+    "object",
+    "percentage",
+    "rate_type",
+  ]);
+
+  const customerTaxID = await check(
+    "customer tax id create/retrieve/list/delete",
+    async () => {
+      const created = await stripe.customers.createTaxId(customer.id, {
+        type: "eu_vat",
+        value: "DE123456789",
+      });
+      assertEqual(created.object, "tax_id", "tax id object");
+      assertEqual(created.type, "eu_vat", "tax id type");
+      assertEqual(created.customer, customer.id, "tax id customer");
+      assertEqual(created.owner?.type, "customer", "tax id owner type");
+
+      const retrieved = await stripe.customers.retrieveTaxId(
+        customer.id,
+        created.id,
+      );
+      assertEqual(retrieved.id, created.id, "retrieved tax id id");
+
+      const listed = await stripe.customers.listTaxIds(customer.id, {
+        limit: 10,
+      });
+      assertListContains(listed, created.id, "customer tax id list");
+
+      const deleted = await stripe.customers.deleteTaxId(
+        customer.id,
+        created.id,
+      );
+      assertEqual(deleted.id, created.id, "deleted tax id id");
+      assertEqual(deleted.deleted, true, "deleted tax id deleted flag");
+      return created;
+    },
+  );
+  report.objects.customerTaxID = pick(customerTaxID, [
+    "id",
+    "object",
+    "type",
+    "customer",
+  ]);
+
+  const taxedCustomer = await check(
+    "automatic tax checkout session amounts",
+    async () => {
+      const created = await stripe.customers.create({
+        email: `stripe-sdk-smoke-tax+${runId}@example.test`,
+        name: "Stripe SDK Smoke Tax Customer",
+        metadata: {
+          billtap_smoke: "stripe_sdk",
+          run_id: runId,
+          tax_percent: "10",
+        },
+      });
+      assertEqual(created.object, "customer", "tax customer object");
+
+      const session = await stripe.checkout.sessions.create({
+        customer: created.id,
+        mode: "subscription",
+        line_items: [
+          {
+            price: price.id,
+            quantity: 1,
+          },
+        ],
+        automatic_tax: {
+          enabled: true,
+        },
+        success_url: "http://127.0.0.1/tax-success",
+        cancel_url: "http://127.0.0.1/tax-cancel",
+      });
+      assertEqual(
+        session.object,
+        "checkout.session",
+        "tax checkout session object",
+      );
+      assertEqual(
+        session.automatic_tax?.enabled,
+        true,
+        "tax checkout automatic_tax.enabled",
+      );
+      assertEqual(
+        session.automatic_tax?.status,
+        "complete",
+        "tax checkout automatic_tax.status",
+      );
+      assertEqual(
+        session.automatic_tax?.provider,
+        "stripe",
+        "tax checkout automatic_tax.provider",
+      );
+      // unit_amount 4200 * 10% exclusive tax = 420
+      assertEqual(
+        session.total_details?.amount_tax,
+        420,
+        "tax checkout total_details.amount_tax",
+      );
+      assertEqual(session.amount_total, 4620, "tax checkout amount_total");
+      return created;
+    },
+  );
+  report.objects.taxedCustomer = pick(taxedCustomer, ["id", "object", "email"]);
+
   const webhookEndpoint = await check(
     "webhook endpoint create/retrieve/list",
     async () => {

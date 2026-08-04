@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -26,6 +27,8 @@ const (
 	MetadataDiscountDuration        = "billtap_discount_duration"
 	MetadataDiscountCreated         = "billtap_discount_created"
 	MetadataDiscountAppliesTo       = "billtap_discount_applies_to"
+	MetadataAutomaticTax            = "billtap_automatic_tax"
+	MetadataTaxPercent              = "billtap_tax_percent"
 )
 
 type Repository interface {
@@ -427,10 +430,16 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	invoiceSubtotal := subtotal
 	invoiceTotal := discountedTotal
 	invoiceDiscountAmount := discountAmount
+	invoiceTax := int64(0)
+	if session.AutomaticTax && !trialing {
+		invoiceTax = ExclusiveTaxAmount(discountedTotal, session.TaxPercent)
+		invoiceTotal = discountedTotal + invoiceTax
+	}
 	if trialing {
 		invoiceSubtotal = 0
 		invoiceTotal = 0
 		invoiceDiscountAmount = 0
+		invoiceTax = 0
 	}
 	invoiceAttemptCount := 1
 	if outcomeSpec.InvoiceAttemptCount != nil {
@@ -448,6 +457,7 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		Metadata:           map[string]string{"checkout_session": session.ID},
 	}
 	sub.Metadata = MergeDiscountMetadata(sub.Metadata, discounts)
+	sub.Metadata = MergeTaxMetadata(sub.Metadata, session.AutomaticTax, session.TaxPercent)
 	if trialing {
 		sub.Status = "trialing"
 		sub.Metadata["trial_period_days"] = fmt.Sprintf("%d", session.TrialPeriodDays)
@@ -464,6 +474,8 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		Subtotal:       invoiceSubtotal,
 		DiscountAmount: invoiceDiscountAmount,
 		Discounts:      discounts,
+		AutomaticTax:   session.AutomaticTax,
+		Tax:            invoiceTax,
 		Total:          invoiceTotal,
 		AmountDue:      0,
 		AmountPaid:     invoiceTotal,
@@ -1853,6 +1865,12 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 	discounts := DiscountsFromMetadata(sub.Metadata)
 	eligibleBase := EligibleDiscountBase(subtotal, discounts, lineAmounts)
 	total, discountAmount := ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
+	automaticTax, taxPercent := AutomaticTaxFromMetadata(sub.Metadata)
+	tax := int64(0)
+	if automaticTax {
+		tax = ExclusiveTaxAmount(total, taxPercent)
+		total = total + tax
+	}
 	periodStart := sub.CurrentPeriodEnd
 	if periodStart.IsZero() {
 		periodStart = at
@@ -1886,6 +1904,8 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		Subtotal:       subtotal,
 		DiscountAmount: discountAmount,
 		Discounts:      discounts,
+		AutomaticTax:   automaticTax,
+		Tax:            tax,
 		Total:          total,
 		AmountDue:      0,
 		AmountPaid:     total,
@@ -2258,6 +2278,55 @@ func MergeDiscountMetadata(metadata map[string]string, discounts []Discount) map
 		delete(metadata, MetadataDiscountAppliesTo)
 	}
 	return metadata
+}
+
+// ParseCustomerTaxPercent reads customer metadata tax_percent. Invalid or
+// negative values are treated as 0.
+func ParseCustomerTaxPercent(metadata map[string]string) float64 {
+	if metadata == nil {
+		return 0
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(metadata["tax_percent"]), 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
+// ExclusiveTaxAmount applies exclusive tax after discounts.
+func ExclusiveTaxAmount(amountAfterDiscount int64, taxPercent float64) int64 {
+	if amountAfterDiscount <= 0 || taxPercent <= 0 {
+		return 0
+	}
+	return int64(math.Round(float64(amountAfterDiscount) * taxPercent / 100.0))
+}
+
+// MergeTaxMetadata snapshots automatic tax flags onto subscription metadata.
+func MergeTaxMetadata(metadata map[string]string, automaticTax bool, taxPercent float64) map[string]string {
+	if !automaticTax {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata[MetadataAutomaticTax] = "true"
+	metadata[MetadataTaxPercent] = strconv.FormatFloat(taxPercent, 'f', -1, 64)
+	return metadata
+}
+
+// AutomaticTaxFromMetadata restores the automatic-tax snapshot from subscription metadata.
+func AutomaticTaxFromMetadata(metadata map[string]string) (bool, float64) {
+	if metadata == nil {
+		return false, 0
+	}
+	if strings.TrimSpace(metadata[MetadataAutomaticTax]) != "true" {
+		return false, 0
+	}
+	percent, err := strconv.ParseFloat(strings.TrimSpace(metadata[MetadataTaxPercent]), 64)
+	if err != nil || percent < 0 {
+		percent = 0
+	}
+	return true, percent
 }
 
 func ClearDiscountMetadata(metadata map[string]string) map[string]string {
