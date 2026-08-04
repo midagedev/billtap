@@ -32,7 +32,8 @@ var (
 	accountNestedParamRE        = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
 	eventTypeFilterParamRE      = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
 	portalFlowDataParamRE       = regexp.MustCompile(`^flow_data(\[[^\]]+\])+$`)
-	couponAppliesToParamRE      = regexp.MustCompile(`^applies_to(\[[^\]]+\])+$`)
+	// Allow empty brackets for Stripe array form applies_to[products][].
+	couponAppliesToParamRE = regexp.MustCompile(`^applies_to(\[[^\]]*\])+$`)
 	promotionRestrictionParamRE = regexp.MustCompile(`^restrictions(\[[^\]]+\])+$`)
 	schedulePhaseParamRE        = regexp.MustCompile(`^phases\[\d+\]\[(start_date|end_date|iterations|items|plans)\].*$`)
 	invoicePreviewItemParamRE   = regexp.MustCompile(`^((subscription_details|subscriptionDetails)\[items\]\[\d+\]\[(id|price|price_id|quantity)\]|(subscription_items|items)\[\d+\]\[(id|price|price_id|quantity)\])$`)
@@ -1243,6 +1244,14 @@ func validateCouponCreate(p params) error {
 	}
 	if p.has("amount_off") && !p.has("currency") {
 		return missingParam("currency")
+	}
+	duration := p.stringDefault("duration", "once")
+	if duration == "repeating" {
+		if !p.has("duration_in_months") {
+			return missingParam("duration_in_months")
+		}
+	} else if p.has("duration_in_months") {
+		return invalidParam("duration_in_months", "Can only be set when duration is repeating.")
 	}
 	return nil
 }

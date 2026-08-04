@@ -1569,7 +1569,8 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			writeResult(w, nil, err)
 			return
 		}
-		for _, item := range p.lineItems() {
+		lineItems := p.lineItems()
+		for _, item := range lineItems {
 			if err := validatePriceExists(h.billing.GetPrice(r.Context(), item.PriceID)); err != nil {
 				writeResult(w, nil, err)
 				return
@@ -1580,10 +1581,14 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			writeResult(w, nil, err)
 			return
 		}
+		if err := h.validateDiscountAppliesToLineItems(r.Context(), lineItems, discounts); err != nil {
+			writeResult(w, nil, err)
+			return
+		}
 		session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
 			CustomerID:          p.first("customer", "customer_id"),
 			Mode:                p.stringDefault("mode", "subscription"),
-			LineItems:           p.lineItems(),
+			LineItems:           lineItems,
 			Discounts:           discounts,
 			SuccessURL:          p.string("success_url"),
 			CancelURL:           p.string("cancel_url"),
@@ -1593,13 +1598,13 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 		if err == nil {
 			session.URL = h.absoluteURL(r, session.URL)
 		}
-		writeResult(w, stripeCheckoutSession(session), err)
+		writeResult(w, h.stripeCheckoutSession(r, session), err)
 	case http.MethodGet:
 		sessions, err := h.billing.ListCheckoutSessions(r.Context())
 		data := make([]map[string]any, 0, len(sessions))
 		for i := range sessions {
 			sessions[i].URL = h.absoluteURL(r, sessions[i].URL)
-			data = append(data, stripeCheckoutSession(sessions[i]))
+			data = append(data, h.stripeCheckoutSession(r, sessions[i]))
 		}
 		writeResult(w, stripeList(r.URL.Path, data), err)
 	default:
@@ -1626,7 +1631,7 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 	if err == nil {
 		session.URL = h.absoluteURL(r, session.URL)
 	}
-	payload := stripeCheckoutSession(session)
+	payload := h.stripeCheckoutSession(r, session)
 	// The hosted page prefers this extension field for its "Return to app"
 	// link; success_url itself stays exactly as the caller stored it.
 	if rewritten := h.rewriteRunLocalRedirect(session.SuccessURL); rewritten != session.SuccessURL {
@@ -1858,6 +1863,9 @@ func (h *Handler) createSubscriptionFromParamsWithCustomer(r *http.Request, defa
 	}
 	discounts, err := h.discountsFromParamsOrCustomer(r, p, customer)
 	if err != nil {
+		return billing.Subscription{}, err
+	}
+	if err := h.validateDiscountAppliesToLineItems(r.Context(), items, discounts); err != nil {
 		return billing.Subscription{}, err
 	}
 	testClockID := p.string("test_clock")
@@ -2159,7 +2167,12 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 	if err != nil {
 		return nil, err
 	}
-	discountedTotal, discountAmount := billing.ApplyDiscounts(newTotal, currency, discounts)
+	newLineAmounts, err := h.lineAmounts(ctx, items)
+	if err != nil {
+		return nil, err
+	}
+	eligibleNew := billing.EligibleDiscountBase(newTotal, discounts, newLineAmounts)
+	discountedTotal, discountAmount := billing.ApplyDiscountsWithEligibleBase(newTotal, eligibleNew, currency, discounts)
 	behavior := invoicePreviewProrationBehavior(p)
 	createdAt := invoicePreviewProrationDate(p, now)
 	billingCycleAnchor := invoicePreviewBillingCycleAnchor(p, createdAt)
@@ -2183,7 +2196,12 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		if currency == "" {
 			currency = oldCurrency
 		}
-		oldDiscountedTotal, _ := billing.ApplyDiscounts(oldTotal, currency, discounts)
+		oldLineAmounts, err := h.lineAmounts(ctx, subscription.Items)
+		if err != nil {
+			return nil, err
+		}
+		eligibleOld := billing.EligibleDiscountBase(oldTotal, discounts, oldLineAmounts)
+		oldDiscountedTotal, _ := billing.ApplyDiscountsWithEligibleBase(oldTotal, eligibleOld, currency, discounts)
 		amount = 0
 		subtotal = 0
 		totalDiscountAmount = 0
@@ -2357,6 +2375,51 @@ func (h *Handler) lineItemTotal(ctx context.Context, items []billing.LineItem) (
 		prices[price.ID] = stripePrice(price)
 	}
 	return total, currency, prices, nil
+}
+
+func (h *Handler) lineAmounts(ctx context.Context, items []billing.LineItem) ([]billing.LineAmount, error) {
+	out := make([]billing.LineAmount, 0, len(items))
+	for _, item := range items {
+		quantity := item.Quantity
+		if quantity <= 0 {
+			quantity = 1
+		}
+		price, err := h.billing.GetPrice(ctx, item.PriceID)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, billing.LineAmount{
+			ProductID: price.ProductID,
+			Amount:    price.UnitAmount * quantity,
+		})
+	}
+	return out, nil
+}
+
+func (h *Handler) validateDiscountAppliesToLineItems(ctx context.Context, items []billing.LineItem, discounts []billing.Discount) error {
+	if len(discounts) == 0 || len(discounts[0].AppliesToProducts) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(discounts[0].AppliesToProducts))
+	for _, productID := range discounts[0].AppliesToProducts {
+		productID = strings.TrimSpace(productID)
+		if productID != "" {
+			allowed[productID] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	for _, item := range items {
+		price, err := h.billing.GetPrice(ctx, item.PriceID)
+		if err != nil {
+			return err
+		}
+		if _, ok := allowed[strings.TrimSpace(price.ProductID)]; ok {
+			return nil
+		}
+	}
+	return invalidParam("discounts[0]", "This coupon cannot be applied because it does not apply to any of the products in this session.")
 }
 
 func invoicePreviewProrationBehavior(p params) string {
@@ -4745,9 +4808,19 @@ func paramsFromValues(values url.Values) params {
 func firstValues(values url.Values) map[string]string {
 	out := map[string]string{}
 	for key, value := range values {
-		if len(value) > 0 {
-			out[key] = value[0]
+		if len(value) == 0 {
+			continue
 		}
+		// Expand multi-value [] keys (e.g. applies_to[products][]) into indexed
+		// form so list-style collectors can recover every entry.
+		if len(value) > 1 && strings.HasSuffix(key, "[]") {
+			base := strings.TrimSuffix(key, "[]")
+			for i, item := range value {
+				out[fmt.Sprintf("%s[%d]", base, i)] = item
+			}
+			continue
+		}
+		out[key] = value[0]
 	}
 	return out
 }
@@ -4963,6 +5036,42 @@ func (p params) lineItems() []billing.LineItem {
 		}
 		quantity := p.int64Default(fmt.Sprintf("line_items[%d][quantity]", i), 1)
 		out = append(out, billing.LineItem{PriceID: price, Quantity: quantity})
+	}
+	return out
+}
+
+func (p params) appliesToProducts() []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if value := p.string("applies_to[products][]"); value != "" {
+		for _, part := range strings.Split(value, ",") {
+			add(part)
+		}
+	}
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("applies_to[products][%d]", i)
+		if !p.has(key) {
+			if i == 0 {
+				continue
+			}
+			// Allow a gap at 0-index only; stop once dense indices end.
+			break
+		}
+		add(p.string(key))
+	}
+	if value := p.string("applies_to[products]"); value != "" {
+		add(value)
 	}
 	return out
 }
@@ -5537,7 +5646,43 @@ func stripeDeleted(id string, object string) map[string]any {
 	return map[string]any{"id": id, "object": object, "deleted": true}
 }
 
-func stripeCheckoutSession(session billing.CheckoutSession) map[string]any {
+func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.CheckoutSession) map[string]any {
+	ctx := context.Background()
+	if r != nil {
+		ctx = r.Context()
+	}
+	currency := "usd"
+	subtotal := int64(0)
+	lineAmounts := make([]billing.LineAmount, 0, len(session.LineItems))
+	for _, item := range session.LineItems {
+		quantity := item.Quantity
+		if quantity <= 0 {
+			quantity = 1
+		}
+		amount := int64(0)
+		productID := ""
+		if h != nil && h.billing != nil {
+			if price, err := h.billing.GetPrice(ctx, item.PriceID); err == nil {
+				amount = price.UnitAmount * quantity
+				productID = price.ProductID
+				if price.Currency != "" {
+					currency = price.Currency
+				}
+			}
+		}
+		subtotal += amount
+		lineAmounts = append(lineAmounts, billing.LineAmount{ProductID: productID, Amount: amount})
+	}
+	discounts := session.Discounts
+	eligibleBase := billing.EligibleDiscountBase(subtotal, discounts, lineAmounts)
+	amountTotal, discountAmount := billing.ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
+	discountRefs := make([]map[string]any, 0, len(discounts))
+	for _, discount := range discounts {
+		discountRefs = append(discountRefs, map[string]any{
+			"coupon":         emptyToNil(discount.CouponID),
+			"promotion_code": emptyToNil(discount.PromotionCodeID),
+		})
+	}
 	return map[string]any{
 		"id":                    session.ID,
 		"object":                billing.ObjectCheckoutSession,
@@ -5558,6 +5703,15 @@ func stripeCheckoutSession(session billing.CheckoutSession) map[string]any {
 		"created_at":            session.CreatedAt,
 		"completed_at":          session.CompletedAt,
 		"livemode":              false,
+		"currency":              strings.ToLower(currency),
+		"amount_subtotal":       subtotal,
+		"amount_total":          amountTotal,
+		"total_details": map[string]any{
+			"amount_discount": discountAmount,
+			"amount_shipping": 0,
+			"amount_tax":      0,
+		},
+		"discounts": discountRefs,
 	}
 }
 
@@ -7443,7 +7597,7 @@ func (h *Handler) checkoutWebhookPayloads(r *http.Request, result map[string]any
 			out = append(out, webhookPayload{eventType: eventType, objectID: objectID, payload: raw})
 		}
 	}
-	appendPayload(checkoutSessionEvent(session.Status), session.ID, stripeCheckoutSession(session))
+	appendPayload(checkoutSessionEvent(session.Status), session.ID, h.stripeCheckoutSession(r, session))
 	if subscription.ID != "" {
 		appendPayload("customer.subscription.created", subscription.ID, h.stripeSubscription(r, subscription))
 		if discounts := billing.DiscountsFromMetadata(subscription.Metadata); len(discounts) > 0 {

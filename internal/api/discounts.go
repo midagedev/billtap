@@ -103,6 +103,11 @@ func discountFromCouponEvidence(id string, coupon map[string]any) (billing.Disco
 	if valid, ok := coupon["valid"].(bool); ok && !valid {
 		return billing.Discount{}, fmt.Errorf("%w: coupon is not valid", billing.ErrInvalidInput)
 	}
+	if redeemBy, ok := asInt64Evidence(coupon["redeem_by"]); ok && redeemBy > 0 {
+		if time.Now().UTC().Unix() > redeemBy {
+			return billing.Discount{}, fmt.Errorf("%w: coupon is not valid", billing.ErrInvalidInput)
+		}
+	}
 	percentOff, _ := asInt64Evidence(coupon["percent_off"])
 	amountOff, _ := asInt64Evidence(coupon["amount_off"])
 	createdAt := time.Now().UTC()
@@ -110,14 +115,48 @@ func discountFromCouponEvidence(id string, coupon map[string]any) (billing.Disco
 		createdAt = time.Unix(created, 0).UTC()
 	}
 	return billing.Discount{
-		CouponID:   id,
-		PercentOff: percentOff,
-		AmountOff:  amountOff,
-		Currency:   strings.ToLower(evidenceString(coupon["currency"])),
-		Duration:   evidenceString(coupon["duration"]),
-		Metadata:   stringMapFromEvidence(coupon["metadata"]),
-		CreatedAt:  createdAt,
+		CouponID:          id,
+		PercentOff:        percentOff,
+		AmountOff:         amountOff,
+		Currency:          strings.ToLower(evidenceString(coupon["currency"])),
+		Duration:          evidenceString(coupon["duration"]),
+		AppliesToProducts: appliesToProductsFromEvidence(coupon["applies_to"]),
+		Metadata:          stringMapFromEvidence(coupon["metadata"]),
+		CreatedAt:         createdAt,
 	}, nil
+}
+
+func appliesToProductsFromEvidence(value any) []string {
+	raw, ok := value.(map[string]any)
+	if !ok || raw == nil {
+		return nil
+	}
+	products, ok := raw["products"]
+	if !ok || products == nil {
+		return nil
+	}
+	switch typed := products.(type) {
+	case []string:
+		out := make([]string, 0, len(typed))
+		for _, productID := range typed {
+			productID = strings.TrimSpace(productID)
+			if productID != "" {
+				out = append(out, productID)
+			}
+		}
+		return out
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			productID := strings.TrimSpace(fmt.Sprint(item))
+			if productID != "" && productID != "<nil>" {
+				out = append(out, productID)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
 }
 
 func evidenceString(value any) string {

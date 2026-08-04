@@ -81,16 +81,23 @@ type LineItem struct {
 }
 
 type Discount struct {
-	ID              string            `json:"id,omitempty"`
-	Object          string            `json:"object,omitempty"`
-	CouponID        string            `json:"coupon,omitempty"`
-	PromotionCodeID string            `json:"promotion_code,omitempty"`
-	PercentOff      int64             `json:"percent_off,omitempty"`
-	AmountOff       int64             `json:"amount_off,omitempty"`
-	Currency        string            `json:"currency,omitempty"`
-	Duration        string            `json:"duration,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
-	CreatedAt       time.Time         `json:"created_at,omitempty"`
+	ID                string            `json:"id,omitempty"`
+	Object            string            `json:"object,omitempty"`
+	CouponID          string            `json:"coupon,omitempty"`
+	PromotionCodeID   string            `json:"promotion_code,omitempty"`
+	PercentOff        int64             `json:"percent_off,omitempty"`
+	AmountOff         int64             `json:"amount_off,omitempty"`
+	Currency          string            `json:"currency,omitempty"`
+	Duration          string            `json:"duration,omitempty"`
+	AppliesToProducts []string          `json:"applies_to_products,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	CreatedAt         time.Time         `json:"created_at,omitempty"`
+}
+
+// LineAmount is a priced line contribution used for product-scoped discounts.
+type LineAmount struct {
+	ProductID string
+	Amount    int64
 }
 
 type CheckoutSession struct {

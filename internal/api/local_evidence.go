@@ -51,23 +51,39 @@ func (h *Handler) handleCoupons(w http.ResponseWriter, r *http.Request) {
 			id = "coupon_" + strconv.FormatInt(now.UnixNano(), 36)
 		}
 		coupon := map[string]any{
-			"id":          id,
-			"object":      "coupon",
-			"name":        emptyToNil(p.string("name")),
-			"duration":    p.stringDefault("duration", "once"),
-			"percent_off": nil,
-			"amount_off":  nil,
-			"currency":    emptyToNil(p.string("currency")),
-			"valid":       true,
-			"metadata":    nonNilMap(p.metadata()),
-			"created":     now.Unix(),
-			"livemode":    false,
+			"id":                 id,
+			"object":             "coupon",
+			"name":               emptyToNil(p.string("name")),
+			"duration":           p.stringDefault("duration", "once"),
+			"percent_off":        nil,
+			"amount_off":         nil,
+			"currency":           emptyToNil(p.string("currency")),
+			"duration_in_months": nil,
+			"max_redemptions":    nil,
+			"redeem_by":          nil,
+			"times_redeemed":     int64(0),
+			"valid":              true,
+			"metadata":           nonNilMap(p.metadata()),
+			"created":            now.Unix(),
+			"livemode":           false,
 		}
 		if p.has("percent_off") {
 			coupon["percent_off"] = p.int64("percent_off")
 		}
 		if p.has("amount_off") {
 			coupon["amount_off"] = p.int64("amount_off")
+		}
+		if p.has("duration_in_months") {
+			coupon["duration_in_months"] = p.int64("duration_in_months")
+		}
+		if p.has("max_redemptions") {
+			coupon["max_redemptions"] = p.int64("max_redemptions")
+		}
+		if p.has("redeem_by") {
+			coupon["redeem_by"] = p.int64("redeem_by")
+		}
+		if products := p.appliesToProducts(); len(products) > 0 {
+			coupon["applies_to"] = map[string]any{"products": products}
 		}
 		h.local.mu.Lock()
 		h.local.coupons[id] = coupon

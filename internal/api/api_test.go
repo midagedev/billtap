@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -3820,6 +3821,227 @@ func TestDiscountApplicationAcrossCheckoutPreviewRenewalAndDelete(t *testing.T) 
 	}](t, handler, "/v1/subscriptions/sub_discount_fixture/discount")
 	if deleted.Object != "discount" || !deleted.Deleted {
 		t.Fatalf("deleted discount = %#v, want deleted discount marker", deleted)
+	}
+}
+
+func TestCouponAppliesToProductsAndCheckoutSessionAmounts(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"scoped-coupon@example.test"},
+	})
+	productMatch := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"name": {"Matched Product"},
+	})
+	productOther := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"name": {"Other Product"},
+	})
+	priceMatch := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {productMatch.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"2000"},
+		"recurring[interval]": {"month"},
+	})
+	priceOther := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {productOther.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"5000"},
+		"recurring[interval]": {"month"},
+	})
+
+	// 1. applies_to[products][] round-trips on create and retrieve.
+	createdCoupon := postForm[map[string]any](t, handler, "/v1/coupons", url.Values{
+		"id":                     {"coupon_scoped_match"},
+		"percent_off":            {"50"},
+		"duration":               {"forever"},
+		"applies_to[products][]": {productMatch.ID, productOther.ID},
+	})
+	appliesTo, ok := createdCoupon["applies_to"].(map[string]any)
+	if !ok {
+		t.Fatalf("created coupon applies_to = %#v, want products map", createdCoupon["applies_to"])
+	}
+	products, ok := appliesTo["products"].([]any)
+	if !ok || len(products) != 2 {
+		t.Fatalf("created coupon applies_to.products = %#v, want two product ids", appliesTo["products"])
+	}
+	if fmt.Sprint(products[0]) != productMatch.ID && fmt.Sprint(products[1]) != productMatch.ID {
+		t.Fatalf("created coupon products = %#v, want %s", products, productMatch.ID)
+	}
+	if createdCoupon["times_redeemed"] != float64(0) {
+		t.Fatalf("times_redeemed = %#v, want 0", createdCoupon["times_redeemed"])
+	}
+	if createdCoupon["duration_in_months"] != nil || createdCoupon["max_redemptions"] != nil || createdCoupon["redeem_by"] != nil {
+		t.Fatalf("optional null fields missing: duration_in_months=%#v max_redemptions=%#v redeem_by=%#v",
+			createdCoupon["duration_in_months"], createdCoupon["max_redemptions"], createdCoupon["redeem_by"])
+	}
+	fetchedCoupon := getJSON[map[string]any](t, handler, "/v1/coupons/"+fmt.Sprint(createdCoupon["id"]))
+	fetchedApplies, ok := fetchedCoupon["applies_to"].(map[string]any)
+	if !ok {
+		t.Fatalf("GET coupon applies_to = %#v, want products map", fetchedCoupon["applies_to"])
+	}
+	fetchedProducts, ok := fetchedApplies["products"].([]any)
+	if !ok || len(fetchedProducts) != 2 {
+		t.Fatalf("GET coupon products = %#v, want two product ids", fetchedApplies["products"])
+	}
+
+	// 2. repeating duration requires duration_in_months.
+	status, body := postFormStatus(t, handler, "/v1/coupons", url.Values{
+		"percent_off": {"10"},
+		"duration":    {"repeating"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("repeating without duration_in_months status = %d body = %s, want 400", status, body)
+	}
+	missing := decodeErrorBody(t, body)
+	if missing.Error.Param != "duration_in_months" {
+		t.Fatalf("repeating missing months error = %#v, want duration_in_months param", missing.Error)
+	}
+
+	// 7. redeem_by in the past rejects use (coupon create succeeds; apply fails).
+	expired := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/coupons", url.Values{
+		"id":          {"coupon_expired"},
+		"percent_off": {"10"},
+		"duration":    {"once"},
+		"redeem_by":   {strconv.FormatInt(time.Now().UTC().Add(-time.Hour).Unix(), 10)},
+	})
+	status, body = postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {priceMatch.ID},
+		"line_items[0][quantity]": {"1"},
+		"discounts[0][coupon]":    {expired.ID},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("expired coupon checkout status = %d body = %s, want 400", status, body)
+	}
+	if !strings.Contains(body, "coupon is not valid") {
+		t.Fatalf("expired coupon body = %s, want coupon is not valid", body)
+	}
+
+	// 3. product-restricted coupon with no matching line items is rejected.
+	scopedOnlyMatch := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/coupons", url.Values{
+		"id":                     {"coupon_only_match"},
+		"percent_off":            {"50"},
+		"duration":               {"forever"},
+		"applies_to[products][]": {productMatch.ID},
+	})
+	status, body = postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {priceOther.ID},
+		"line_items[0][quantity]": {"1"},
+		"discounts[0][coupon]":    {scopedOnlyMatch.ID},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("no-match scoped coupon status = %d body = %s, want 400", status, body)
+	}
+	noMatch := decodeErrorBody(t, body)
+	if noMatch.Error.Param != "discounts[0]" || !strings.Contains(noMatch.Error.Message, "does not apply to any of the products in this session") {
+		t.Fatalf("no-match error = %#v, want discounts[0] product applicability message", noMatch.Error)
+	}
+
+	// 4 + 5. Mixed cart: session creates, serialization reflects eligible discount, invoice uses eligible base only.
+	session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {priceMatch.ID},
+		"line_items[0][quantity]": {"1"},
+		"line_items[1][price]":    {priceOther.ID},
+		"line_items[1][quantity]": {"1"},
+		"discounts[0][coupon]":    {scopedOnlyMatch.ID},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	// subtotal 2000+5000=7000; 50% of matching 2000 => discount 1000; total 6000
+	if session["currency"] != "usd" {
+		t.Fatalf("session currency = %#v, want usd", session["currency"])
+	}
+	if session["amount_subtotal"] != float64(7000) {
+		t.Fatalf("amount_subtotal = %#v, want 7000", session["amount_subtotal"])
+	}
+	if session["amount_total"] != float64(6000) {
+		t.Fatalf("amount_total = %#v, want 6000", session["amount_total"])
+	}
+	totalDetails, ok := session["total_details"].(map[string]any)
+	if !ok || totalDetails["amount_discount"] != float64(1000) || totalDetails["amount_shipping"] != float64(0) || totalDetails["amount_tax"] != float64(0) {
+		t.Fatalf("total_details = %#v, want amount_discount=1000 shipping=0 tax=0", session["total_details"])
+	}
+	discountList, ok := session["discounts"].([]any)
+	if !ok || len(discountList) != 1 {
+		t.Fatalf("session discounts = %#v, want one discount ref", session["discounts"])
+	}
+	discountRef, ok := discountList[0].(map[string]any)
+	if !ok || discountRef["coupon"] != scopedOnlyMatch.ID {
+		t.Fatalf("session discount ref = %#v, want coupon %s", discountList[0], scopedOnlyMatch.ID)
+	}
+
+	sessionID := fmt.Sprint(session["id"])
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+sessionID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+	var completed billing.CheckoutSession
+	if err := json.Unmarshal(completion["session"], &completed); err != nil {
+		t.Fatalf("decode completed session: %v", err)
+	}
+	invoice := getJSON[struct {
+		Subtotal             int64            `json:"subtotal"`
+		Total                int64            `json:"total"`
+		AmountPaid           int64            `json:"amount_paid"`
+		TotalDiscountAmounts []map[string]any `json:"total_discount_amounts"`
+	}](t, handler, "/v1/invoices/"+completed.InvoiceID)
+	if invoice.Subtotal != 7000 || invoice.Total != 6000 || invoice.AmountPaid != 6000 || len(invoice.TotalDiscountAmounts) != 1 {
+		t.Fatalf("scoped checkout invoice = %#v, want subtotal=7000 total=6000 with one discount amount", invoice)
+	}
+	if amount, _ := invoice.TotalDiscountAmounts[0]["amount"].(float64); amount != 1000 {
+		t.Fatalf("scoped checkout discount amount = %#v, want 1000", invoice.TotalDiscountAmounts[0])
+	}
+
+	// 6. Renewal invoice also respects product-scoped discount via metadata round-trip.
+	_ = postForm[map[string]any](t, handler, "/v1/test_helpers/test_clocks", url.Values{
+		"id":          {"clock_scoped"},
+		"frozen_time": {strconv.FormatInt(time.Date(2031, 1, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)},
+	})
+	clockCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":      {"scoped-renewal@example.test"},
+		"test_clock": {"clock_scoped"},
+	})
+	subscription := postForm[struct {
+		ID       string            `json:"id"`
+		Metadata map[string]string `json:"metadata"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":             {clockCustomer.ID},
+		"items[0][price]":      {priceMatch.ID},
+		"items[0][quantity]":   {"1"},
+		"items[1][price]":      {priceOther.ID},
+		"items[1][quantity]":   {"1"},
+		"discounts[0][coupon]": {scopedOnlyMatch.ID},
+		"test_clock":           {"clock_scoped"},
+	})
+	if subscription.Metadata[billing.MetadataDiscountAppliesTo] != productMatch.ID {
+		t.Fatalf("subscription discount metadata applies_to = %#v, want %s", subscription.Metadata[billing.MetadataDiscountAppliesTo], productMatch.ID)
+	}
+	advance := postForm[struct {
+		BilltapAdvanceResult struct {
+			Renewals []struct {
+				Invoice struct {
+					Subtotal       int64 `json:"subtotal"`
+					Total          int64 `json:"total"`
+					DiscountAmount int64 `json:"discount_amount"`
+				} `json:"invoice"`
+			} `json:"renewals"`
+		} `json:"billtap_advance_result"`
+	}](t, handler, "/v1/test_helpers/test_clocks/clock_scoped/advance", url.Values{
+		"frozen_time": {strconv.FormatInt(time.Date(2031, 2, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)},
+	})
+	if len(advance.BilltapAdvanceResult.Renewals) != 1 {
+		t.Fatalf("scoped renewal = %#v, want one renewal", advance.BilltapAdvanceResult.Renewals)
+	}
+	renewal := advance.BilltapAdvanceResult.Renewals[0].Invoice
+	if renewal.Subtotal != 7000 || renewal.DiscountAmount != 1000 || renewal.Total != 6000 {
+		t.Fatalf("scoped renewal invoice = %#v, want subtotal=7000 discount=1000 total=6000", renewal)
 	}
 }
 

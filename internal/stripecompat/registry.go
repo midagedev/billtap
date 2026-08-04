@@ -211,8 +211,8 @@ func DefaultClaims() []Claim {
 	add(http.MethodGet, "/v1/checkout/sessions/{id}", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
 	add(http.MethodPost, "/v1/billing_portal/sessions", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted", "payment_method.attached", "customer.updated"}, Risks: []string{"hosted portal is a local stub; portal configuration rendering and full Stripe-hosted portal behavior are not modeled"}})
 
-	add(http.MethodGet, "/v1/coupons", Claim{Level: "L2", Stateful: true, Risks: []string{"local coupon evidence only; discount accounting is bounded"}})
-	add(http.MethodPost, "/v1/coupons", Claim{Level: "L2", Stateful: true, Risks: []string{"local coupon evidence only; discount accounting is bounded"}})
+	add(http.MethodGet, "/v1/coupons", Claim{Level: "L2", Stateful: true, Risks: []string{"local coupon evidence with product-scoped applies_to enforcement; times_redeemed and max_redemptions are recorded but not enforced"}})
+	add(http.MethodPost, "/v1/coupons", Claim{Level: "L2", Stateful: true, Risks: []string{"local coupon evidence with product-scoped applies_to enforcement; times_redeemed and max_redemptions are recorded but not enforced"}})
 	add(http.MethodGet, "/v1/coupons/{id}", Claim{Level: "L2", Stateful: true})
 	add(http.MethodPost, "/v1/coupons/{id}", Claim{Level: "L2", Stateful: true})
 	add(http.MethodDelete, "/v1/coupons/{id}", Claim{Level: "L2", Stateful: true})
