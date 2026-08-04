@@ -91,6 +91,15 @@ amount-off fields, metadata, and deletion markers. Billtap applies a bounded
 single-discount subset to customer defaults, checkout sessions, subscriptions,
 invoice previews, and renewal invoices.
 
+Revised 2026-08-04 (product-scoped coupon adoption): coupons also persist
+`applies_to[products]`, `duration_in_months`, `redeem_by`, `max_redemptions`,
+and `times_redeemed` in their stripe-node v22 shapes. Product-scoped coupons
+are enforced end to end: creation rejects sessions/subscriptions with no
+matching line-item product, and discount math applies only to matching items
+through completion, renewal, and preview. `redeem_by` expiry is enforced at
+use time; `times_redeemed`/`max_redemptions` are recorded but not enforced.
+Integer `percent_off` only (decimal percent remains outside the subset).
+
 ### Promotion Codes
 
 - `POST /v1/promotion_codes`
@@ -116,6 +125,36 @@ Response includes:
 - `url`
 - `status`
 - `payment_status`
+
+Revised 2026-08-04 (SaaS tax/discount adoption): responses also include
+`currency`, `amount_subtotal`, `amount_total`, `total_details`
+(`amount_discount`/`amount_shipping`/`amount_tax`), array-shaped `discounts`,
+`automatic_tax` (`enabled`/`liability`/`provider`/`status`), and
+`tax_id_collection` (`enabled`/`required`) in their stripe-node v22 shapes.
+`automatic_tax[enabled]` and `tax_id_collection[enabled]` are accepted at
+creation. Automatic tax is a deterministic local simulation: the rate
+snapshots from customer metadata `tax_percent` at session creation and
+applies exclusively after discounts (absent metadata means 0% with status
+`complete`, matching Stripe's no-registration behavior). Address- or
+jurisdiction-based calculation is not modeled.
+
+### Tax Rates and Customer Tax IDs
+
+- `POST /v1/tax_rates`
+- `GET /v1/tax_rates/{id}`
+- `GET /v1/tax_rates`
+- `POST /v1/tax_rates/{id}`
+- `POST /v1/customers/{id}/tax_ids`
+- `GET /v1/customers/{id}/tax_ids/{id}`
+- `GET /v1/customers/{id}/tax_ids`
+- `DELETE /v1/customers/{id}/tax_ids/{id}`
+
+Added 2026-08-04: local evidence stores in stripe-node v22 shapes. Tax rates
+are pure evidence and are not wired into totals (automatic tax uses the
+customer-metadata simulation above). Tax IDs carry `verified` status without
+provider verification. The Stripe Tax API family
+(`/v1/tax/calculations|registrations|settings|transactions`) remains
+unimplemented and returns `unsupported_endpoint`.
 
 ### Subscriptions
 
@@ -182,7 +221,20 @@ Invoice responses include local fallback fields for SDK adoption paths:
 `payments.data.payment.payment_intent` with id, status, client secret, metadata,
 and `last_payment_error` where applicable. Full invoice rendering, send, void,
 line mutation, automatic collection, tax, and dunning automation are not part of
-the current release-compatible subset.
+the current release-compatible subset. (Original boundary retained for
+reference; partially revised 2026-08-04 below.)
+
+Revised 2026-08-04 (SaaS tax/email adoption): two of those boundaries moved.
+Invoices now carry the automatic-tax simulation (`automatic_tax` in its v22
+shape, `tax`, `total_taxes` alongside legacy `total_tax_amounts`, and
+tax-exclusive `total_excluding_tax`/`subtotal_excluding_tax`) computed from
+the checkout/subscription snapshot. `POST /v1/invoices/{id}/send` records
+local email evidence (`billtap_email_sent_at`/`billtap_email_recipient`
+metadata, an `invoice.sent` event, and a timeline entry) and finalizing a
+`send_invoice` invoice emits the same evidence in finalized → sent order; no
+real email is delivered. `hosted_invoice_url` redirects to the invoice API
+resource. Rendering, PDF, void, line mutation, automatic collection, and
+dunning remain outside the subset.
 
 Preview endpoints accept Stripe SDK-style `subscription`,
 `subscription_details[items][0][price]`,
@@ -199,7 +251,8 @@ Stripe Invoice defaults needed by generated SDK models, including
 `period_start`, `period_end`, `status_transitions`, `subtotal_excluding_tax`,
 `total_excluding_tax`, `total_tax_amounts`, and array-shaped `discounts`.
 Taxes, pending invoice items, and collection behavior are outside the modeled
-subset.
+subset. (Revised 2026-08-04: realized invoices now model the automatic-tax
+simulation described above; previews themselves remain tax-free.)
 
 ### Payment Intents
 

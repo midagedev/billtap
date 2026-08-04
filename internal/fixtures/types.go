@@ -134,7 +134,7 @@ type SubscriptionFixture struct {
 	RenewalOutcome         string                    `json:"renewal_outcome" yaml:"renewal_outcome"`
 	Coupon                 string                    `json:"coupon" yaml:"coupon"`
 	PromotionCode          string                    `json:"promotion_code" yaml:"promotion_code"`
-	DiscountPercentOff     int64                     `json:"discount_percent_off" yaml:"discount_percent_off"`
+	DiscountPercentOff     float64                   `json:"discount_percent_off" yaml:"discount_percent_off"`
 	DiscountAmountOff      int64                     `json:"discount_amount_off" yaml:"discount_amount_off"`
 	DiscountCurrency       string                    `json:"discount_currency" yaml:"discount_currency"`
 }

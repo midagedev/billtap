@@ -1,0 +1,419 @@
+package api
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/url"
+	"strconv"
+	"testing"
+	"time"
+
+	"github.com/hckim/billtap/internal/billing"
+)
+
+func TestTaxRatesEvidenceCRUD(t *testing.T) {
+	handler := newTestHandler(t)
+
+	// Missing required params → 400.
+	status, body := postFormStatus(t, handler, "/v1/tax_rates", url.Values{
+		"display_name": {"VAT"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing percentage status = %d body = %s, want 400", status, body)
+	}
+	missing := decodeErrorBody(t, body)
+	if missing.Error.Param != "percentage" {
+		t.Fatalf("missing percentage error = %#v, want percentage param", missing.Error)
+	}
+	status, body = postFormStatus(t, handler, "/v1/tax_rates", url.Values{
+		"percentage": {"10"},
+		"inclusive":  {"false"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing display_name status = %d body = %s, want 400", status, body)
+	}
+
+	created := postForm[map[string]any](t, handler, "/v1/tax_rates", url.Values{
+		"display_name": {"Sales Tax"},
+		"percentage":   {"9.75"},
+		"inclusive":    {"false"},
+		"country":      {"US"},
+		"state":        {"CA"},
+		"description":  {"CA sales tax"},
+		"metadata[k]":  {"v"},
+	})
+	id := fmt.Sprint(created["id"])
+	if id == "" || created["object"] != "tax_rate" {
+		t.Fatalf("created tax_rate = %#v, want tax_rate object with id", created)
+	}
+	if created["display_name"] != "Sales Tax" || created["percentage"] != 9.75 || created["inclusive"] != false {
+		t.Fatalf("created tax_rate fields = %#v", created)
+	}
+	if created["active"] != true {
+		t.Fatalf("created active = %#v, want true default", created["active"])
+	}
+	if created["country"] != "US" || created["state"] != "CA" {
+		t.Fatalf("created jurisdiction fields = %#v", created)
+	}
+	if created["rate_type"] != "percentage" || created["flat_amount"] != nil || created["effective_percentage"] != nil || created["jurisdiction_level"] != nil || created["tax_type"] != nil {
+		t.Fatalf("created tax_rate v22 fields = %#v, want rate_type=percentage and null flat/effective/jurisdiction/tax_type", created)
+	}
+
+	fetched := getJSON[map[string]any](t, handler, "/v1/tax_rates/"+id)
+	if fetched["id"] != id || fetched["display_name"] != "Sales Tax" {
+		t.Fatalf("GET tax_rate = %#v, want id %s", fetched, id)
+	}
+
+	listed := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/tax_rates")
+	if len(listed.Data) != 1 || listed.Data[0]["id"] != id {
+		t.Fatalf("list tax_rates = %#v, want one item %s", listed.Data, id)
+	}
+
+	updated := postForm[map[string]any](t, handler, "/v1/tax_rates/"+id, url.Values{
+		"active":       {"false"},
+		"display_name": {"Updated Tax"},
+		"description":  {"updated"},
+		"metadata[k]":  {"v2"},
+	})
+	if updated["active"] != false || updated["display_name"] != "Updated Tax" || updated["description"] != "updated" {
+		t.Fatalf("updated tax_rate = %#v", updated)
+	}
+	meta, _ := updated["metadata"].(map[string]any)
+	if fmt.Sprint(meta["k"]) != "v2" {
+		t.Fatalf("updated metadata = %#v, want k=v2", updated["metadata"])
+	}
+	// percentage is not updatable and must remain.
+	if updated["percentage"] != 9.75 {
+		t.Fatalf("updated percentage = %#v, want 9.75", updated["percentage"])
+	}
+}
+
+func TestCustomerTaxIDsEvidenceCRUD(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"tax-id@example.test"},
+	})
+
+	// Missing customer → 404.
+	status, body := postFormStatus(t, handler, "/v1/customers/cus_missing/tax_ids", url.Values{
+		"type":  {"eu_vat"},
+		"value": {"DE123"},
+	})
+	if status != http.StatusNotFound {
+		t.Fatalf("missing customer tax_id status = %d body = %s, want 404", status, body)
+	}
+
+	// Missing required params → 400.
+	status, body = postFormStatus(t, handler, "/v1/customers/"+customer.ID+"/tax_ids", url.Values{
+		"type": {"eu_vat"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("missing value status = %d body = %s, want 400", status, body)
+	}
+
+	created := postForm[map[string]any](t, handler, "/v1/customers/"+customer.ID+"/tax_ids", url.Values{
+		"type":  {"eu_vat"},
+		"value": {"DE123456789"},
+	})
+	id := fmt.Sprint(created["id"])
+	if id == "" || created["object"] != "tax_id" || created["customer"] != customer.ID {
+		t.Fatalf("created tax_id = %#v", created)
+	}
+	if created["type"] != "eu_vat" || created["value"] != "DE123456789" {
+		t.Fatalf("created tax_id fields = %#v", created)
+	}
+	if created["customer_account"] != nil {
+		t.Fatalf("created tax_id customer_account = %#v, want null", created["customer_account"])
+	}
+	owner, ok := created["owner"].(map[string]any)
+	if !ok || owner["type"] != "customer" || owner["customer"] != customer.ID || owner["customer_account"] != nil {
+		t.Fatalf("created tax_id owner = %#v, want type=customer and customer id", created["owner"])
+	}
+	verification, ok := created["verification"].(map[string]any)
+	if !ok || verification["status"] != "verified" {
+		t.Fatalf("verification = %#v, want verified", created["verification"])
+	}
+
+	fetched := getJSON[map[string]any](t, handler, "/v1/customers/"+customer.ID+"/tax_ids/"+id)
+	if fetched["id"] != id {
+		t.Fatalf("GET tax_id = %#v, want %s", fetched, id)
+	}
+
+	listed := getJSON[struct {
+		Data []map[string]any `json:"data"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/tax_ids")
+	if len(listed.Data) != 1 || listed.Data[0]["id"] != id {
+		t.Fatalf("list tax_ids = %#v, want one item %s", listed.Data, id)
+	}
+
+	deleted := deleteJSON[map[string]any](t, handler, "/v1/customers/"+customer.ID+"/tax_ids/"+id)
+	if deleted["id"] != id || deleted["object"] != "tax_id" || deleted["deleted"] != true {
+		t.Fatalf("deleted tax_id = %#v", deleted)
+	}
+	status, body = getStatus(t, handler, "/v1/customers/"+customer.ID+"/tax_ids/"+id)
+	if status != http.StatusNotFound {
+		t.Fatalf("GET deleted tax_id status = %d body = %s, want 404", status, body)
+	}
+}
+
+func TestAutomaticTaxCheckoutInvoiceAndRenewal(t *testing.T) {
+	handler := newTestHandler(t)
+
+	// Price 7000, amount-off coupon 1000 → discounted 6000, tax 10% = 600, total 6600.
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":                 {"taxed@example.test"},
+		"metadata[tax_percent]": {"10"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Taxed Plan"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"7000"},
+		"recurring[interval]": {"month"},
+	})
+	coupon := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/coupons", url.Values{
+		"id":         {"coupon_tax_off_1000"},
+		"amount_off": {"1000"},
+		"currency":   {"usd"},
+		"duration":   {"forever"},
+	})
+
+	session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                   {customer.ID},
+		"line_items[0][price]":       {price.ID},
+		"line_items[0][quantity]":    {"1"},
+		"discounts[0][coupon]":       {coupon.ID},
+		"automatic_tax[enabled]":     {"true"},
+		"tax_id_collection[enabled]": {"true"},
+		"success_url":                {"http://app.test/success"},
+		"cancel_url":                 {"http://app.test/cancel"},
+	})
+	if session["amount_subtotal"] != float64(7000) {
+		t.Fatalf("amount_subtotal = %#v, want 7000", session["amount_subtotal"])
+	}
+	if session["amount_total"] != float64(6600) {
+		t.Fatalf("amount_total = %#v, want 6600 (6000 + 10%% tax)", session["amount_total"])
+	}
+	totalDetails, ok := session["total_details"].(map[string]any)
+	if !ok || totalDetails["amount_discount"] != float64(1000) || totalDetails["amount_tax"] != float64(600) {
+		t.Fatalf("total_details = %#v, want discount=1000 tax=600", session["total_details"])
+	}
+	autoTax, ok := session["automatic_tax"].(map[string]any)
+	if !ok || autoTax["enabled"] != true || autoTax["status"] != "complete" || autoTax["provider"] != "stripe" || autoTax["liability"] != nil {
+		t.Fatalf("session automatic_tax = %#v, want enabled/status/provider/liability v22 shape", session["automatic_tax"])
+	}
+	if _, hasDisabled := autoTax["disabled_reason"]; hasDisabled {
+		t.Fatalf("session automatic_tax must not include disabled_reason: %#v", autoTax)
+	}
+	taxIDCollection, ok := session["tax_id_collection"].(map[string]any)
+	if !ok || taxIDCollection["enabled"] != true || taxIDCollection["required"] != "never" {
+		t.Fatalf("session tax_id_collection = %#v, want enabled true required never", session["tax_id_collection"])
+	}
+
+	sessionID := fmt.Sprint(session["id"])
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+sessionID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+	var completed billing.CheckoutSession
+	if err := json.Unmarshal(completion["session"], &completed); err != nil {
+		t.Fatalf("decode completed session: %v", err)
+	}
+
+	invoice := getJSON[map[string]any](t, handler, "/v1/invoices/"+completed.InvoiceID)
+	if invoice["subtotal"] != float64(7000) || invoice["total"] != float64(6600) || invoice["amount_paid"] != float64(6600) {
+		t.Fatalf("invoice amounts = %#v, want subtotal=7000 total/paid=6600", invoice)
+	}
+	if invoice["tax"] != float64(600) {
+		t.Fatalf("invoice tax = %#v, want 600", invoice["tax"])
+	}
+	if invoice["total_excluding_tax"] != float64(6000) {
+		t.Fatalf("total_excluding_tax = %#v, want 6000", invoice["total_excluding_tax"])
+	}
+	invAutoTax, ok := invoice["automatic_tax"].(map[string]any)
+	if !ok || invAutoTax["enabled"] != true || invAutoTax["status"] != "complete" || invAutoTax["provider"] != "stripe" || invAutoTax["liability"] != nil || invAutoTax["disabled_reason"] != nil {
+		t.Fatalf("invoice automatic_tax = %#v, want v22 invoice shape", invoice["automatic_tax"])
+	}
+	taxAmounts, ok := invoice["total_tax_amounts"].([]any)
+	if !ok || len(taxAmounts) != 1 {
+		t.Fatalf("total_tax_amounts = %#v, want one entry", invoice["total_tax_amounts"])
+	}
+	taxEntry, _ := taxAmounts[0].(map[string]any)
+	if taxEntry["amount"] != float64(600) || taxEntry["inclusive"] != false || taxEntry["tax_rate"] != "txr_billtap_simulated" {
+		t.Fatalf("tax amount entry = %#v", taxEntry)
+	}
+	totalTaxes, ok := invoice["total_taxes"].([]any)
+	if !ok || len(totalTaxes) != 1 {
+		t.Fatalf("total_taxes = %#v, want one entry", invoice["total_taxes"])
+	}
+	totalTax, _ := totalTaxes[0].(map[string]any)
+	if totalTax["amount"] != float64(600) || totalTax["tax_behavior"] != "exclusive" || totalTax["taxability_reason"] != "standard_rated" || totalTax["taxable_amount"] != float64(6000) || totalTax["type"] != "tax_rate_details" {
+		t.Fatalf("total_taxes[0] = %#v, want exclusive 600 on taxable 6000", totalTax)
+	}
+	rateDetails, _ := totalTax["tax_rate_details"].(map[string]any)
+	if rateDetails["tax_rate"] != "txr_billtap_simulated" {
+		t.Fatalf("total_taxes tax_rate_details = %#v", totalTax["tax_rate_details"])
+	}
+
+	subscription := getJSON[struct {
+		ID       string            `json:"id"`
+		Metadata map[string]string `json:"metadata"`
+		AutoTax  map[string]any    `json:"automatic_tax"`
+	}](t, handler, "/v1/subscriptions/"+completed.SubscriptionID)
+	if subscription.Metadata[billing.MetadataAutomaticTax] != "true" || subscription.Metadata[billing.MetadataTaxPercent] != "10" {
+		t.Fatalf("subscription tax metadata = %#v", subscription.Metadata)
+	}
+	if subscription.AutoTax["enabled"] != true || subscription.AutoTax["disabled_reason"] != nil || subscription.AutoTax["liability"] != nil {
+		t.Fatalf("subscription automatic_tax = %#v, want enabled with null liability/disabled_reason", subscription.AutoTax)
+	}
+	if _, hasStatus := subscription.AutoTax["status"]; hasStatus {
+		t.Fatalf("subscription automatic_tax must not include status: %#v", subscription.AutoTax)
+	}
+	if _, hasProvider := subscription.AutoTax["provider"]; hasProvider {
+		t.Fatalf("subscription automatic_tax must not include provider: %#v", subscription.AutoTax)
+	}
+
+	// Tax-id collection echo already covered on session create above.
+	// automatic_tax without tax_percent → tax=0, status complete, total unchanged.
+	noTaxCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"no-tax-meta@example.test"},
+	})
+	noTaxSession := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {noTaxCustomer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+		"automatic_tax[enabled]":  {"true"},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	if noTaxSession["amount_subtotal"] != float64(7000) || noTaxSession["amount_total"] != float64(7000) {
+		t.Fatalf("no tax_percent session amounts = %#v, want total=7000", noTaxSession)
+	}
+	noTaxDetails, _ := noTaxSession["total_details"].(map[string]any)
+	if noTaxDetails["amount_tax"] != float64(0) {
+		t.Fatalf("no tax_percent amount_tax = %#v, want 0", noTaxDetails["amount_tax"])
+	}
+	noTaxAuto, _ := noTaxSession["automatic_tax"].(map[string]any)
+	if noTaxAuto["enabled"] != true || noTaxAuto["status"] != "complete" {
+		t.Fatalf("no tax_percent automatic_tax = %#v", noTaxSession["automatic_tax"])
+	}
+
+	// Renewal via test clock uses metadata snapshot (not live customer tax_percent).
+	_ = postForm[map[string]any](t, handler, "/v1/test_helpers/test_clocks", url.Values{
+		"id":          {"clock_tax"},
+		"frozen_time": {strconv.FormatInt(time.Date(2032, 1, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)},
+	})
+	clockCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":                 {"tax-renewal@example.test"},
+		"test_clock":            {"clock_tax"},
+		"metadata[tax_percent]": {"10"},
+	})
+	sub := postForm[struct {
+		ID            string            `json:"id"`
+		LatestInvoice string            `json:"latest_invoice"`
+		Metadata      map[string]string `json:"metadata"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":               {clockCustomer.ID},
+		"items[0][price]":        {price.ID},
+		"items[0][quantity]":     {"1"},
+		"discounts[0][coupon]":   {coupon.ID},
+		"automatic_tax[enabled]": {"true"},
+		"test_clock":             {"clock_tax"},
+	})
+	if sub.Metadata[billing.MetadataAutomaticTax] != "true" || sub.Metadata[billing.MetadataTaxPercent] != "10" {
+		t.Fatalf("direct subscription tax metadata = %#v", sub.Metadata)
+	}
+	firstInvoice := getJSON[map[string]any](t, handler, "/v1/invoices/"+sub.LatestInvoice)
+	if firstInvoice["total"] != float64(6600) || firstInvoice["tax"] != float64(600) {
+		t.Fatalf("direct subscription first invoice = %#v, want total=6600 tax=600", firstInvoice)
+	}
+
+	// Change customer tax_percent after snapshot — renewal must keep 10%.
+	_ = postForm[billing.Customer](t, handler, "/v1/customers/"+clockCustomer.ID, url.Values{
+		"metadata[tax_percent]": {"25"},
+	})
+	advance := postForm[struct {
+		BilltapAdvanceResult struct {
+			Renewals []struct {
+				Invoice struct {
+					Subtotal int64 `json:"subtotal"`
+					Total    int64 `json:"total"`
+					Tax      int64 `json:"tax"`
+				} `json:"invoice"`
+			} `json:"renewals"`
+		} `json:"billtap_advance_result"`
+	}](t, handler, "/v1/test_helpers/test_clocks/clock_tax/advance", url.Values{
+		"frozen_time": {strconv.FormatInt(time.Date(2032, 2, 1, 0, 0, 0, 0, time.UTC).Unix(), 10)},
+	})
+	if len(advance.BilltapAdvanceResult.Renewals) != 1 {
+		t.Fatalf("tax renewal = %#v, want one renewal", advance.BilltapAdvanceResult.Renewals)
+	}
+	renewal := advance.BilltapAdvanceResult.Renewals[0].Invoice
+	if renewal.Subtotal != 7000 || renewal.Tax != 600 || renewal.Total != 6600 {
+		t.Fatalf("tax renewal invoice = %#v, want subtotal=7000 tax=600 total=6600 (snapshot 10%%, not 25%%)", renewal)
+	}
+}
+
+func TestCheckoutWithoutAutomaticTaxKeepsZeroTax(t *testing.T) {
+	handler := newTestHandler(t)
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":                 {"plain@example.test"},
+		"metadata[tax_percent]": {"10"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Plain"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"5000"},
+		"recurring[interval]": {"month"},
+	})
+	session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                {customer.ID},
+		"line_items[0][price]":    {price.ID},
+		"line_items[0][quantity]": {"1"},
+		"success_url":             {"http://app.test/success"},
+		"cancel_url":              {"http://app.test/cancel"},
+	})
+	if session["amount_total"] != float64(5000) {
+		t.Fatalf("amount_total = %#v, want 5000 without automatic_tax", session["amount_total"])
+	}
+	details, _ := session["total_details"].(map[string]any)
+	if details["amount_tax"] != float64(0) {
+		t.Fatalf("amount_tax = %#v, want 0 without automatic_tax", details["amount_tax"])
+	}
+	autoTax, ok := session["automatic_tax"].(map[string]any)
+	if !ok || autoTax["enabled"] != false || autoTax["status"] != nil || autoTax["provider"] != nil || autoTax["liability"] != nil {
+		t.Fatalf("automatic_tax = %#v, want disabled v22 shape", session["automatic_tax"])
+	}
+	taxIDCollection, ok := session["tax_id_collection"].(map[string]any)
+	if !ok || taxIDCollection["enabled"] != false || taxIDCollection["required"] != "never" {
+		t.Fatalf("tax_id_collection = %#v, want disabled required never", session["tax_id_collection"])
+	}
+
+	sessionID := fmt.Sprint(session["id"])
+	completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+sessionID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+	var completed billing.CheckoutSession
+	if err := json.Unmarshal(completion["session"], &completed); err != nil {
+		t.Fatalf("decode completed session: %v", err)
+	}
+	invoice := getJSON[map[string]any](t, handler, "/v1/invoices/"+completed.InvoiceID)
+	if invoice["total"] != float64(5000) || invoice["tax"] != nil {
+		t.Fatalf("plain invoice = %#v, want total=5000 tax=null", invoice)
+	}
+	invAuto, _ := invoice["automatic_tax"].(map[string]any)
+	if invAuto["enabled"] != false || invAuto["status"] != nil || invAuto["provider"] != nil || invAuto["disabled_reason"] != nil {
+		t.Fatalf("plain invoice automatic_tax = %#v, want disabled v22 shape", invoice["automatic_tax"])
+	}
+	taxAmounts, _ := invoice["total_tax_amounts"].([]any)
+	if len(taxAmounts) != 0 {
+		t.Fatalf("plain total_tax_amounts = %#v, want empty", invoice["total_tax_amounts"])
+	}
+	totalTaxes, _ := invoice["total_taxes"].([]any)
+	if len(totalTaxes) != 0 {
+		t.Fatalf("plain total_taxes = %#v, want empty", invoice["total_taxes"])
+	}
+}

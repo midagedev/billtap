@@ -807,6 +807,48 @@ code {
   font-size: 26px;
 }
 
+.summary-lines {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+/* Amount rows read as a receipt, not as editable fields: no per-row box, just a
+   rule between rows. */
+.summary-breakdown {
+  gap: 0;
+}
+
+.summary-breakdown li {
+  min-height: 44px;
+  padding: 11px 10px;
+  border: 0;
+  border-bottom: 1px solid #e2e8f0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.summary-breakdown li:last-child {
+  border-bottom: 0;
+}
+
+.summary-breakdown .breakdown-total {
+  padding-top: 13px;
+  padding-bottom: 13px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.summary-breakdown .breakdown-total span {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.summary-breakdown .amount-credit {
+  color: #047857;
+}
+
 .option-grid,
 .plan-grid,
 .payment-grid {

@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+- Added a simulated Stripe Tax surface in stripe-node v22 shapes: checkout
+  sessions accept `automatic_tax[enabled]` and `tax_id_collection[enabled]`,
+  the tax rate snapshots from customer metadata `tax_percent` at creation
+  (absent metadata means 0% with status `complete`, matching Stripe's
+  no-registration behavior) and applies exclusively after discounts through
+  completion and renewal invoices. Sessions, invoices, and subscriptions
+  serialize `automatic_tax` in their v22 shapes, invoices emit `total_taxes`
+  alongside legacy `total_tax_amounts`, and `/v1/tax_rates` plus customer
+  `/tax_ids` ship as local evidence stores. The Stripe Tax API family
+  (`/v1/tax/*`) remains unimplemented.
+- Added product-scoped coupons: `applies_to[products]`, `duration_in_months`,
+  `redeem_by`, `max_redemptions`, and `times_redeemed` persist and round-trip;
+  product-restricted discounts reject sessions/subscriptions with no matching
+  line-item product and apply only to matching items through completion,
+  renewal, and preview. `percent_off` now accepts decimals (e.g. `12.5`) with
+  Stripe-compatible rounding.
+- Checkout sessions expose `currency`, `amount_subtotal`, `amount_total`,
+  `total_details`, and array-shaped `discounts`, and the hosted checkout page
+  renders a Subtotal / Discount / Tax / Total breakdown from those fields.
+  Money fields across the hosted pages now always parse as Stripe minor
+  units, fixing sub-$10 amounts rendering 100x too large.
+- Added invoice email evidence: `POST /v1/invoices/{id}/send` records
+  metadata evidence and emits `invoice.sent` for open and paid invoices,
+  finalizing a `send_invoice` invoice emits the same evidence in
+  finalized-then-sent order, and `hosted_invoice_url` redirects to the
+  invoice API resource. No real email is delivered.
 - Hosted pages now repoint caller-provided localhost redirect targets at the
   run's configured public origin: when a run has a `public_base_url`, the
   hosted checkout "Return to app" link and billing portal return

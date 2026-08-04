@@ -105,6 +105,31 @@ func TestHostedRoutesWithoutTrailingSlashRedirectToApps(t *testing.T) {
 	}
 }
 
+func TestHostedInvoiceURLRedirectsToInvoiceAPI(t *testing.T) {
+	handler := New(Options{
+		Config: config.Config{Addr: ":0", DatabaseURL: ":memory:", StaticDir: "web/dist", Environment: "test"},
+		Store:  storage.NewMemoryStore(),
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/invoices/in_test_hosted/hosted", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("hosted invoice status = %d, want %d body=%s", rec.Code, http.StatusFound, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/v1/invoices/in_test_hosted" {
+		t.Fatalf("hosted invoice Location = %q, want /v1/invoices/in_test_hosted", got)
+	}
+
+	// non-hosted invoice paths stay 404 (.pdf is out of scope)
+	notFoundReq := httptest.NewRequest(http.MethodGet, "/invoices/in_test_hosted/other", nil)
+	notFoundRec := httptest.NewRecorder()
+	handler.ServeHTTP(notFoundRec, notFoundReq)
+	if notFoundRec.Code != http.StatusNotFound {
+		t.Fatalf("non-hosted invoice path status = %d, want 404", notFoundRec.Code)
+	}
+}
+
 func TestPublicBasePathPrefixesBrowserRoutes(t *testing.T) {
 	handler := New(Options{
 		Config: config.Config{Addr: ":0", DatabaseURL: ":memory:", StaticDir: "web/dist", Environment: "test", PublicBasePath: "/billtap"},

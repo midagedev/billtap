@@ -16,23 +16,24 @@ const (
 )
 
 var (
-	metadataParamRE             = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
-	expandParamRE               = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
-	enabledEventsParamRE        = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
-	retryBackoffParamRE         = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
-	checkoutLineItemRE          = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
-	legacyLineItemParamRE       = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
-	checkoutSubscriptionDataRE  = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
-	discountParamRE             = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
-	subscriptionItemRE          = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
-	cancellationDetailsRE       = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
-	paymentMethodTypesRE        = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
-	automaticPaymentMethodsRE   = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
-	paymentMethodOptionsRE      = regexp.MustCompile(`^payment_method_options\[.+\]$`)
-	accountNestedParamRE        = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
-	eventTypeFilterParamRE      = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
-	portalFlowDataParamRE       = regexp.MustCompile(`^flow_data(\[[^\]]+\])+$`)
-	couponAppliesToParamRE      = regexp.MustCompile(`^applies_to(\[[^\]]+\])+$`)
+	metadataParamRE            = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
+	expandParamRE              = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
+	enabledEventsParamRE       = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
+	retryBackoffParamRE        = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
+	checkoutLineItemRE         = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
+	legacyLineItemParamRE      = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
+	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
+	discountParamRE            = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
+	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
+	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
+	paymentMethodTypesRE       = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
+	automaticPaymentMethodsRE  = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
+	paymentMethodOptionsRE     = regexp.MustCompile(`^payment_method_options\[.+\]$`)
+	accountNestedParamRE       = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
+	eventTypeFilterParamRE     = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
+	portalFlowDataParamRE      = regexp.MustCompile(`^flow_data(\[[^\]]+\])+$`)
+	// Allow empty brackets for Stripe array form applies_to[products][].
+	couponAppliesToParamRE      = regexp.MustCompile(`^applies_to(\[[^\]]*\])+$`)
 	promotionRestrictionParamRE = regexp.MustCompile(`^restrictions(\[[^\]]+\])+$`)
 	schedulePhaseParamRE        = regexp.MustCompile(`^phases\[\d+\]\[(start_date|end_date|iterations|items|plans)\].*$`)
 	invoicePreviewItemParamRE   = regexp.MustCompile(`^((subscription_details|subscriptionDetails)\[items\]\[\d+\]\[(id|price|price_id|quantity)\]|(subscription_items|items)\[\d+\]\[(id|price|price_id|quantity)\])$`)
@@ -185,6 +186,7 @@ type paramSpec struct {
 	Required      []string
 	RequiredAny   [][]string
 	Int64Params   []string
+	FloatParams   []string
 	BoolParams    []string
 	EnumParams    map[string][]string
 	NonNegative   []string
@@ -235,6 +237,11 @@ func (p params) validate(spec paramSpec) error {
 			return err
 		}
 	}
+	for _, key := range spec.FloatParams {
+		if err := p.validateFloat64(key); err != nil {
+			return err
+		}
+	}
 	for _, key := range spec.BoolParams {
 		if err := p.validateBool(key); err != nil {
 			return err
@@ -282,6 +289,17 @@ func (p params) validateInt64(key string) error {
 	return nil
 }
 
+func (p params) validateFloat64(key string) error {
+	if !p.has(key) {
+		return nil
+	}
+	if _, err := strconv.ParseFloat(p.string(key), 64); err != nil {
+		// Same invalid-error shape as Int64Params ("Expected an integer.").
+		return invalidParam(key, "Expected an integer.")
+	}
+	return nil
+}
+
 func (p params) validateMin(key string, min int64) error {
 	if !p.has(key) {
 		return nil
@@ -292,6 +310,22 @@ func (p params) validateMin(key string, min int64) error {
 	}
 	if value < min {
 		return invalidParam(key, fmt.Sprintf("Must be at least %d.", min))
+	}
+	return nil
+}
+
+// validatePositiveFloat enforces value > 0 for float form params, using the same
+// error message shape as Positive/validateMin(min=1).
+func (p params) validatePositiveFloat(key string) error {
+	if !p.has(key) {
+		return nil
+	}
+	value, err := strconv.ParseFloat(p.string(key), 64)
+	if err != nil {
+		return invalidParam(key, "Expected an integer.")
+	}
+	if value <= 0 {
+		return invalidParam(key, "Must be at least 1.")
 	}
 	return nil
 }
@@ -655,11 +689,23 @@ func validateApplicationFeeRefundUpdate(p params) error {
 
 func validateCheckoutSessionCreate(p params) error {
 	if err := p.validate(paramSpec{
-		Allowed:      []string{"customer", "customer_id", "mode", "success_url", "cancel_url", "price", "allow_promotion_codes", "coupon", "promotion_code"},
+		Allowed: []string{
+			"customer",
+			"customer_id",
+			"mode",
+			"success_url",
+			"cancel_url",
+			"price",
+			"allow_promotion_codes",
+			"coupon",
+			"promotion_code",
+			"automatic_tax[enabled]",
+			"tax_id_collection[enabled]",
+		},
 		AllowedRegex: []*regexp.Regexp{checkoutLineItemRE, legacyLineItemParamRE, checkoutSubscriptionDataRE, discountParamRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
 		Int64Params:  []string{"subscription_data[trial_period_days]"},
-		BoolParams:   []string{"allow_promotion_codes"},
+		BoolParams:   []string{"allow_promotion_codes", "automatic_tax[enabled]", "tax_id_collection[enabled]"},
 		EnumParams:   map[string][]string{"mode": {"subscription"}},
 		Positive:     []string{"subscription_data[trial_period_days]"},
 	}); err != nil {
@@ -696,10 +742,12 @@ func validateSubscriptionCreate(p params) error {
 			"test_clock",
 			"coupon",
 			"promotion_code",
+			"automatic_tax[enabled]",
 		},
 		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, discountParamRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
 		Int64Params:  []string{"days_until_due", "cancel_at", "billing_cycle_anchor"},
+		BoolParams:   []string{"automatic_tax[enabled]"},
 		Positive:     []string{"days_until_due"},
 		EnumParams: map[string][]string{
 			"collection_method": {"charge_automatically", "send_invoice"},
@@ -908,6 +956,11 @@ func validateInvoiceFinalize(p params) error {
 		Allowed:    []string{"auto_advance"},
 		BoolParams: []string{"auto_advance"},
 	})
+}
+
+func validateInvoiceSend(p params) error {
+	// Stripe InvoiceSendInvoiceParams only accepts expand (handled globally).
+	return p.validate(paramSpec{})
 }
 
 func validateInvoicePreview(p params) error {
@@ -1212,6 +1265,45 @@ func validatePaymentMethodUpdate(p params) error {
 	})
 }
 
+func validateTaxRateCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"display_name",
+			"percentage",
+			"inclusive",
+			"active",
+			"country",
+			"state",
+			"jurisdiction",
+			"description",
+		},
+		Required:      []string{"display_name", "percentage", "inclusive"},
+		BoolParams:    []string{"inclusive", "active"},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	if _, err := strconv.ParseFloat(p.string("percentage"), 64); err != nil {
+		return invalidParam("percentage", "Expected a number.")
+	}
+	return nil
+}
+
+func validateTaxRateUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"active", "display_name", "description"},
+		BoolParams:    []string{"active"},
+		AllowMetadata: true,
+	})
+}
+
+func validateCustomerTaxIDCreate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:  []string{"type", "value"},
+		Required: []string{"type", "value"},
+	})
+}
+
 func validateCouponCreate(p params) error {
 	if err := p.validate(paramSpec{
 		Allowed: []string{
@@ -1226,8 +1318,10 @@ func validateCouponCreate(p params) error {
 			"max_redemptions",
 		},
 		AllowedRegex: []*regexp.Regexp{couponAppliesToParamRE},
-		Int64Params:  []string{"percent_off", "amount_off", "duration_in_months", "redeem_by", "max_redemptions"},
-		Positive:     []string{"percent_off", "amount_off", "duration_in_months", "max_redemptions"},
+		// percent_off is a Stripe number (may be fractional, e.g. 12.5).
+		Int64Params:  []string{"amount_off", "duration_in_months", "redeem_by", "max_redemptions"},
+		FloatParams:  []string{"percent_off"},
+		Positive:     []string{"amount_off", "duration_in_months", "max_redemptions"},
 		EnumParams: map[string][]string{
 			"duration": {"forever", "once", "repeating"},
 		},
@@ -1238,11 +1332,24 @@ func validateCouponCreate(p params) error {
 	if !p.hasAny("percent_off", "amount_off") {
 		return missingParam("percent_off")
 	}
-	if p.has("percent_off") && p.int64("percent_off") > 100 {
-		return invalidParam("percent_off", "Must be at most 100.")
+	if p.has("percent_off") {
+		if err := p.validatePositiveFloat("percent_off"); err != nil {
+			return err
+		}
+		if p.float64("percent_off") > 100 {
+			return invalidParam("percent_off", "Must be at most 100.")
+		}
 	}
 	if p.has("amount_off") && !p.has("currency") {
 		return missingParam("currency")
+	}
+	duration := p.stringDefault("duration", "once")
+	if duration == "repeating" {
+		if !p.has("duration_in_months") {
+			return missingParam("duration_in_months")
+		}
+	} else if p.has("duration_in_months") {
+		return invalidParam("duration_in_months", "Can only be set when duration is repeating.")
 	}
 	return nil
 }

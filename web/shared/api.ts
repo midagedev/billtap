@@ -38,6 +38,10 @@ export type CheckoutSessionSummary = {
   customerEmail: string;
   plan: string;
   price: string;
+  amountSubtotal: string;
+  amountDiscount?: string;
+  amountTax?: string;
+  amountTotal: string;
   status: string;
   paymentStatus: string;
   subscriptionId: string;
@@ -570,7 +574,7 @@ function normalizePortalInvoice(value: unknown): Invoice[] {
     id,
     period: formatDateField(record, ["created_at", "createdAt", "created"]) ?? "Invoice",
     amount:
-      readMoney(record, ["total", "amount_paid", "amount_due", "subtotal"], ["currency"]) ??
+      readRecordMoney(record, ["total", "amount_paid", "amount_due", "subtotal"]) ??
       "$0.00",
     status: readString(record, ["status"], "draft"),
   }];
@@ -826,6 +830,14 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
   const paymentIntent =
     firstRecord(root, ["payment_intent", "paymentIntent"]) ??
     firstRecord(session, ["payment_intent", "paymentIntent"]);
+  const totalDetails = firstRecord(session, ["total_details", "totalDetails"]);
+  const automaticTax = firstRecord(session, ["automatic_tax", "automaticTax"]);
+  const currency = readString(session, ["currency"], "usd");
+  const amountSubtotal = readMinorMoney(session, ["amount_subtotal", "amountSubtotal"], currency);
+  const amountTotal = readMinorMoney(session, ["amount_total", "amountTotal"], currency);
+  const discountAmount = readNumber(totalDetails, ["amount_discount", "amountDiscount"], 0);
+  const taxAmount = readNumber(totalDetails, ["amount_tax", "amountTax"], 0);
+  const taxEnabled = automaticTax?.enabled === true;
 
   return {
     id: readString(session, ["id"], fallbackId),
@@ -837,8 +849,15 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
       readString(price, ["nickname", "lookup_key"], "") ||
       readString(session, ["plan", "plan_name", "planName"], fixtureSession.plan),
     price:
-      readMoney(session, ["amount_total", "amountSubtotal", "amount_total"], ["currency"]) ||
+      amountTotal ||
+      amountSubtotal ||
       readString(session, ["price", "amount"], fixtureSession.price),
+    amountSubtotal: amountSubtotal || amountTotal || fixtureSession.amountSubtotal,
+    amountDiscount: discountAmount > 0 ? formatMinorAmount(discountAmount, currency) : undefined,
+    amountTax: taxAmount > 0 || taxEnabled ? formatMinorAmount(taxAmount, currency) : undefined,
+    amountTotal:
+      amountTotal ||
+      readString(session, ["price", "amount"], fixtureSession.amountTotal),
     status: readString(session, ["status"], fixtureSession.status),
     paymentStatus: readString(session, ["payment_status", "paymentStatus"], fixtureSession.paymentStatus),
     subscriptionId: readObjectId(session.subscription) ?? readString(subscription, ["id"], fixtureSession.subscriptionId),
@@ -872,7 +891,7 @@ function normalizeLineItems(root: Record<string, unknown> | undefined, session: 
         readString(record, ["label", "description", "name"], "") ||
         readString(price, ["nickname", "lookup_key"], "Line item"),
       amount:
-        readMoney(record, ["amount_total", "amount", "unit_amount"], ["currency"]) ||
+        readRecordMoney(record, ["amount_total", "amount", "unit_amount"]) ||
         readString(record, ["display_amount"], fixtureSession.price),
     };
   });
@@ -1065,8 +1084,8 @@ function normalizeObjectRecord(record: Record<string, unknown>, type: DashboardO
           ["Customer", customer],
           ["Subscription", subscription],
           ["Payment intent", paymentIntent],
-          ["Amount due", readMoney(record, ["amount_due", "amountDue"], ["currency"])],
-          ["Amount paid", readMoney(record, ["amount_paid", "amountPaid"], ["currency"])],
+          ["Amount due", readRecordMoney(record, ["amount_due", "amountDue"])],
+          ["Amount paid", readRecordMoney(record, ["amount_paid", "amountPaid"])],
           ["Attempt count", readString(record, ["attempt_count", "attemptCount"], "")],
           ["Next payment attempt", formatDateField(record, ["next_payment_attempt", "nextPaymentAttempt"])],
         ]),
@@ -1181,14 +1200,14 @@ function objectStatus(record: Record<string, unknown>, type: DashboardObjectType
 function objectAmount(record: Record<string, unknown>, type: DashboardObjectType): string | undefined {
   if (type === "invoices") {
     return (
-      readMoney(record, ["total", "amount_due", "amountDue", "subtotal"], ["currency"]) ||
+      readRecordMoney(record, ["total", "amount_due", "amountDue", "subtotal"]) ||
       undefined
     );
   }
   if (type === "paymentIntents") {
-    return readMoney(record, ["amount"], ["currency"]) || undefined;
+    return readRecordMoney(record, ["amount"]) || undefined;
   }
-  return readMoney(record, ["amount_total", "amountTotal", "total"], ["currency"]) || undefined;
+  return readRecordMoney(record, ["amount_total", "amountTotal", "total"]) || undefined;
 }
 
 function compactFields(items: Array<[string, string | undefined]>): { label: string; value: string }[] {
@@ -1428,15 +1447,31 @@ function formatTime(value: string): string {
   return value;
 }
 
-function readMoney(record: Record<string, unknown> | undefined, amountKeys: string[], currencyKeys: string[]): string | undefined {
-  const amount = readNumber(record, amountKeys, Number.NaN);
-  if (Number.isNaN(amount)) return undefined;
-  const currency = readString(record, currencyKeys, "usd").toUpperCase();
-  const normalized = amount > 999 ? amount / 100 : amount;
+// Currencies Stripe reports without a minor unit, so their amounts are not divided by 100.
+const zeroDecimalCurrencies = new Set([
+  "bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga",
+  "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf",
+]);
+
+function formatMinorAmount(amount: number, currency: string): string {
+  const code = (currency || "usd").toLowerCase();
+  const value = zeroDecimalCurrencies.has(code) ? amount : amount / 100;
   return new Intl.NumberFormat("en-US", {
     style: "currency",
-    currency,
-  }).format(normalized);
+    currency: code.toUpperCase(),
+  }).format(value);
+}
+
+function readMinorMoney(record: Record<string, unknown> | undefined, keys: string[], currency: string): string | undefined {
+  const amount = readNumber(record, keys, Number.NaN);
+  if (Number.isNaN(amount)) return undefined;
+  return formatMinorAmount(amount, currency);
+}
+
+// Money fields on Stripe-shaped records are integer minor units, and the record
+// carries the currency they are denominated in.
+function readRecordMoney(record: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  return readMinorMoney(record, keys, readString(record, ["currency"], "usd"));
 }
 
 function readString(record: Record<string, unknown> | undefined, keys: string[], fallback: string): string {

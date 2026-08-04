@@ -81,16 +81,23 @@ type LineItem struct {
 }
 
 type Discount struct {
-	ID              string            `json:"id,omitempty"`
-	Object          string            `json:"object,omitempty"`
-	CouponID        string            `json:"coupon,omitempty"`
-	PromotionCodeID string            `json:"promotion_code,omitempty"`
-	PercentOff      int64             `json:"percent_off,omitempty"`
-	AmountOff       int64             `json:"amount_off,omitempty"`
-	Currency        string            `json:"currency,omitempty"`
-	Duration        string            `json:"duration,omitempty"`
-	Metadata        map[string]string `json:"metadata,omitempty"`
-	CreatedAt       time.Time         `json:"created_at,omitempty"`
+	ID                string            `json:"id,omitempty"`
+	Object            string            `json:"object,omitempty"`
+	CouponID          string            `json:"coupon,omitempty"`
+	PromotionCodeID   string            `json:"promotion_code,omitempty"`
+	PercentOff        float64           `json:"percent_off,omitempty"`
+	AmountOff         int64             `json:"amount_off,omitempty"`
+	Currency          string            `json:"currency,omitempty"`
+	Duration          string            `json:"duration,omitempty"`
+	AppliesToProducts []string          `json:"applies_to_products,omitempty"`
+	Metadata          map[string]string `json:"metadata,omitempty"`
+	CreatedAt         time.Time         `json:"created_at,omitempty"`
+}
+
+// LineAmount is a priced line contribution used for product-scoped discounts.
+type LineAmount struct {
+	ProductID string
+	Amount    int64
 }
 
 type CheckoutSession struct {
@@ -104,14 +111,19 @@ type CheckoutSession struct {
 	CancelURL           string     `json:"cancel_url,omitempty"`
 	AllowPromotionCodes bool       `json:"allow_promotion_codes,omitempty"`
 	TrialPeriodDays     int64      `json:"trial_period_days,omitempty"`
-	URL                 string     `json:"url"`
-	Status              string     `json:"status"`
-	PaymentStatus       string     `json:"payment_status"`
-	SubscriptionID      string     `json:"subscription,omitempty"`
-	InvoiceID           string     `json:"invoice,omitempty"`
-	PaymentIntentID     string     `json:"payment_intent,omitempty"`
-	CreatedAt           time.Time  `json:"created_at"`
-	CompletedAt         *time.Time `json:"completed_at,omitempty"`
+	// Stored as distinct keys so Stripe API objects (automatic_tax/tax_id_collection
+	// maps) do not collide when tests or clients decode session responses into this type.
+	AutomaticTax    bool       `json:"automatic_tax_enabled,omitempty"`
+	TaxIDCollection bool       `json:"tax_id_collection_enabled,omitempty"`
+	TaxPercent      float64    `json:"tax_percent,omitempty"`
+	URL             string     `json:"url"`
+	Status          string     `json:"status"`
+	PaymentStatus   string     `json:"payment_status"`
+	SubscriptionID  string     `json:"subscription,omitempty"`
+	InvoiceID       string     `json:"invoice,omitempty"`
+	PaymentIntentID string     `json:"payment_intent,omitempty"`
+	CreatedAt       time.Time  `json:"created_at"`
+	CompletedAt     *time.Time `json:"completed_at,omitempty"`
 }
 
 type Subscription struct {
@@ -129,15 +141,18 @@ type Subscription struct {
 }
 
 type Invoice struct {
-	ID                 string            `json:"id"`
-	Object             string            `json:"object"`
-	CustomerID         string            `json:"customer"`
-	SubscriptionID     string            `json:"subscription,omitempty"`
-	Status             string            `json:"status"`
-	Currency           string            `json:"currency"`
-	Subtotal           int64             `json:"subtotal"`
-	DiscountAmount     int64             `json:"discount_amount,omitempty"`
-	Discounts          []Discount        `json:"discounts,omitempty"`
+	ID             string     `json:"id"`
+	Object         string     `json:"object"`
+	CustomerID     string     `json:"customer"`
+	SubscriptionID string     `json:"subscription,omitempty"`
+	Status         string     `json:"status"`
+	Currency       string     `json:"currency"`
+	Subtotal       int64      `json:"subtotal"`
+	DiscountAmount int64      `json:"discount_amount,omitempty"`
+	Discounts      []Discount `json:"discounts,omitempty"`
+	// automatic_tax_enabled avoids collision with Stripe's automatic_tax object shape.
+	AutomaticTax       bool              `json:"automatic_tax_enabled,omitempty"`
+	Tax                int64             `json:"tax"`
 	Total              int64             `json:"total"`
 	AmountDue          int64             `json:"amount_due"`
 	AmountPaid         int64             `json:"amount_paid"`

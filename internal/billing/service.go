@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -25,6 +26,9 @@ const (
 	MetadataDiscountCurrency        = "billtap_discount_currency"
 	MetadataDiscountDuration        = "billtap_discount_duration"
 	MetadataDiscountCreated         = "billtap_discount_created"
+	MetadataDiscountAppliesTo       = "billtap_discount_applies_to"
+	MetadataAutomaticTax            = "billtap_automatic_tax"
+	MetadataTaxPercent              = "billtap_tax_percent"
 )
 
 type Repository interface {
@@ -392,6 +396,7 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 
 	subtotal := int64(0)
 	currency := "usd"
+	lineAmounts := make([]LineAmount, 0, len(session.LineItems))
 	for _, item := range session.LineItems {
 		price, err := s.repo.GetPrice(ctx, item.PriceID)
 		if err != nil {
@@ -400,7 +405,13 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		if price.Currency != "" {
 			currency = price.Currency
 		}
-		subtotal += price.UnitAmount * item.Quantity
+		quantity := item.Quantity
+		if quantity <= 0 {
+			quantity = 1
+		}
+		amount := price.UnitAmount * quantity
+		subtotal += amount
+		lineAmounts = append(lineAmounts, LineAmount{ProductID: price.ProductID, Amount: amount})
 	}
 
 	now := s.now()
@@ -408,7 +419,8 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		now = opts.At
 	}
 	discounts := normalizeDiscounts(session.Discounts, now)
-	discountedTotal, discountAmount := ApplyDiscounts(subtotal, currency, discounts)
+	eligibleBase := EligibleDiscountBase(subtotal, discounts, lineAmounts)
+	discountedTotal, discountAmount := ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
 	periodEnd := now.AddDate(0, 1, 0)
 	paid := outcomeSpec.Paid
 	trialing := paid && session.TrialPeriodDays > 0
@@ -418,10 +430,16 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	invoiceSubtotal := subtotal
 	invoiceTotal := discountedTotal
 	invoiceDiscountAmount := discountAmount
+	invoiceTax := int64(0)
+	if session.AutomaticTax && !trialing {
+		invoiceTax = ExclusiveTaxAmount(discountedTotal, session.TaxPercent)
+		invoiceTotal = discountedTotal + invoiceTax
+	}
 	if trialing {
 		invoiceSubtotal = 0
 		invoiceTotal = 0
 		invoiceDiscountAmount = 0
+		invoiceTax = 0
 	}
 	invoiceAttemptCount := 1
 	if outcomeSpec.InvoiceAttemptCount != nil {
@@ -439,6 +457,7 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		Metadata:           map[string]string{"checkout_session": session.ID},
 	}
 	sub.Metadata = MergeDiscountMetadata(sub.Metadata, discounts)
+	sub.Metadata = MergeTaxMetadata(sub.Metadata, session.AutomaticTax, session.TaxPercent)
 	if trialing {
 		sub.Status = "trialing"
 		sub.Metadata["trial_period_days"] = fmt.Sprintf("%d", session.TrialPeriodDays)
@@ -455,6 +474,8 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		Subtotal:       invoiceSubtotal,
 		DiscountAmount: invoiceDiscountAmount,
 		Discounts:      discounts,
+		AutomaticTax:   session.AutomaticTax,
+		Tax:            invoiceTax,
 		Total:          invoiceTotal,
 		AmountDue:      0,
 		AmountPaid:     invoiceTotal,
@@ -772,6 +793,56 @@ func (s *Service) FinalizeInvoice(ctx context.Context, invoiceID string) (Invoic
 		return InvoicePaymentResult{}, err
 	}
 	return InvoicePaymentResult{Invoice: updatedInvoice, PaymentIntent: createdIntent}, nil
+}
+
+// SendInvoice records local email-send evidence for an open invoice.
+// No real email is delivered; metadata and timeline/webhook consumers observe the attempt.
+func (s *Service) SendInvoice(ctx context.Context, invoiceID string) (Invoice, error) {
+	if strings.TrimSpace(invoiceID) == "" {
+		return Invoice{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
+	}
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	switch strings.ToLower(strings.TrimSpace(invoice.Status)) {
+	case "open", "paid":
+		// Stripe allows send for open and paid (paid emails omit payment reference).
+	case "draft":
+		return Invoice{}, fmt.Errorf("%w: Invoice must be finalized before it can be sent.", ErrInvalidInput)
+	case "void", "uncollectible":
+		return Invoice{}, fmt.Errorf("%w: Invoice is no longer open.", ErrInvalidInput)
+	default:
+		return Invoice{}, fmt.Errorf("%w: Invoice is no longer open.", ErrInvalidInput)
+	}
+
+	at := s.now().UTC()
+	invoice.Metadata = copyMap(invoice.Metadata)
+	if invoice.Metadata == nil {
+		invoice.Metadata = map[string]string{}
+	}
+	invoice.Metadata["billtap_email_sent_at"] = at.Format(time.RFC3339)
+	if invoice.CustomerID != "" {
+		if customer, err := s.repo.GetCustomer(ctx, invoice.CustomerID); err == nil {
+			if email := strings.TrimSpace(customer.Email); email != "" {
+				invoice.Metadata["billtap_email_recipient"] = email
+			}
+		}
+	}
+	return s.repo.UpdateInvoice(ctx, invoice, []TimelineEntry{billingTimelineEntry(
+		"invoice_sent_"+invoice.ID+"_"+at.Format(time.RFC3339Nano),
+		"invoice.sent",
+		"Invoice email evidence recorded",
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoice.send", "status": invoice.Status},
+		at,
+	)})
 }
 
 func (s *Service) PayInvoice(ctx context.Context, invoiceID string, opts InvoicePaymentOptions) (InvoicePaymentResult, error) {
@@ -1837,12 +1908,19 @@ func (s *Service) activateTrialSubscriptionAtClock(ctx context.Context, sub Subs
 }
 
 func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at time.Time) (InvoicePaymentResult, error) {
-	subtotal, currency, err := s.subscriptionTotal(ctx, sub.Items)
+	subtotal, currency, lineAmounts, err := s.subscriptionLineAmounts(ctx, sub.Items)
 	if err != nil {
 		return InvoicePaymentResult{}, err
 	}
 	discounts := DiscountsFromMetadata(sub.Metadata)
-	total, discountAmount := ApplyDiscounts(subtotal, currency, discounts)
+	eligibleBase := EligibleDiscountBase(subtotal, discounts, lineAmounts)
+	total, discountAmount := ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
+	automaticTax, taxPercent := AutomaticTaxFromMetadata(sub.Metadata)
+	tax := int64(0)
+	if automaticTax {
+		tax = ExclusiveTaxAmount(total, taxPercent)
+		total = total + tax
+	}
 	periodStart := sub.CurrentPeriodEnd
 	if periodStart.IsZero() {
 		periodStart = at
@@ -1876,6 +1954,8 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		Subtotal:       subtotal,
 		DiscountAmount: discountAmount,
 		Discounts:      discounts,
+		AutomaticTax:   automaticTax,
+		Tax:            tax,
 		Total:          total,
 		AmountDue:      0,
 		AmountPaid:     total,
@@ -2082,12 +2162,18 @@ func renewalFailureSubscriptionStatus(outcome string) string {
 }
 
 func (s *Service) subscriptionTotal(ctx context.Context, items []LineItem) (int64, string, error) {
+	total, currency, _, err := s.subscriptionLineAmounts(ctx, items)
+	return total, currency, err
+}
+
+func (s *Service) subscriptionLineAmounts(ctx context.Context, items []LineItem) (int64, string, []LineAmount, error) {
 	total := int64(0)
 	currency := "usd"
+	lineAmounts := make([]LineAmount, 0, len(items))
 	for _, item := range items {
 		price, err := s.repo.GetPrice(ctx, item.PriceID)
 		if err != nil {
-			return 0, "", err
+			return 0, "", nil, err
 		}
 		if price.Currency != "" {
 			currency = price.Currency
@@ -2096,9 +2182,11 @@ func (s *Service) subscriptionTotal(ctx context.Context, items []LineItem) (int6
 		if quantity <= 0 {
 			quantity = 1
 		}
-		total += price.UnitAmount * quantity
+		amount := price.UnitAmount * quantity
+		total += amount
+		lineAmounts = append(lineAmounts, LineAmount{ProductID: price.ProductID, Amount: amount})
 	}
-	return total, currency, nil
+	return total, currency, lineAmounts, nil
 }
 
 func normalizeDiscounts(discounts []Discount, now time.Time) []Discount {
@@ -2152,21 +2240,68 @@ func sanitizeDiscountID(value string) string {
 
 // ApplyDiscounts applies Billtap's bounded Stripe-style discount subset.
 // It supports a single effective coupon or promotion-code discount and never
-// lets the invoice total become negative.
+// lets the invoice total become negative. Product-scoped coupons should use
+// ApplyDiscountsWithEligibleBase with an eligible base computed from matching
+// line items; this helper treats the full subtotal as eligible.
 func ApplyDiscounts(subtotal int64, currency string, discounts []Discount) (int64, int64) {
+	return ApplyDiscountsWithEligibleBase(subtotal, subtotal, currency, discounts)
+}
+
+// EligibleDiscountBase returns the amount a product-scoped discount may apply
+// to. When the effective discount has no product restriction, it returns
+// subtotal unchanged.
+func EligibleDiscountBase(subtotal int64, discounts []Discount, lines []LineAmount) int64 {
+	if len(discounts) == 0 || len(discounts[0].AppliesToProducts) == 0 {
+		return subtotal
+	}
+	allowed := make(map[string]struct{}, len(discounts[0].AppliesToProducts))
+	for _, productID := range discounts[0].AppliesToProducts {
+		productID = strings.TrimSpace(productID)
+		if productID != "" {
+			allowed[productID] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return subtotal
+	}
+	var base int64
+	for _, line := range lines {
+		if _, ok := allowed[strings.TrimSpace(line.ProductID)]; ok {
+			base += line.Amount
+		}
+	}
+	return base
+}
+
+// ApplyDiscountsWithEligibleBase applies a single effective discount against
+// eligibleBase (product-scoped or full subtotal) and never lets the total go
+// negative relative to subtotal.
+func ApplyDiscountsWithEligibleBase(subtotal int64, eligibleBase int64, currency string, discounts []Discount) (int64, int64) {
 	if subtotal <= 0 || len(discounts) == 0 {
 		return subtotal, 0
+	}
+	if eligibleBase < 0 {
+		eligibleBase = 0
+	}
+	if eligibleBase > subtotal {
+		eligibleBase = subtotal
 	}
 	discount := discounts[0]
 	amount := int64(0)
 	if discount.PercentOff > 0 {
-		if discount.PercentOff > 100 {
-			discount.PercentOff = 100
+		percentOff := discount.PercentOff
+		if percentOff > 100 {
+			percentOff = 100
 		}
-		amount = subtotal * discount.PercentOff / 100
+		// Stripe-compatible: round half away from zero (math.Round).
+		// Integer percents that divide evenly keep the prior integer-division result.
+		amount = int64(math.Round(float64(eligibleBase) * percentOff / 100.0))
 	} else if discount.AmountOff > 0 {
 		if discount.Currency == "" || strings.EqualFold(discount.Currency, currency) {
 			amount = discount.AmountOff
+			if amount > eligibleBase {
+				amount = eligibleBase
+			}
 		}
 	}
 	if amount > subtotal {
@@ -2185,12 +2320,66 @@ func MergeDiscountMetadata(metadata map[string]string, discounts []Discount) map
 	discount := normalizeDiscounts(discounts, time.Now().UTC())[0]
 	metadata[MetadataDiscountCouponID] = discount.CouponID
 	metadata[MetadataDiscountPromotionCodeID] = discount.PromotionCodeID
-	metadata[MetadataDiscountPercentOff] = strconv.FormatInt(discount.PercentOff, 10)
+	metadata[MetadataDiscountPercentOff] = strconv.FormatFloat(discount.PercentOff, 'f', -1, 64)
 	metadata[MetadataDiscountAmountOff] = strconv.FormatInt(discount.AmountOff, 10)
 	metadata[MetadataDiscountCurrency] = strings.ToLower(discount.Currency)
 	metadata[MetadataDiscountDuration] = discount.Duration
 	metadata[MetadataDiscountCreated] = discount.CreatedAt.Format(time.RFC3339Nano)
+	if len(discount.AppliesToProducts) > 0 {
+		metadata[MetadataDiscountAppliesTo] = strings.Join(discount.AppliesToProducts, ",")
+	} else {
+		delete(metadata, MetadataDiscountAppliesTo)
+	}
 	return metadata
+}
+
+// ParseCustomerTaxPercent reads customer metadata tax_percent. Invalid or
+// negative values are treated as 0.
+func ParseCustomerTaxPercent(metadata map[string]string) float64 {
+	if metadata == nil {
+		return 0
+	}
+	value, err := strconv.ParseFloat(strings.TrimSpace(metadata["tax_percent"]), 64)
+	if err != nil || value < 0 {
+		return 0
+	}
+	return value
+}
+
+// ExclusiveTaxAmount applies exclusive tax after discounts.
+func ExclusiveTaxAmount(amountAfterDiscount int64, taxPercent float64) int64 {
+	if amountAfterDiscount <= 0 || taxPercent <= 0 {
+		return 0
+	}
+	return int64(math.Round(float64(amountAfterDiscount) * taxPercent / 100.0))
+}
+
+// MergeTaxMetadata snapshots automatic tax flags onto subscription metadata.
+func MergeTaxMetadata(metadata map[string]string, automaticTax bool, taxPercent float64) map[string]string {
+	if !automaticTax {
+		return metadata
+	}
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata[MetadataAutomaticTax] = "true"
+	metadata[MetadataTaxPercent] = strconv.FormatFloat(taxPercent, 'f', -1, 64)
+	return metadata
+}
+
+// AutomaticTaxFromMetadata restores the automatic-tax snapshot from subscription metadata.
+func AutomaticTaxFromMetadata(metadata map[string]string) (bool, float64) {
+	if metadata == nil {
+		return false, 0
+	}
+	if strings.TrimSpace(metadata[MetadataAutomaticTax]) != "true" {
+		return false, 0
+	}
+	percent, err := strconv.ParseFloat(strings.TrimSpace(metadata[MetadataTaxPercent]), 64)
+	if err != nil || percent < 0 {
+		percent = 0
+	}
+	return true, percent
 }
 
 func ClearDiscountMetadata(metadata map[string]string) map[string]string {
@@ -2205,6 +2394,7 @@ func ClearDiscountMetadata(metadata map[string]string) map[string]string {
 		MetadataDiscountCurrency,
 		MetadataDiscountDuration,
 		MetadataDiscountCreated,
+		MetadataDiscountAppliesTo,
 	} {
 		delete(metadata, key)
 	}
@@ -2217,20 +2407,30 @@ func DiscountsFromMetadata(metadata map[string]string) []Discount {
 	}
 	couponID := strings.TrimSpace(metadata[MetadataDiscountCouponID])
 	promotionCodeID := strings.TrimSpace(metadata[MetadataDiscountPromotionCodeID])
-	percentOff, _ := strconv.ParseInt(strings.TrimSpace(metadata[MetadataDiscountPercentOff]), 10, 64)
+	percentOff, _ := strconv.ParseFloat(strings.TrimSpace(metadata[MetadataDiscountPercentOff]), 64)
 	amountOff, _ := strconv.ParseInt(strings.TrimSpace(metadata[MetadataDiscountAmountOff]), 10, 64)
 	if couponID == "" && promotionCodeID == "" && percentOff == 0 && amountOff == 0 {
 		return nil
 	}
 	createdAt, _ := parseMetadataTime(metadata[MetadataDiscountCreated])
+	var appliesTo []string
+	if raw := strings.TrimSpace(metadata[MetadataDiscountAppliesTo]); raw != "" {
+		for _, part := range strings.Split(raw, ",") {
+			part = strings.TrimSpace(part)
+			if part != "" {
+				appliesTo = append(appliesTo, part)
+			}
+		}
+	}
 	return normalizeDiscounts([]Discount{{
-		CouponID:        couponID,
-		PromotionCodeID: promotionCodeID,
-		PercentOff:      percentOff,
-		AmountOff:       amountOff,
-		Currency:        strings.ToLower(strings.TrimSpace(metadata[MetadataDiscountCurrency])),
-		Duration:        firstNonEmpty(metadata[MetadataDiscountDuration], "once"),
-		CreatedAt:       createdAt,
+		CouponID:          couponID,
+		PromotionCodeID:   promotionCodeID,
+		PercentOff:        percentOff,
+		AmountOff:         amountOff,
+		Currency:          strings.ToLower(strings.TrimSpace(metadata[MetadataDiscountCurrency])),
+		Duration:          firstNonEmpty(metadata[MetadataDiscountDuration], "once"),
+		AppliesToProducts: appliesTo,
+		CreatedAt:         createdAt,
 	}}, time.Now().UTC())
 }
 

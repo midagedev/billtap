@@ -20,6 +20,8 @@ type localEvidenceStore struct {
 	cashBalances   map[string]int64
 	cashTxs        map[string][]map[string]any
 	disputes       map[string]map[string]any
+	taxRates       map[string]map[string]any
+	taxIDs         map[string]map[string]any
 }
 
 func newLocalEvidenceStore() *localEvidenceStore {
@@ -30,6 +32,8 @@ func newLocalEvidenceStore() *localEvidenceStore {
 		cashBalances:   map[string]int64{},
 		cashTxs:        map[string][]map[string]any{},
 		disputes:       map[string]map[string]any{},
+		taxRates:       map[string]map[string]any{},
+		taxIDs:         map[string]map[string]any{},
 	}
 }
 
@@ -51,23 +55,39 @@ func (h *Handler) handleCoupons(w http.ResponseWriter, r *http.Request) {
 			id = "coupon_" + strconv.FormatInt(now.UnixNano(), 36)
 		}
 		coupon := map[string]any{
-			"id":          id,
-			"object":      "coupon",
-			"name":        emptyToNil(p.string("name")),
-			"duration":    p.stringDefault("duration", "once"),
-			"percent_off": nil,
-			"amount_off":  nil,
-			"currency":    emptyToNil(p.string("currency")),
-			"valid":       true,
-			"metadata":    nonNilMap(p.metadata()),
-			"created":     now.Unix(),
-			"livemode":    false,
+			"id":                 id,
+			"object":             "coupon",
+			"name":               emptyToNil(p.string("name")),
+			"duration":           p.stringDefault("duration", "once"),
+			"percent_off":        nil,
+			"amount_off":         nil,
+			"currency":           emptyToNil(p.string("currency")),
+			"duration_in_months": nil,
+			"max_redemptions":    nil,
+			"redeem_by":          nil,
+			"times_redeemed":     int64(0),
+			"valid":              true,
+			"metadata":           nonNilMap(p.metadata()),
+			"created":            now.Unix(),
+			"livemode":           false,
 		}
 		if p.has("percent_off") {
-			coupon["percent_off"] = p.int64("percent_off")
+			coupon["percent_off"] = p.float64("percent_off")
 		}
 		if p.has("amount_off") {
 			coupon["amount_off"] = p.int64("amount_off")
+		}
+		if p.has("duration_in_months") {
+			coupon["duration_in_months"] = p.int64("duration_in_months")
+		}
+		if p.has("max_redemptions") {
+			coupon["max_redemptions"] = p.int64("max_redemptions")
+		}
+		if p.has("redeem_by") {
+			coupon["redeem_by"] = p.int64("redeem_by")
+		}
+		if products := p.appliesToProducts(); len(products) > 0 {
+			coupon["applies_to"] = map[string]any{"products": products}
 		}
 		h.local.mu.Lock()
 		h.local.coupons[id] = coupon
@@ -187,6 +207,200 @@ func (h *Handler) handlePromotionCode(w http.ResponseWriter, r *http.Request) {
 
 func evidenceCouponRef(id string) map[string]any {
 	return map[string]any{"id": id, "object": "coupon"}
+}
+
+func (h *Handler) handleTaxRates(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateTaxRateCreate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		now := time.Now().UTC()
+		id := "txr_" + strconv.FormatInt(now.UnixNano(), 36)
+		percentage, _ := strconv.ParseFloat(p.string("percentage"), 64)
+		taxRate := map[string]any{
+			"id":                   id,
+			"object":               "tax_rate",
+			"display_name":         p.string("display_name"),
+			"percentage":           percentage,
+			"inclusive":            p.boolDefault("inclusive", false),
+			"active":               p.boolDefault("active", true),
+			"country":              emptyToNil(p.string("country")),
+			"state":                emptyToNil(p.string("state")),
+			"jurisdiction":         emptyToNil(p.string("jurisdiction")),
+			"description":          emptyToNil(p.string("description")),
+			"effective_percentage": nil,
+			"flat_amount":          nil,
+			"jurisdiction_level":   nil,
+			"rate_type":            "percentage",
+			"tax_type":             nil,
+			"metadata":             nonNilMap(p.metadata()),
+			"created":              now.Unix(),
+			"livemode":             false,
+		}
+		h.local.mu.Lock()
+		h.local.taxRates[id] = taxRate
+		h.local.mu.Unlock()
+		writeJSON(w, http.StatusOK, cloneEvidence(taxRate))
+	case http.MethodGet:
+		h.local.mu.Lock()
+		data := evidenceList(h.local.taxRates)
+		h.local.mu.Unlock()
+		writeJSON(w, http.StatusOK, stripeList(r.URL.Path, data))
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleTaxRate(w http.ResponseWriter, r *http.Request) {
+	id := strings.Trim(strings.TrimPrefix(r.URL.Path, "/v1/tax_rates/"), "/")
+	if id == "" || strings.Contains(id, "/") {
+		h.notFound(w, r)
+		return
+	}
+	h.local.mu.Lock()
+	taxRate, ok := h.local.taxRates[id]
+	h.local.mu.Unlock()
+	if !ok {
+		writeResult(w, nil, billing.ErrNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, cloneEvidence(taxRate))
+	case http.MethodPost:
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateTaxRateUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		h.local.mu.Lock()
+		current := h.local.taxRates[id]
+		if p.has("active") {
+			current["active"] = p.boolDefault("active", true)
+		}
+		if p.has("display_name") {
+			current["display_name"] = p.string("display_name")
+		}
+		if p.has("description") {
+			current["description"] = emptyToNil(p.string("description"))
+		}
+		if metadata := p.metadata(); metadata != nil {
+			merged := map[string]string{}
+			if existing, ok := current["metadata"].(map[string]string); ok {
+				for key, value := range existing {
+					merged[key] = value
+				}
+			} else if existing, ok := current["metadata"].(map[string]any); ok {
+				for key, value := range existing {
+					merged[key] = fmt.Sprint(value)
+				}
+			}
+			for key, value := range metadata {
+				merged[key] = value
+			}
+			current["metadata"] = nonNilMap(merged)
+		}
+		h.local.taxRates[id] = current
+		h.local.mu.Unlock()
+		writeJSON(w, http.StatusOK, cloneEvidence(current))
+	default:
+		h.methodNotAllowed(w, r, "GET, POST")
+	}
+}
+
+func (h *Handler) handleCustomerTaxIDs(w http.ResponseWriter, r *http.Request, customerID string, taxID string) {
+	customer, err := h.billing.GetCustomer(r.Context(), customerID)
+	if err := validateCustomerExists(customer, err); err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if taxID == "" {
+		switch r.Method {
+		case http.MethodPost:
+			p, err := parseParams(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := validateCustomerTaxIDCreate(p); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			now := time.Now().UTC()
+			id := "txi_" + strconv.FormatInt(now.UnixNano(), 36)
+			taxIDObj := map[string]any{
+				"id":               id,
+				"object":           "tax_id",
+				"country":          nil,
+				"created":          now.Unix(),
+				"customer":         customer.ID,
+				"customer_account": nil,
+				"livemode":         false,
+				"type":             p.string("type"),
+				"value":            p.string("value"),
+				"owner": map[string]any{
+					"type":             "customer",
+					"customer":         customer.ID,
+					"customer_account": nil,
+				},
+				"verification": map[string]any{
+					"status":           "verified",
+					"verified_address": nil,
+					"verified_name":    nil,
+				},
+			}
+			h.local.mu.Lock()
+			h.local.taxIDs[id] = taxIDObj
+			h.local.mu.Unlock()
+			writeJSON(w, http.StatusOK, cloneEvidence(taxIDObj))
+		case http.MethodGet:
+			h.local.mu.Lock()
+			data := make([]map[string]any, 0)
+			for _, item := range h.local.taxIDs {
+				if fmt.Sprint(item["customer"]) == customer.ID {
+					data = append(data, cloneEvidence(item))
+				}
+			}
+			h.local.mu.Unlock()
+			writeJSON(w, http.StatusOK, stripeList(r.URL.Path, data))
+		default:
+			h.methodNotAllowed(w, r, "GET, POST")
+		}
+		return
+	}
+	if strings.Contains(taxID, "/") {
+		h.notFound(w, r)
+		return
+	}
+	h.local.mu.Lock()
+	item, ok := h.local.taxIDs[taxID]
+	h.local.mu.Unlock()
+	if !ok || fmt.Sprint(item["customer"]) != customer.ID {
+		writeResult(w, nil, billing.ErrNotFound)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, cloneEvidence(item))
+	case http.MethodDelete:
+		h.local.mu.Lock()
+		delete(h.local.taxIDs, taxID)
+		h.local.mu.Unlock()
+		writeJSON(w, http.StatusOK, stripeDeleted(taxID, "tax_id"))
+	default:
+		h.methodNotAllowed(w, r, "GET, DELETE")
+	}
 }
 
 func filterPromotionCodeEvidence(data []map[string]any, r *http.Request) []map[string]any {
@@ -693,6 +907,26 @@ func asInt64Evidence(value any) (int64, bool) {
 		return int64(v), true
 	case string:
 		parsed, err := strconv.ParseInt(v, 10, 64)
+		return parsed, err == nil
+	default:
+		return 0, false
+	}
+}
+
+func asFloat64Evidence(value any) (float64, bool) {
+	switch v := value.(type) {
+	case float64:
+		return v, true
+	case float32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case string:
+		parsed, err := strconv.ParseFloat(v, 64)
 		return parsed, err == nil
 	default:
 		return 0, false
