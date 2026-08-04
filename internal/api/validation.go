@@ -22,7 +22,10 @@ var (
 	retryBackoffParamRE        = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
 	checkoutLineItemRE         = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
 	legacyLineItemParamRE      = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
-	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days)\]$`)
+	// Accept trial_period_days and default_tax_rates in [] / [N] forms
+	// (firstValues leaves single-value [] keys unexpanded).
+	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days|default_tax_rates)\](\[\d*\])?$`)
+	defaultTaxRatesParamRE     = regexp.MustCompile(`^default_tax_rates(\[\d*\])?$`)
 	discountParamRE            = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
 	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
 	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
@@ -711,6 +714,9 @@ func validateCheckoutSessionCreate(p params) error {
 	}); err != nil {
 		return err
 	}
+	if err := validateDefaultTaxRatesVsAutomaticTax(p, "subscription_data[default_tax_rates]", p.boolDefault("automatic_tax[enabled]", false)); err != nil {
+		return err
+	}
 	lineItemIndexes := p.lineItemIndexes()
 	if len(lineItemIndexes) == 0 && !p.has("price") {
 		return missingParam("line_items")
@@ -744,7 +750,7 @@ func validateSubscriptionCreate(p params) error {
 			"promotion_code",
 			"automatic_tax[enabled]",
 		},
-		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, discountParamRE},
+		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, discountParamRE, defaultTaxRatesParamRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
 		Int64Params:  []string{"days_until_due", "cancel_at", "billing_cycle_anchor"},
 		BoolParams:   []string{"automatic_tax[enabled]"},
@@ -754,6 +760,9 @@ func validateSubscriptionCreate(p params) error {
 		},
 		AllowMetadata: true,
 	}); err != nil {
+		return err
+	}
+	if err := validateDefaultTaxRatesVsAutomaticTax(p, "default_tax_rates", p.boolDefault("automatic_tax[enabled]", false)); err != nil {
 		return err
 	}
 	itemIndexes := p.subscriptionItemIndexes()
@@ -786,8 +795,10 @@ func validateSubscriptionUpdate(p params) error {
 			"trial_end",
 			"coupon",
 			"promotion_code",
+			// Emptyable clear form: default_tax_rates="" (single empty string).
+			"default_tax_rates",
 		},
-		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE, discountParamRE},
+		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE, discountParamRE, defaultTaxRatesParamRE},
 		BoolParams:   []string{"cancel_at_period_end"},
 		Int64Params:  []string{"pause_collection[resumes_at]", "proration_date"},
 		EnumParams: map[string][]string{
@@ -1510,4 +1521,29 @@ func validateCustomerExists(customer billing.Customer, err error) error {
 		return billing.ErrNotFound
 	}
 	return nil
+}
+
+// validateDefaultTaxRatesVsAutomaticTax rejects simultaneous automatic_tax and default_tax_rates.
+// Presence of any non-empty default_tax_rates ID is enough; empty clear values are ignored.
+func validateDefaultTaxRatesVsAutomaticTax(p params, prefix string, automaticTax bool) error {
+	if !automaticTax {
+		return nil
+	}
+	ids := p.defaultTaxRateIDs(prefix)
+	if len(ids) == 0 {
+		return nil
+	}
+	return &validationError{
+		Param:   "default_tax_rates",
+		Code:    stripeCodeParamInvalid,
+		Message: "You cannot specify both automatic_tax[enabled]=true and default_tax_rates.",
+	}
+}
+
+func missingTaxRate(id string) *validationError {
+	return &validationError{
+		Param:   "default_tax_rates",
+		Code:    "resource_missing",
+		Message: fmt.Sprintf("No such tax rate: '%s'", id),
+	}
 }

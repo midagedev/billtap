@@ -116,14 +116,24 @@ type CheckoutSession struct {
 	AutomaticTax    bool       `json:"automatic_tax_enabled,omitempty"`
 	TaxIDCollection bool       `json:"tax_id_collection_enabled,omitempty"`
 	TaxPercent      float64    `json:"tax_percent,omitempty"`
-	URL             string     `json:"url"`
-	Status          string     `json:"status"`
-	PaymentStatus   string     `json:"payment_status"`
-	SubscriptionID  string     `json:"subscription,omitempty"`
-	InvoiceID       string     `json:"invoice,omitempty"`
-	PaymentIntentID string     `json:"payment_intent,omitempty"`
-	CreatedAt       time.Time  `json:"created_at"`
-	CompletedAt     *time.Time `json:"completed_at,omitempty"`
+	// default_tax_rates_snapshot avoids collision with Stripe's default_tax_rates array of TaxRate objects.
+	DefaultTaxRates []AppliedTaxRate `json:"default_tax_rates_snapshot,omitempty"`
+	URL             string           `json:"url"`
+	Status          string           `json:"status"`
+	PaymentStatus   string           `json:"payment_status"`
+	SubscriptionID  string           `json:"subscription,omitempty"`
+	InvoiceID       string           `json:"invoice,omitempty"`
+	PaymentIntentID string           `json:"payment_intent,omitempty"`
+	CreatedAt       time.Time        `json:"created_at"`
+	CompletedAt     *time.Time       `json:"completed_at,omitempty"`
+}
+
+// AppliedTaxRate is a creation-time snapshot of a tax rate applied to billing math.
+type AppliedTaxRate struct {
+	ID          string  `json:"id"`
+	DisplayName string  `json:"display_name"`
+	Percentage  float64 `json:"percentage"`
+	Inclusive   bool    `json:"inclusive"`
 }
 
 type Subscription struct {
@@ -152,6 +162,8 @@ type Invoice struct {
 	Discounts      []Discount `json:"discounts,omitempty"`
 	// automatic_tax_enabled avoids collision with Stripe's automatic_tax object shape.
 	AutomaticTax       bool              `json:"automatic_tax_enabled,omitempty"`
+	// default_tax_rates_snapshot avoids collision with Stripe's default_tax_rates array of TaxRate objects.
+	DefaultTaxRates    []AppliedTaxRate  `json:"default_tax_rates_snapshot,omitempty"`
 	Tax                int64             `json:"tax"`
 	Total              int64             `json:"total"`
 	AmountDue          int64             `json:"amount_due"`

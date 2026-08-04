@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Wired tax rates into real billing totals: checkout sessions accept
+  `subscription_data[default_tax_rates][]` and subscriptions accept
+  `default_tax_rates` on create/update (empty string clears), resolving
+  `txr_*` IDs against local tax-rate evidence and snapshotting them onto the
+  session, subscription, and invoices. Inclusive and exclusive rates use
+  Stripe-style math after discounts through completion and renewal invoices,
+  subscriptions serialize `default_tax_rates` as TaxRate objects, invoices
+  emit per-rate `total_taxes`/`total_tax_amounts` with real rate IDs, and
+  `automatic_tax` remains mutually exclusive with `default_tax_rates`.
 - Added a simulated Stripe Tax surface in stripe-node v22 shapes: checkout
   sessions accept `automatic_tax[enabled]` and `tax_id_collection[enabled]`,
   the tax rate snapshots from customer metadata `tax_percent` at creation

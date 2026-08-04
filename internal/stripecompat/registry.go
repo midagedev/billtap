@@ -206,12 +206,12 @@ func DefaultClaims() []Claim {
 	add(http.MethodGet, "/v1/application_fees/{id}", Claim{Level: "L2", Stateful: true, Risks: []string{"local application-fee evidence only; ledger behavior is not modeled"}})
 	add(http.MethodPost, "/v1/application_fees/{id}/refund", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"application_fee.refunded"}, Risks: []string{"legacy local fee-refund evidence only"}})
 
-	add(http.MethodPost, "/v1/checkout/sessions", Claim{Level: "L4", Stateful: true, ScorecardCases: []string{"checkout.sessions.create.java_sdk_optional_params"}, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only", "automatic_tax is a metadata-driven simulation (customer metadata tax_percent); no jurisdiction or address-based calculation"}})
+	add(http.MethodPost, "/v1/checkout/sessions", Claim{Level: "L4", Stateful: true, ScorecardCases: []string{"checkout.sessions.create.java_sdk_optional_params"}, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only", "automatic_tax is a metadata-driven simulation (customer metadata tax_percent); no jurisdiction or address-based calculation", "subscription_data[default_tax_rates] snapshots tax rates onto checkout/subscription totals (exclusive/inclusive math); mutually exclusive with automatic_tax"}})
 	add(http.MethodGet, "/v1/checkout/sessions", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
 	add(http.MethodGet, "/v1/checkout/sessions/{id}", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription mode only"}})
 	add(http.MethodPost, "/v1/billing_portal/sessions", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted", "payment_method.attached", "customer.updated"}, Risks: []string{"hosted portal is a local stub; portal configuration rendering and full Stripe-hosted portal behavior are not modeled"}})
 
-	taxRateRisk := []string{"local tax-rate evidence only; rates are not applied to totals (automatic_tax uses customer metadata simulation)"}
+	taxRateRisk := []string{"local tax-rate evidence; default_tax_rates snapshots apply rates to checkout/subscription/invoice/renewal totals (inclusive+exclusive math); automatic_tax remains a separate customer-metadata simulation"}
 	add(http.MethodGet, "/v1/tax_rates", Claim{Level: "L2", Stateful: true, Risks: taxRateRisk})
 	add(http.MethodPost, "/v1/tax_rates", Claim{Level: "L2", Stateful: true, Risks: taxRateRisk})
 	add(http.MethodGet, "/v1/tax_rates/{id}", Claim{Level: "L2", Stateful: true, Risks: taxRateRisk})

@@ -1598,6 +1598,11 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 		if automaticTax {
 			taxPercent = billing.ParseCustomerTaxPercent(customer.Metadata)
 		}
+		defaultTaxRates, err := h.appliedTaxRatesFromParams(p, "subscription_data[default_tax_rates]")
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
 		session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
 			CustomerID:          p.first("customer", "customer_id"),
 			Mode:                p.stringDefault("mode", "subscription"),
@@ -1610,6 +1615,7 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			AutomaticTax:        automaticTax,
 			TaxIDCollection:     p.boolDefault("tax_id_collection[enabled]", false),
 			TaxPercent:          taxPercent,
+			DefaultTaxRates:     defaultTaxRates,
 		})
 		if err == nil {
 			session.URL = h.absoluteURL(r, session.URL)
@@ -1901,13 +1907,18 @@ func (h *Handler) createSubscriptionFromParamsWithCustomer(r *http.Request, defa
 	if automaticTax {
 		taxPercent = billing.ParseCustomerTaxPercent(customer.Metadata)
 	}
+	defaultTaxRates, err := h.appliedTaxRatesFromParams(p, "default_tax_rates")
+	if err != nil {
+		return billing.Subscription{}, err
+	}
 	session, err := h.billing.CreateCheckoutSession(r.Context(), billing.CheckoutSession{
-		CustomerID:   customerID,
-		Mode:         "subscription",
-		LineItems:    items,
-		Discounts:    discounts,
-		AutomaticTax: automaticTax,
-		TaxPercent:   taxPercent,
+		CustomerID:      customerID,
+		Mode:            "subscription",
+		LineItems:       items,
+		Discounts:       discounts,
+		AutomaticTax:    automaticTax,
+		TaxPercent:      taxPercent,
+		DefaultTaxRates: defaultTaxRates,
 	})
 	if err != nil {
 		return billing.Subscription{}, err
@@ -1997,6 +2008,43 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		}
 		if len(discounts) > 0 {
 			metadata = billing.MergeDiscountMetadata(metadata, discounts)
+		}
+		if p.hasDefaultTaxRatesParam("default_tax_rates") {
+			current, err := h.billing.GetSubscription(r.Context(), id)
+			if err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			if automaticTax, _ := billing.AutomaticTaxFromMetadata(current.Metadata); automaticTax && !p.isDefaultTaxRatesClear("default_tax_rates") {
+				writeResult(w, nil, &validationError{
+					Param:   "default_tax_rates",
+					Code:    stripeCodeParamInvalid,
+					Message: "You cannot specify both automatic_tax[enabled]=true and default_tax_rates.",
+				})
+				return
+			}
+			if p.isDefaultTaxRatesClear("default_tax_rates") {
+				if metadata == nil {
+					metadata = map[string]string{}
+				}
+				metadata[billing.MetadataDefaultTaxRates] = ""
+			} else {
+				rates, err := h.appliedTaxRatesFromParams(p, "default_tax_rates")
+				if err != nil {
+					writeResult(w, nil, err)
+					return
+				}
+				if metadata == nil {
+					metadata = map[string]string{}
+				}
+				// MergeDefaultTaxRatesMetadata writes the JSON snapshot; empty clears.
+				merged := billing.MergeDefaultTaxRatesMetadata(map[string]string{}, rates)
+				if value, ok := merged[billing.MetadataDefaultTaxRates]; ok {
+					metadata[billing.MetadataDefaultTaxRates] = value
+				} else {
+					metadata[billing.MetadataDefaultTaxRates] = ""
+				}
+			}
 		}
 		subscription, err := h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
 			Items:             items,
@@ -5133,6 +5181,75 @@ func (p params) appliesToProducts() []string {
 	return out
 }
 
+// defaultTaxRateIDs collects tax rate IDs from [] / [N] / bare form keys.
+// prefix is "default_tax_rates" or "subscription_data[default_tax_rates]".
+// Empty values are skipped (Emptyable clear uses a bare empty string and yields no IDs).
+func (p params) defaultTaxRateIDs(prefix string) []string {
+	var out []string
+	seen := map[string]struct{}{}
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	// Single-value [] form survives firstValues as prefix[] (not expanded).
+	if value := p.string(prefix + "[]"); value != "" {
+		for _, part := range strings.Split(value, ",") {
+			add(part)
+		}
+	}
+	// Multi-value [] form is expanded by firstValues to prefix[0], prefix[1], ...
+	for i := 0; i < 100; i++ {
+		key := fmt.Sprintf("%s[%d]", prefix, i)
+		if value, ok := p.values[key]; ok {
+			add(value)
+			continue
+		}
+		if i > 0 {
+			break
+		}
+	}
+	// Bare key (rare) or Emptyable clear signal handled by callers via hasDefaultTaxRatesParam.
+	if value := p.string(prefix); value != "" {
+		for _, part := range strings.Split(value, ",") {
+			add(part)
+		}
+	}
+	return out
+}
+
+// hasDefaultTaxRatesParam reports whether any default_tax_rates form key is present
+// (including Emptyable clear with an empty string value).
+func (p params) hasDefaultTaxRatesParam(prefix string) bool {
+	if _, ok := p.values[prefix]; ok {
+		return true
+	}
+	if _, ok := p.values[prefix+"[]"]; ok {
+		return true
+	}
+	for key := range p.values {
+		if strings.HasPrefix(key, prefix+"[") {
+			return true
+		}
+	}
+	return false
+}
+
+// isDefaultTaxRatesClear is true when the param is present as a single empty string
+// (Stripe Emptyable clear) and no non-empty IDs were provided.
+func (p params) isDefaultTaxRatesClear(prefix string) bool {
+	if !p.hasDefaultTaxRatesParam(prefix) {
+		return false
+	}
+	return len(p.defaultTaxRateIDs(prefix)) == 0
+}
+
 func queryInt(r *http.Request, key string) int {
 	value, _ := strconv.Atoi(r.URL.Query().Get(key))
 	return value
@@ -5703,6 +5820,72 @@ func stripeDeleted(id string, object string) map[string]any {
 	return map[string]any{"id": id, "object": object, "deleted": true}
 }
 
+// appliedTaxRatesFromParams resolves default_tax_rates IDs against local tax rate evidence.
+func (h *Handler) appliedTaxRatesFromParams(p params, prefix string) ([]billing.AppliedTaxRate, error) {
+	ids := p.defaultTaxRateIDs(prefix)
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	out := make([]billing.AppliedTaxRate, 0, len(ids))
+	h.local.mu.Lock()
+	defer h.local.mu.Unlock()
+	for _, id := range ids {
+		evidence, ok := h.local.taxRates[id]
+		if !ok || evidence == nil {
+			return nil, missingTaxRate(id)
+		}
+		percentage, _ := asFloat64Evidence(evidence["percentage"])
+		inclusive, _ := evidence["inclusive"].(bool)
+		out = append(out, billing.AppliedTaxRate{
+			ID:          id,
+			DisplayName: evidenceString(evidence["display_name"]),
+			Percentage:  percentage,
+			Inclusive:   inclusive,
+		})
+	}
+	return out, nil
+}
+
+func (h *Handler) stripeTaxRateObjects(rates []billing.AppliedTaxRate) []map[string]any {
+	if rates == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(rates))
+	h.local.mu.Lock()
+	defer h.local.mu.Unlock()
+	for _, rate := range rates {
+		if evidence, ok := h.local.taxRates[rate.ID]; ok && evidence != nil {
+			out = append(out, cloneEvidence(evidence))
+			continue
+		}
+		out = append(out, synthesizeTaxRateObject(rate))
+	}
+	return out
+}
+
+func synthesizeTaxRateObject(rate billing.AppliedTaxRate) map[string]any {
+	return map[string]any{
+		"id":                   rate.ID,
+		"object":               "tax_rate",
+		"display_name":         rate.DisplayName,
+		"percentage":           rate.Percentage,
+		"inclusive":            rate.Inclusive,
+		"active":               true,
+		"country":              nil,
+		"state":                nil,
+		"jurisdiction":         nil,
+		"description":          nil,
+		"effective_percentage": nil,
+		"flat_amount":          nil,
+		"jurisdiction_level":   nil,
+		"rate_type":            "percentage",
+		"tax_type":             nil,
+		"metadata":             map[string]string{},
+		"created":              time.Now().UTC().Unix(),
+		"livemode":             false,
+	}
+}
+
 func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.CheckoutSession) map[string]any {
 	ctx := context.Background()
 	if r != nil {
@@ -5734,7 +5917,11 @@ func (h *Handler) stripeCheckoutSession(r *http.Request, session billing.Checkou
 	eligibleBase := billing.EligibleDiscountBase(subtotal, discounts, lineAmounts)
 	amountTotal, discountAmount := billing.ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
 	amountTax := int64(0)
-	if session.AutomaticTax {
+	if len(session.DefaultTaxRates) > 0 {
+		_, _, exclusiveTotal, taxTotal := billing.ComputeTaxRateAmounts(amountTotal, session.DefaultTaxRates)
+		amountTax = taxTotal
+		amountTotal = amountTotal + exclusiveTotal
+	} else if session.AutomaticTax {
 		amountTax = billing.ExclusiveTaxAmount(amountTotal, session.TaxPercent)
 		amountTotal = amountTotal + amountTax
 	}
@@ -5789,6 +5976,13 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 	}
 	discounts := billing.DiscountsFromMetadata(sub.Metadata)
 	automaticTax, _ := billing.AutomaticTaxFromMetadata(sub.Metadata)
+	defaultTaxRates := billing.DefaultTaxRatesFromMetadata(sub.Metadata)
+	var defaultTaxRateObjects []map[string]any
+	if h != nil {
+		defaultTaxRateObjects = h.stripeTaxRateObjects(defaultTaxRates)
+	} else {
+		defaultTaxRateObjects = synthesizeTaxRateObjects(defaultTaxRates)
+	}
 	return map[string]any{
 		"id":                   sub.ID,
 		"object":               billing.ObjectSubscription,
@@ -5817,7 +6011,19 @@ func (h *Handler) stripeSubscription(r *http.Request, sub billing.Subscription) 
 		"pending_update":       nil,
 		"cancellation_details": subscriptionCancellationDetails(sub),
 		"automatic_tax":        stripeSubscriptionAutomaticTax(automaticTax),
+		"default_tax_rates":    defaultTaxRateObjects,
 	}
+}
+
+func synthesizeTaxRateObjects(rates []billing.AppliedTaxRate) []map[string]any {
+	if rates == nil {
+		return []map[string]any{}
+	}
+	out := make([]map[string]any, 0, len(rates))
+	for _, rate := range rates {
+		out = append(out, synthesizeTaxRateObject(rate))
+	}
+	return out
 }
 
 func subscriptionPauseCollection(sub billing.Subscription) any {
@@ -5894,14 +6100,15 @@ func (h *Handler) stripeInvoice(ctx context.Context, invoice billing.Invoice) ma
 			intent = &pi
 		}
 	}
-	return stripeInvoiceWithPaymentIntent(invoice, intent)
+	return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, intent, h.stripeTaxRateObjects(invoice.DefaultTaxRates))
 }
 
 func (h *Handler) stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent billing.PaymentIntent) map[string]any {
+	taxRates := h.stripeTaxRateObjects(invoice.DefaultTaxRates)
 	if intent.ID == "" {
-		return stripeInvoiceWithPaymentIntent(invoice, nil)
+		return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, nil, taxRates)
 	}
-	return stripeInvoiceWithPaymentIntent(invoice, &intent)
+	return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, &intent, taxRates)
 }
 
 func (h *Handler) stripeInvoicePayments(ctx context.Context, invoice billing.Invoice, intent *billing.PaymentIntent) []map[string]any {
@@ -5921,6 +6128,10 @@ func stripeInvoice(invoice billing.Invoice) map[string]any {
 }
 
 func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.PaymentIntent) map[string]any {
+	return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, intent, nil)
+}
+
+func stripeInvoiceWithPaymentIntentAndTaxRates(invoice billing.Invoice, intent *billing.PaymentIntent, taxRateObjects []map[string]any) map[string]any {
 	paidAt := optionalPaidAt(invoice)
 	finalizedAt := optionalFinalizedAt(invoice)
 	created := unix(invoice.CreatedAt)
@@ -5935,13 +6146,46 @@ func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.Pay
 		}
 	}
 	taxValue := any(nil)
-	if invoice.AutomaticTax {
+	if invoice.AutomaticTax || len(invoice.DefaultTaxRates) > 0 {
 		taxValue = invoice.Tax
 	}
 	totalExcludingTax := invoice.Total - invoice.Tax
 	totalTaxAmounts := []map[string]any{}
 	totalTaxes := []map[string]any{}
-	if invoice.Tax > 0 {
+	defaultTaxRates := taxRateObjects
+	if defaultTaxRates == nil {
+		defaultTaxRates = synthesizeTaxRateObjects(invoice.DefaultTaxRates)
+	}
+	if len(invoice.DefaultTaxRates) > 0 {
+		// Recompute per-rate amounts from the discounted pretax base.
+		base := invoice.Subtotal - invoice.DiscountAmount
+		if base < 0 {
+			base = 0
+		}
+		// For trialing invoices totals are zeroed while subtotal may also be zero.
+		amounts, pretax, _, _ := billing.ComputeTaxRateAmounts(base, invoice.DefaultTaxRates)
+		totalExcludingTax = pretax
+		for _, entry := range amounts {
+			behavior := "exclusive"
+			if entry.Rate.Inclusive {
+				behavior = "inclusive"
+			}
+			totalTaxAmounts = append(totalTaxAmounts, map[string]any{
+				"amount":            entry.Amount,
+				"inclusive":         entry.Rate.Inclusive,
+				"tax_rate":          entry.Rate.ID,
+				"taxability_reason": nil,
+			})
+			totalTaxes = append(totalTaxes, map[string]any{
+				"amount":            entry.Amount,
+				"tax_behavior":      behavior,
+				"tax_rate_details":  map[string]any{"tax_rate": entry.Rate.ID},
+				"taxability_reason": nil,
+				"taxable_amount":    pretax,
+				"type":              "tax_rate_details",
+			})
+		}
+	} else if invoice.Tax > 0 {
 		totalTaxAmounts = []map[string]any{{
 			"amount":            invoice.Tax,
 			"inclusive":         false,
@@ -6005,7 +6249,7 @@ func stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent *billing.Pay
 		"custom_fields":                    nil,
 		"default_payment_method":           emptyToNil(invoice.Metadata[billing.MetadataDefaultPaymentMethod]),
 		"default_source":                   nil,
-		"default_tax_rates":                []map[string]any{},
+		"default_tax_rates":                defaultTaxRates,
 		"due_date":                         nil,
 		"ending_balance":                   0,
 		"footer":                           nil,
