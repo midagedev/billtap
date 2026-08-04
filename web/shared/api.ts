@@ -38,6 +38,10 @@ export type CheckoutSessionSummary = {
   customerEmail: string;
   plan: string;
   price: string;
+  amountSubtotal: string;
+  amountDiscount?: string;
+  amountTax?: string;
+  amountTotal: string;
   status: string;
   paymentStatus: string;
   subscriptionId: string;
@@ -826,6 +830,14 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
   const paymentIntent =
     firstRecord(root, ["payment_intent", "paymentIntent"]) ??
     firstRecord(session, ["payment_intent", "paymentIntent"]);
+  const totalDetails = firstRecord(session, ["total_details", "totalDetails"]);
+  const automaticTax = firstRecord(session, ["automatic_tax", "automaticTax"]);
+  const currency = readString(session, ["currency"], "usd");
+  const amountSubtotal = readMinorMoney(session, ["amount_subtotal", "amountSubtotal"], currency);
+  const amountTotal = readMinorMoney(session, ["amount_total", "amountTotal"], currency);
+  const discountAmount = readNumber(totalDetails, ["amount_discount", "amountDiscount"], 0);
+  const taxAmount = readNumber(totalDetails, ["amount_tax", "amountTax"], 0);
+  const taxEnabled = automaticTax?.enabled === true;
 
   return {
     id: readString(session, ["id"], fallbackId),
@@ -837,8 +849,15 @@ function normalizeCheckoutSession(value: unknown, fallbackId: string): CheckoutS
       readString(price, ["nickname", "lookup_key"], "") ||
       readString(session, ["plan", "plan_name", "planName"], fixtureSession.plan),
     price:
+      amountTotal ||
       readMoney(session, ["amount_total", "amountSubtotal", "amount_total"], ["currency"]) ||
       readString(session, ["price", "amount"], fixtureSession.price),
+    amountSubtotal: amountSubtotal || amountTotal || fixtureSession.amountSubtotal,
+    amountDiscount: discountAmount > 0 ? formatMinorAmount(discountAmount, currency) : undefined,
+    amountTax: taxAmount > 0 || taxEnabled ? formatMinorAmount(taxAmount, currency) : undefined,
+    amountTotal:
+      amountTotal ||
+      readString(session, ["price", "amount"], fixtureSession.amountTotal),
     status: readString(session, ["status"], fixtureSession.status),
     paymentStatus: readString(session, ["payment_status", "paymentStatus"], fixtureSession.paymentStatus),
     subscriptionId: readObjectId(session.subscription) ?? readString(subscription, ["id"], fixtureSession.subscriptionId),
@@ -1426,6 +1445,27 @@ function formatTime(value: string): string {
     });
   }
   return value;
+}
+
+// Currencies Stripe reports without a minor unit, so their amounts are not divided by 100.
+const zeroDecimalCurrencies = new Set([
+  "bif", "clp", "djf", "gnf", "jpy", "kmf", "krw", "mga",
+  "pyg", "rwf", "ugx", "vnd", "vuv", "xaf", "xof", "xpf",
+]);
+
+function formatMinorAmount(amount: number, currency: string): string {
+  const code = (currency || "usd").toLowerCase();
+  const value = zeroDecimalCurrencies.has(code) ? amount : amount / 100;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: code.toUpperCase(),
+  }).format(value);
+}
+
+function readMinorMoney(record: Record<string, unknown> | undefined, keys: string[], currency: string): string | undefined {
+  const amount = readNumber(record, keys, Number.NaN);
+  if (Number.isNaN(amount)) return undefined;
+  return formatMinorAmount(amount, currency);
 }
 
 function readMoney(record: Record<string, unknown> | undefined, amountKeys: string[], currencyKeys: string[]): string | undefined {

@@ -85,6 +85,8 @@ function CheckoutApp() {
   const paymentSucceeded = completion
     ? isSuccessfulCompletion(completion)
     : false;
+  const showLineItems = source === "fixture";
+  const showBreakdown = Boolean(session.amountDiscount || session.amountTax);
 
   useEffect(() => {
     if (!paymentSucceeded || !window.opener) return;
@@ -140,6 +142,31 @@ function CheckoutApp() {
     );
   }
 
+  const breakdownList = (
+    <ul className="line-list summary-breakdown">
+      <li>
+        <span>Subtotal</span>
+        <strong>{session.amountSubtotal}</strong>
+      </li>
+      {session.amountDiscount ? (
+        <li>
+          <span>Discount</span>
+          <strong className="amount-credit">−{session.amountDiscount}</strong>
+        </li>
+      ) : null}
+      {session.amountTax ? (
+        <li>
+          <span>Tax</span>
+          <strong>{session.amountTax}</strong>
+        </li>
+      ) : null}
+      <li className="breakdown-total">
+        <span>Total due today</span>
+        <strong>{session.amountTotal}</strong>
+      </li>
+    </ul>
+  );
+
   return (
     <AppShell active="checkout">
       <SurfaceHeader
@@ -165,18 +192,31 @@ function CheckoutApp() {
             </div>
             <div className="summary-total">
               <span className="section-kicker">Due today</span>
-              <strong>{session.price}</strong>
+              <strong>{session.amountTotal}</strong>
             </div>
           </div>
 
-          <ul className="line-list">
-            {session.lineItems.map((line) => (
-              <li key={line.label}>
-                <span>{line.label}</span>
-                <strong>{line.amount}</strong>
-              </li>
-            ))}
-          </ul>
+          {showLineItems ? (
+            <div className="summary-lines">
+              <span className="section-kicker">Line items</span>
+              <ul className="line-list">
+                {session.lineItems.map((line) => (
+                  <li key={line.label}>
+                    <span>{line.label}</span>
+                    <strong>{line.amount}</strong>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+
+          {showBreakdown && showLineItems ? (
+            <div className="summary-lines">
+              <span className="section-kicker">Summary</span>
+              {breakdownList}
+            </div>
+          ) : null}
+          {showBreakdown && !showLineItems ? breakdownList : null}
 
           <div className="confirmation-strip">
             <StatusPill tone={outcome.tone}>{outcome.status}</StatusPill>

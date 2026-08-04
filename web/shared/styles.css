@@ -807,6 +807,27 @@ code {
   font-size: 26px;
 }
 
+.summary-lines {
+  display: grid;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+.summary-breakdown .breakdown-total {
+  border-color: #d8e0ea;
+  background: #f8fafc;
+}
+
+.summary-breakdown .breakdown-total span {
+  color: #0f172a;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.summary-breakdown .amount-credit {
+  color: #047857;
+}
+
 .option-grid,
 .plan-grid,
 .payment-grid {
