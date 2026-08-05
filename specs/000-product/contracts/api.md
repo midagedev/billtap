@@ -214,7 +214,22 @@ exclusive amounts add on the pretax base. Subscriptions serialize
 `default_tax_rates` and per-rate `total_taxes`/`total_tax_amounts` entries
 with real `txr_*` IDs and `taxability_reason: null`. `automatic_tax[enabled]`
 and `default_tax_rates` are mutually exclusive (400 `parameter_invalid`).
-Invoice previews still do not apply either tax path.
+Invoice previews did not apply either tax path at the time of this revision.
+
+Revised 2026-08-05 (consumer preview parity): invoice previews now apply tax.
+`POST /v1/invoices/create_preview` and `GET,POST /v1/invoices/upcoming` read
+the subscription's `default_tax_rates` snapshot (or the `automatic_tax`
+simulation) and tax the post-discount proration base through the same helper
+the confirmed invoice serialization uses, so a preview and the invoice
+produced by actually applying the same change are identical field for field —
+`subtotal`, `tax`, `total`, `total_excluding_tax`, and per-rate `total_taxes`
+/ `total_tax_amounts` — including decimal-rate rounding and inclusive rates.
+Previews for a customer with no subscription keep `tax: null` and empty tax
+arrays. Preview item parsing also accepts `[price_id]` alongside `[price]`
+(previously the validator allowed `price_id` while the parser ignored it,
+silently yielding a zero proration), and a preview that cannot prorate
+reports why in `billtap_preview.proration_skipped_reason` instead of
+returning a silent zero.
 
 ### Subscriptions
 

@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Invoice previews now apply tax: `create_preview` and `upcoming` read the
+  subscription's `default_tax_rates` (or `automatic_tax`) and tax the
+  post-discount proration base through the same helper the confirmed invoice
+  serialization uses, so preview and confirmed amounts match field for field
+  including decimal-rate rounding and inclusive rates. Preview item parsing
+  also accepts `[price_id]`, which the validator already allowed but the
+  parser ignored, and previews that cannot prorate now report
+  `billtap_preview.proration_skipped_reason` instead of a silent zero.
 - Subscription item changes now bill instead of only recording proration
   parameters as metadata: `proration_behavior=always_invoice` issues a paid
   `subscription_update` invoice and repoints `latest_invoice`,

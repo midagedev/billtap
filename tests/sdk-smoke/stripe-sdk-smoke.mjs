@@ -802,6 +802,103 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
     },
   );
 
+  await check(
+    "invoice createPreview tax matches confirmed always_invoice",
+    async () => {
+      const lite = await stripe.prices.create({
+        product: product.id,
+        currency: "usd",
+        unit_amount: 4900,
+        recurring: { interval: "month" },
+        metadata: {
+          billtap_smoke: "stripe_sdk",
+          run_id: runId,
+          tier: "lite_tax_preview",
+        },
+      });
+      const proPrice = await stripe.prices.create({
+        product: product.id,
+        currency: "usd",
+        unit_amount: 9900,
+        recurring: { interval: "month" },
+        metadata: {
+          billtap_smoke: "stripe_sdk",
+          run_id: runId,
+          tier: "pro_tax_preview",
+        },
+      });
+      const txr = await stripe.taxRates.create({
+        display_name: "VAT preview",
+        percentage: 10,
+        inclusive: false,
+      });
+      const sub = await stripe.subscriptions.create({
+        customer: customer.id,
+        items: [{ price: lite.id, quantity: 1 }],
+        default_tax_rates: [txr.id],
+      });
+      const itemId = sub.items?.data?.[0]?.id;
+      assertEqual(Boolean(itemId), true, "tax preview sub item id");
+      // Pin to period start so remaining == full period (preview == confirmed).
+      const prorationDate = sub.current_period_start;
+
+      const preview = await stripe.invoices.createPreview({
+        customer: customer.id,
+        subscription: sub.id,
+        subscription_details: {
+          items: [{ id: itemId, price: proPrice.id }],
+          proration_behavior: "always_invoice",
+          proration_date: prorationDate,
+        },
+      });
+      assertEqual(preview.subtotal, 5000, "tax preview subtotal");
+      assertEqual(preview.tax, 500, "tax preview tax");
+      assertEqual(preview.total, 5500, "tax preview total");
+      assertEqual(
+        preview.total_excluding_tax,
+        5000,
+        "tax preview total_excluding_tax",
+      );
+      assertEqual(
+        preview.total_taxes?.[0]?.amount,
+        500,
+        "tax preview total_taxes[0].amount",
+      );
+      assertEqual(
+        preview.total_taxes?.[0]?.taxable_amount,
+        5000,
+        "tax preview total_taxes[0].taxable_amount",
+      );
+
+      const updated = await stripe.subscriptions.update(sub.id, {
+        items: [{ id: itemId, price: proPrice.id }],
+        proration_behavior: "always_invoice",
+        proration_date: prorationDate,
+        payment_behavior: "error_if_incomplete",
+        default_tax_rates: [txr.id],
+      });
+      const invoiceId =
+        typeof updated.latest_invoice === "string"
+          ? updated.latest_invoice
+          : updated.latest_invoice?.id;
+      const invoice = await stripe.invoices.retrieve(invoiceId);
+      assertEqual(invoice.subtotal, preview.subtotal, "confirmed subtotal == preview");
+      assertEqual(invoice.tax, preview.tax, "confirmed tax == preview");
+      assertEqual(invoice.total, preview.total, "confirmed total == preview");
+      assertEqual(
+        invoice.total_excluding_tax,
+        preview.total_excluding_tax,
+        "confirmed total_excluding_tax == preview",
+      );
+      assertEqual(
+        invoice.total_taxes?.[0]?.amount,
+        preview.total_taxes?.[0]?.amount,
+        "confirmed total_taxes amount == preview",
+      );
+      return { preview, invoice };
+    },
+  );
+
   const checkoutEvent = await check("event list/retrieve", async () => {
     const events = await stripe.events.list({
       type: "checkout.session.completed",
