@@ -277,6 +277,15 @@ Revised 2026-08-05 (consumer plan-change adoption): item changes on
   `invoice.payment_succeeded`/`invoice.paid` (or `invoice.payment_failed`),
   then `customer.subscription.updated`.
 - `billing_cycle_anchor` accepts `now`, `unchanged`, or a Unix timestamp.
+- `POST /v1/subscription_items` and `DELETE /v1/subscription_items/{id}` accept
+  `proration_behavior` and `proration_date` and route through the same
+  proration path, so adding seats with `always_invoice` bills the prorated
+  delta under the subscription's tax rates. Delete reads its parameters from
+  the query string as well as the body, rejects deleting the last item, and
+  accepts `clear_usage` as evidence only. Item-level `tax_rates` round-trip as
+  evidence but do not affect totals — billtap taxes at the subscription level.
+  Subscription item IDs remain index-derived (`si_<subscription>_<index>`), so
+  deleting a middle item shifts the IDs of later items.
 
 ### Subscription Schedules
 

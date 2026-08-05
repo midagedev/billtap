@@ -2307,17 +2307,68 @@ func (h *Handler) handleSubscriptionItems(w http.ResponseWriter, r *http.Request
 		writeResult(w, nil, err)
 		return
 	}
+	// Resolve item tax_rates before mutation (evidence only; totals use subscription rates).
+	var itemTaxRates []billing.AppliedTaxRate
+	if p.hasDefaultTaxRatesParam("tax_rates") {
+		itemTaxRates, err = h.appliedTaxRatesFromParams(p, "tax_rates")
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+	}
 	items := append([]billing.LineItem{}, current.Items...)
 	items = append(items, billing.LineItem{PriceID: priceID, Quantity: p.int64Default("quantity", 1)})
-	subscription, err := h.billing.PatchSubscription(r.Context(), subscriptionID, billing.SubscriptionPatch{
-		Items:        items,
-		ReplaceItems: true,
-	})
-	if err != nil {
-		writeResult(w, nil, err)
-		return
+
+	prorationBehavior := p.string("proration_behavior")
+	var subscription billing.Subscription
+	if prorationBehavior == "always_invoice" || prorationBehavior == "create_prorations" {
+		// Reuse P1 proration path (subscription update). Anchor is not a create param.
+		prorationDate := time.Time{}
+		if raw := p.string("proration_date"); raw != "" {
+			if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
+				prorationDate = time.Unix(seconds, 0).UTC()
+			}
+		}
+		result, err := h.billing.UpdateSubscriptionItemsWithProration(r.Context(), billing.SubscriptionProrationRequest{
+			SubscriptionID:     subscriptionID,
+			NewItems:           items,
+			ProrationBehavior:  prorationBehavior,
+			ProrationDate:      prorationDate,
+			BillingCycleAnchor: "",
+		})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		if result.Invoice != nil && result.Invoice.ID != "" {
+			h.emitRenewalWebhooks(r, result.PaymentResult, "subscription_update")
+		} else {
+			h.emitSubscriptionWebhook(r, "customer.subscription.updated", result.Subscription, webhooks.SourceAPI)
+		}
+		subscription = result.Subscription
+	} else {
+		// none / unspecified: item append only (legacy path; no proration invoice).
+		subscription, err = h.billing.PatchSubscription(r.Context(), subscriptionID, billing.SubscriptionPatch{
+			Items:        items,
+			ReplaceItems: true,
+		})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
 	}
-	writeJSON(w, http.StatusOK, h.stripeSubscriptionItem(r, subscription, subscription.Items[len(subscription.Items)-1], len(subscription.Items)-1))
+
+	idx := len(subscription.Items) - 1
+	itemResp := h.stripeSubscriptionItem(r, subscription, subscription.Items[idx], idx)
+	// Item tax_rates: evidence on create response only; not used for invoice totals.
+	// Billtap bills with subscription default_tax_rates only (Stripe item tax_rates would override).
+	if p.hasDefaultTaxRatesParam("tax_rates") {
+		itemResp["tax_rates"] = h.stripeTaxRateObjects(itemTaxRates)
+	}
+	if meta := p.metadata(); len(meta) > 0 {
+		itemResp["metadata"] = meta
+	}
+	writeJSON(w, http.StatusOK, itemResp)
 }
 
 func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request) {
@@ -2330,6 +2381,18 @@ func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request)
 		h.methodNotAllowed(w, r, "DELETE")
 		return
 	}
+	p, err := parseParamsAllowingDeleteBody(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateSubscriptionItemDelete(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	// clear_usage is accepted as evidence only (metered usage is not modeled).
+	_ = p.string("clear_usage")
+
 	subscription, idx, found, err := h.findSubscriptionItem(r, id)
 	if err != nil {
 		writeResult(w, nil, err)
@@ -2342,12 +2405,42 @@ func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request)
 	items := append([]billing.LineItem{}, subscription.Items[:idx]...)
 	items = append(items, subscription.Items[idx+1:]...)
 	if len(items) == 0 {
-		writeResult(w, nil, fmt.Errorf("%w: subscription items cannot be empty", billing.ErrInvalidInput))
+		// Stripe rejects deleting the last subscription item; mirror that clearly.
+		writeResult(w, nil, fmt.Errorf("%w: You cannot delete the last subscription item.", billing.ErrInvalidInput))
 		return
 	}
-	if _, err := h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{Items: items, ReplaceItems: true}); err != nil {
-		writeResult(w, nil, err)
-		return
+
+	prorationBehavior := p.string("proration_behavior")
+	if prorationBehavior == "always_invoice" || prorationBehavior == "create_prorations" {
+		prorationDate := time.Time{}
+		if raw := p.string("proration_date"); raw != "" {
+			if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
+				prorationDate = time.Unix(seconds, 0).UTC()
+			}
+		}
+		result, err := h.billing.UpdateSubscriptionItemsWithProration(r.Context(), billing.SubscriptionProrationRequest{
+			SubscriptionID:     subscription.ID,
+			NewItems:           items,
+			ProrationBehavior:  prorationBehavior,
+			ProrationDate:      prorationDate,
+			BillingCycleAnchor: "",
+		})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		// Downgrade/remove typically yields delta ≤ 0 → no invoice (P1 credit not modeled).
+		// create_prorations may accumulate a negative pending amount for the next renewal.
+		if result.Invoice != nil && result.Invoice.ID != "" {
+			h.emitRenewalWebhooks(r, result.PaymentResult, "subscription_update")
+		} else {
+			h.emitSubscriptionWebhook(r, "customer.subscription.updated", result.Subscription, webhooks.SourceAPI)
+		}
+	} else {
+		if _, err := h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{Items: items, ReplaceItems: true}); err != nil {
+			writeResult(w, nil, err)
+			return
+		}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"id": id, "object": "subscription_item", "deleted": true})
 }
@@ -5196,6 +5289,58 @@ func parseParams(r *http.Request) (params, error) {
 		return params{}, fmt.Errorf("%w: real card data is not accepted by Billtap", webhooks.ErrInvalidInput)
 	}
 	return params{values: values}, nil
+}
+
+// parseParamsAllowingDeleteBody reads DELETE query + form body.
+// Go's Request.ParseForm only merges the body for POST/PUT/PATCH, but Stripe clients
+// send proration_behavior on DELETE via query string and sometimes form body.
+func parseParamsAllowingDeleteBody(r *http.Request) (params, error) {
+	p, err := parseParams(r)
+	if err != nil {
+		return p, err
+	}
+	// Ensure query params are present even if Content-Type led down a non-form path.
+	for key, vals := range r.URL.Query() {
+		if len(vals) == 0 {
+			continue
+		}
+		if _, ok := p.values[key]; !ok {
+			if p.values == nil {
+				p.values = map[string]string{}
+			}
+			p.values[key] = vals[0]
+		}
+	}
+	if r.Method != http.MethodDelete {
+		return p, nil
+	}
+	ct := r.Header.Get("Content-Type")
+	if !strings.Contains(ct, "application/x-www-form-urlencoded") {
+		return p, nil
+	}
+	// ParseForm does not consume DELETE body; read it when present.
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		return p, err
+	}
+	if len(body) == 0 {
+		return p, nil
+	}
+	form, err := url.ParseQuery(string(body))
+	if err != nil {
+		return p, err
+	}
+	if p.values == nil {
+		p.values = map[string]string{}
+	}
+	for key, vals := range firstValues(form) {
+		// Body overrides query for the same key (Stripe form semantics).
+		p.values[key] = vals
+	}
+	if security.ContainsCardData(p.values) {
+		return params{}, fmt.Errorf("%w: real card data is not accepted by Billtap", webhooks.ErrInvalidInput)
+	}
+	return p, nil
 }
 
 func paramsFromValues(values url.Values) params {

@@ -241,8 +241,8 @@ func DefaultClaims() []Claim {
 	add(http.MethodPost, "/v1/customers/{id}/subscriptions/{id}", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated"}})
 	add(http.MethodDelete, "/v1/customers/{id}/subscriptions/{id}", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.deleted"}})
 
-	add(http.MethodPost, "/v1/subscription_items", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"subscription_items.create.invalid_quantity"}})
-	add(http.MethodDelete, "/v1/subscription_items/{id}", Claim{Level: "L3", Stateful: true})
+	add(http.MethodPost, "/v1/subscription_items", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"subscription_items.create.invalid_quantity"}, SDKSmoke: []string{"stripe-node"}, Risks: []string{"proration_behavior always_invoice/create_prorations reuses subscription-update proration (subscription default_tax_rates only; item tax_rates evidence-only)", "item IDs are index-based (si_<sub>_<idx>) and shift when a middle item is deleted"}})
+	add(http.MethodDelete, "/v1/subscription_items/{id}", Claim{Level: "L3", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"proration_behavior supported; last item delete rejected; clear_usage evidence-only (metered usage not modeled)", "item IDs are index-based and shift after middle-item delete"}})
 	add(http.MethodDelete, "/v1/subscriptions/{id}", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.deleted"}})
 	add(http.MethodPost, "/v1/subscriptions/{id}/resume", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated"}, Risks: []string{"clears local pause_collection evidence; billing-cycle and proration side effects are not modeled"}})
 	add(http.MethodGet, "/v1/subscriptions/search", Claim{Level: "L3", Stateful: true, Risks: []string{"supports a measured subscription search subset for id, customer, status, and metadata equality clauses joined by AND"}})

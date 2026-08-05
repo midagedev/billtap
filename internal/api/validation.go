@@ -34,6 +34,8 @@ var (
 	// (firstValues leaves single-value [] keys unexpanded).
 	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days|default_tax_rates)\](\[\d*\])?$`)
 	defaultTaxRatesParamRE     = regexp.MustCompile(`^default_tax_rates(\[\d*\])?$`)
+	// Item-level tax_rates on subscription_items create: evidence only (not used for totals).
+	taxRatesParamRE            = regexp.MustCompile(`^tax_rates(\[\d*\])?$`)
 	discountParamRE            = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
 	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
 	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
@@ -1045,11 +1047,38 @@ func validateSubscriptionResume(p params) error {
 
 func validateSubscriptionItemCreate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:     []string{"subscription", "price", "price_id", "quantity"},
-		Required:    []string{"subscription"},
-		RequiredAny: [][]string{{"price", "price_id"}},
-		Int64Params: []string{"quantity"},
-		Positive:    []string{"quantity"},
+		Allowed: []string{
+			"subscription",
+			"price",
+			"price_id",
+			"quantity",
+			"proration_behavior",
+			"proration_date",
+		},
+		AllowedRegex: []*regexp.Regexp{taxRatesParamRE},
+		Required:     []string{"subscription"},
+		RequiredAny:  [][]string{{"price", "price_id"}},
+		Int64Params:  []string{"quantity", "proration_date"},
+		Positive:     []string{"quantity"},
+		EnumParams: map[string][]string{
+			"proration_behavior": {"none", "create_prorations", "always_invoice"},
+		},
+		AllowMetadata: true,
+	})
+}
+
+func validateSubscriptionItemDelete(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"proration_behavior",
+			"proration_date",
+			"clear_usage",
+		},
+		Int64Params: []string{"proration_date"},
+		BoolParams:  []string{"clear_usage"},
+		EnumParams: map[string][]string{
+			"proration_behavior": {"none", "create_prorations", "always_invoice"},
+		},
 	})
 }
 

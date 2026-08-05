@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Subscription item create and delete now accept `proration_behavior` and
+  `proration_date` (previously `parameter_unknown` on create and silently
+  ignored on delete), routing through the same proration path as subscription
+  update so a seat add with `always_invoice` bills the prorated delta with the
+  subscription's tax rates. Deleting the last item is rejected, delete accepts
+  its parameters from the query string as well as the body, and item-level
+  `tax_rates` are kept as evidence only — totals still come from the
+  subscription's `default_tax_rates`.
 - Invoice previews now apply tax: `create_preview` and `upcoming` read the
   subscription's `default_tax_rates` (or `automatic_tax`) and tax the
   post-discount proration base through the same helper the confirmed invoice

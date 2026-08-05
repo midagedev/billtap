@@ -899,6 +899,80 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
     },
   );
 
+  await check(
+    "subscriptionItems create always_invoice + delete none",
+    async () => {
+      const seatProduct = await stripe.products.create({
+        name: "Seat Product",
+        metadata: { billtap_smoke: "stripe_sdk", run_id: runId },
+      });
+      const basePrice = await stripe.prices.create({
+        product: seatProduct.id,
+        currency: "usd",
+        unit_amount: 9900,
+        recurring: { interval: "month" },
+        metadata: { billtap_smoke: "stripe_sdk", run_id: runId, tier: "base" },
+      });
+      const seatPrice = await stripe.prices.create({
+        product: seatProduct.id,
+        currency: "usd",
+        unit_amount: 1000,
+        recurring: { interval: "month" },
+        metadata: { billtap_smoke: "stripe_sdk", run_id: runId, tier: "seat" },
+      });
+      const txr = await stripe.taxRates.create({
+        display_name: "VAT seats",
+        percentage: 10,
+        inclusive: false,
+      });
+      const sub = await stripe.subscriptions.create({
+        customer: customer.id,
+        items: [{ price: basePrice.id, quantity: 1 }],
+        default_tax_rates: [txr.id],
+      });
+      const createInvoiceId = sub.latest_invoice;
+      const prorationDate = sub.current_period_start;
+
+      const item = await stripe.subscriptionItems.create({
+        subscription: sub.id,
+        price: seatPrice.id,
+        quantity: 2,
+        proration_behavior: "always_invoice",
+        proration_date: prorationDate,
+      });
+      assertEqual(item.object, "subscription_item", "seat item object");
+      assertEqual(item.quantity, 2, "seat item quantity");
+
+      const retrieved = await stripe.subscriptions.retrieve(sub.id);
+      assert(
+        retrieved.latest_invoice &&
+          retrieved.latest_invoice !== createInvoiceId,
+        "latest_invoice should be a new seat proration invoice",
+      );
+      const invoiceId =
+        typeof retrieved.latest_invoice === "string"
+          ? retrieved.latest_invoice
+          : retrieved.latest_invoice?.id;
+      const invoice = await stripe.invoices.retrieve(invoiceId);
+      // Full remaining period: seat delta 2000, tax 200, total 2200
+      assertEqual(invoice.subtotal, 2000, "seat proration subtotal");
+      assertEqual(invoice.tax, 200, "seat proration tax");
+      assertEqual(invoice.total, 2200, "seat proration total");
+      assertEqual(
+        invoice.billing_reason,
+        "subscription_update",
+        "seat proration billing_reason",
+      );
+
+      const deleted = await stripe.subscriptionItems.del(item.id, {
+        proration_behavior: "none",
+      });
+      assertEqual(deleted.deleted, true, "seat item deleted");
+      assertEqual(deleted.id, item.id, "deleted seat item id");
+      return { item, invoice, deleted };
+    },
+  );
+
   const checkoutEvent = await check("event list/retrieve", async () => {
     const events = await stripe.events.list({
       type: "checkout.session.completed",
