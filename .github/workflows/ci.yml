@@ -48,6 +48,16 @@ jobs:
       - name: Check browser smoke browser
         run: google-chrome --version
 
+      - name: Go formatting
+        shell: bash
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::gofmt drift; run 'gofmt -w' on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
       - name: Go tests
         run: go test ./...
 
