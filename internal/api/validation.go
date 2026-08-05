@@ -379,6 +379,20 @@ func (p params) validateUnixTimestampOrNow(key string) error {
 	return nil
 }
 
+func (p params) validateUnixTimestampOrNowOrUnchanged(key string) error {
+	if !p.has(key) {
+		return nil
+	}
+	switch p.string(key) {
+	case "now", "unchanged":
+		return nil
+	}
+	if _, err := strconv.ParseInt(p.string(key), 10, 64); err != nil {
+		return invalidParam(key, "Expected a Unix timestamp, now, or unchanged.")
+	}
+	return nil
+}
+
 func validateCustomerCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:       []string{"id", "email", "name", "test_clock", "coupon", "promotion_code"},
@@ -978,7 +992,12 @@ func validateSubscriptionUpdate(p params) error {
 		EnumParams: map[string][]string{
 			"pause_collection[behavior]": {"void", "keep_as_draft", "mark_uncollectible"},
 			"proration_behavior":         {"none", "create_prorations", "always_invoice"},
-			"payment_behavior":           {"allow_incomplete", "error_if_incomplete", "pending_if_incomplete"},
+			"payment_behavior": {
+				"allow_incomplete",
+				"default_incomplete",
+				"error_if_incomplete",
+				"pending_if_incomplete",
+			},
 			"cancellation_details[feedback]": {
 				"customer_service",
 				"low_quality",
@@ -999,10 +1018,12 @@ func validateSubscriptionUpdate(p params) error {
 			return err
 		}
 	}
-	for _, key := range []string{"billing_cycle_anchor", "trial_end"} {
-		if err := p.validateUnixTimestampOrNow(key); err != nil {
-			return err
-		}
+	// billing_cycle_anchor accepts now | unchanged | unix timestamp (Stripe dual form).
+	if err := p.validateUnixTimestampOrNowOrUnchanged("billing_cycle_anchor"); err != nil {
+		return err
+	}
+	if err := p.validateUnixTimestampOrNow("trial_end"); err != nil {
+		return err
 	}
 	return nil
 }

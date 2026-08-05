@@ -2123,8 +2123,9 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		}
 		replaceItems := hasSubscriptionItemPatch(p)
 		var items []billing.LineItem
+		var current billing.Subscription
 		if replaceItems {
-			current, err := h.billing.GetSubscription(r.Context(), id)
+			current, err = h.billing.GetSubscription(r.Context(), id)
 			if err != nil {
 				writeResult(w, nil, err)
 				return
@@ -2140,11 +2141,14 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		if len(discounts) > 0 {
 			metadata = billing.MergeDiscountMetadata(metadata, discounts)
 		}
+		var defaultTaxRates []billing.AppliedTaxRate
 		if p.hasDefaultTaxRatesParam("default_tax_rates") {
-			current, err := h.billing.GetSubscription(r.Context(), id)
-			if err != nil {
-				writeResult(w, nil, err)
-				return
+			if current.ID == "" {
+				current, err = h.billing.GetSubscription(r.Context(), id)
+				if err != nil {
+					writeResult(w, nil, err)
+					return
+				}
 			}
 			if automaticTax, _ := billing.AutomaticTaxFromMetadata(current.Metadata); automaticTax && !p.isDefaultTaxRatesClear("default_tax_rates") {
 				writeResult(w, nil, &validationError{
@@ -2165,6 +2169,7 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 					writeResult(w, nil, err)
 					return
 				}
+				defaultTaxRates = rates
 				if metadata == nil {
 					metadata = map[string]string{}
 				}
@@ -2176,6 +2181,44 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 					metadata[billing.MetadataDefaultTaxRates] = ""
 				}
 			}
+		}
+		prorationBehavior := p.string("proration_behavior")
+		if prorationBehavior == "" {
+			prorationBehavior = "none"
+		}
+		// Item change with create_prorations / always_invoice bills (or defers) proration.
+		if replaceItems && (prorationBehavior == "always_invoice" || prorationBehavior == "create_prorations") {
+			prorationDate := time.Now().UTC()
+			if raw := p.string("proration_date"); raw != "" {
+				if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
+					prorationDate = time.Unix(seconds, 0).UTC()
+				}
+			}
+			result, err := h.billing.UpdateSubscriptionItemsWithProration(r.Context(), billing.SubscriptionProrationRequest{
+				SubscriptionID:     id,
+				NewItems:           items,
+				ProrationBehavior:  prorationBehavior,
+				ProrationDate:      prorationDate,
+				BillingCycleAnchor: p.string("billing_cycle_anchor"),
+				PaymentBehavior:    p.string("payment_behavior"),
+				DefaultTaxRates:    defaultTaxRates,
+				Metadata:           metadata,
+				CancelAtPeriodEnd:  p.boolPtr("cancel_at_period_end"),
+			})
+			if err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			if result.Invoice != nil && result.Invoice.ID != "" {
+				h.emitRenewalWebhooks(r, result.PaymentResult, "subscription_update")
+			} else {
+				h.emitSubscriptionWebhook(r, "customer.subscription.updated", result.Subscription, webhooks.SourceAPI)
+			}
+			if len(discounts) > 0 {
+				h.emitGenericWebhook(r, "customer.discount.created", discounts[0].ID, h.stripeDiscount(discounts[0], result.Subscription.CustomerID, result.Subscription.ID, ""), webhooks.SourceAPI)
+			}
+			writeResult(w, h.stripeSubscription(r, result.Subscription), nil)
+			return
 		}
 		subscription, err := h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
 			Items:             items,
@@ -2390,6 +2433,7 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 	totalDiscountAmount := discountAmount
 	lines := []map[string]any{}
 	description := "Upcoming invoice preview"
+	var prorationSkippedReason any
 	if subscription.ID != "" {
 		oldTotal, oldCurrency, _, err := h.lineItemTotal(ctx, subscription.Items)
 		if err != nil {
@@ -2407,20 +2451,24 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		amount = 0
 		subtotal = 0
 		totalDiscountAmount = 0
-		if behavior != "none" && !subscription.CurrentPeriodStart.IsZero() && !subscription.CurrentPeriodEnd.IsZero() && subscription.CurrentPeriodEnd.After(createdAt) && subscription.CurrentPeriodEnd.After(subscription.CurrentPeriodStart) {
-			periodSeconds := subscription.CurrentPeriodEnd.Unix() - subscription.CurrentPeriodStart.Unix()
-			remainingSeconds := subscription.CurrentPeriodEnd.Unix() - createdAt.Unix()
-			if periodSeconds > 0 && remainingSeconds > 0 {
-				subtotal = (newTotal - oldTotal) * remainingSeconds / periodSeconds
-				amount = (discountedTotal - oldDiscountedTotal) * remainingSeconds / periodSeconds
-				totalDiscountAmount = subtotal - amount
-				if totalDiscountAmount < 0 {
-					totalDiscountAmount = 0
-				}
+		if behavior == "none" {
+			prorationSkippedReason = "behavior_none"
+		} else if remainingSeconds, periodSeconds, ok := billing.ProrationFactor(subscription.CurrentPeriodStart, subscription.CurrentPeriodEnd, createdAt); ok {
+			subtotal = billing.ProrateDelta(newTotal-oldTotal, remainingSeconds, periodSeconds)
+			amount = billing.ProrateDelta(discountedTotal-oldDiscountedTotal, remainingSeconds, periodSeconds)
+			totalDiscountAmount = subtotal - amount
+			if totalDiscountAmount < 0 {
+				totalDiscountAmount = 0
 			}
+			if amount == 0 {
+				prorationSkippedReason = "no_delta"
+			}
+		} else {
+			prorationSkippedReason = "period_ended"
 		}
 		description = "Subscription update preview"
 		if amount != 0 {
+			prorationSkippedReason = nil
 			priceID := ""
 			quantity := int64(1)
 			var pricePayload any
@@ -2460,6 +2508,7 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 	if behavior == "none" {
 		amount = 0
 		lines = nil
+		prorationSkippedReason = "behavior_none"
 	}
 	return map[string]any{
 		"id":                               "upcoming_in_" + strconv.FormatInt(now.Unix(), 10),
@@ -2536,9 +2585,10 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		"transfer_data":                    nil,
 		"webhooks_delivered_at":            nil,
 		"billtap_preview": map[string]any{
-			"proration_behavior":   behavior,
-			"proration_date":       createdAt.Unix(),
-			"billing_cycle_anchor": billingCycleAnchor.Unix(),
+			"proration_behavior":      behavior,
+			"proration_date":          createdAt.Unix(),
+			"billing_cycle_anchor":    billingCycleAnchor.Unix(),
+			"proration_skipped_reason": prorationSkippedReason,
 		},
 	}, nil
 }
@@ -6769,6 +6819,9 @@ func stripeInvoiceBillingReason(invoice billing.Invoice) string {
 	if invoice.SubscriptionID == "" {
 		return "manual"
 	}
+	if reason := strings.TrimSpace(invoice.Metadata[billing.MetadataBillingReason]); reason != "" {
+		return reason
+	}
 	if strings.HasPrefix(invoice.ID, "in_renewal_") {
 		return "subscription_cycle"
 	}
@@ -7622,7 +7675,19 @@ func writeResult(w http.ResponseWriter, value any, err error) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		var paymentErr *billing.PaymentFailureError
+		if errors.As(err, &paymentErr) {
+			writeStripeError(w, http.StatusPaymentRequired, stripeAPIError{
+				Type:        stripeErrorCard,
+				Message:     paymentErr.Message,
+				Code:        firstNonEmptyString(paymentErr.Code, "card_declined"),
+				DeclineCode: paymentErr.DeclineCode,
+			})
+			return
+		}
 		switch {
+		case errors.Is(err, billing.ErrPaymentRequired):
+			writeError(w, http.StatusPaymentRequired, err)
 		case errors.Is(err, billing.ErrNotFound):
 			writeError(w, http.StatusNotFound, err)
 		case errors.Is(err, billing.ErrInvalidInput), errors.Is(err, billing.ErrUnsupportedOutcome):

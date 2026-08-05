@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- Subscription item changes now bill instead of only recording proration
+  parameters as metadata: `proration_behavior=always_invoice` issues a paid
+  `subscription_update` invoice and repoints `latest_invoice`,
+  `billing_cycle_anchor=now` also resets the period and bills the new cycle
+  net of the unused old-cycle credit, and `create_prorations` defers the delta
+  to the next renewal invoice. Proration reuses the invoice preview's
+  calculator so preview and actual agree, applies `default_tax_rates` after
+  discounts, keeps `total == subtotal - discounts + tax` on every proration
+  invoice, emits the full invoice/payment-intent webhook sequence, and returns
+  HTTP 402 without committing the item change when
+  `payment_behavior=error_if_incomplete` meets a failing outcome.
 - Checkout session create now accepts session-level `metadata[...]` and
   round-trips it through retrieval and completion, restoring Stripe parity for
   SDK callers that attach the same map to both the session and

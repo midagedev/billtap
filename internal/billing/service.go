@@ -31,7 +31,36 @@ const (
 	MetadataAutomaticTax            = "billtap_automatic_tax"
 	MetadataTaxPercent              = "billtap_tax_percent"
 	MetadataDefaultTaxRates         = "billtap_default_tax_rates"
+	// Pending proration accumulated by create_prorations; applied on next renewal.
+	MetadataPendingProrationAmount = "billtap_pending_proration_amount"
+	MetadataPendingProrationAt     = "billtap_pending_proration_at"
+	// Invoice metadata keys for serialized billing_reason / credit evidence.
+	MetadataBillingReason = "billtap_billing_reason"
+	// Pre-discount unused old-cycle credit (anchor=now).
+	MetadataProrationCredit = "billtap_proration_credit"
+	// Discounted unused old-cycle credit when it differs from MetadataProrationCredit.
+	MetadataProrationCreditDiscounted = "billtap_proration_credit_discounted"
 )
+
+// ErrPaymentRequired indicates a payment attempt failed under error_if_incomplete
+// (HTTP 402 card_error at the API boundary).
+var ErrPaymentRequired = errors.New("payment required")
+
+// PaymentFailureError is a payment failure envelope for error_if_incomplete.
+type PaymentFailureError struct {
+	Code        string
+	DeclineCode string
+	Message     string
+}
+
+func (e *PaymentFailureError) Error() string {
+	if e == nil || e.Message == "" {
+		return ErrPaymentRequired.Error()
+	}
+	return e.Message
+}
+
+func (e *PaymentFailureError) Unwrap() error { return ErrPaymentRequired }
 
 type Repository interface {
 	CreateCustomer(context.Context, Customer) (Customer, error)
@@ -2032,6 +2061,16 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 	if err != nil {
 		return InvoicePaymentResult{}, err
 	}
+	sub.Metadata = copyMap(sub.Metadata)
+	// create_prorations pending amount is added to the renewal subtotal, then
+	// discounts and tax run on the combined base (same flow as a normal renewal).
+	if pendingRaw := strings.TrimSpace(sub.Metadata[MetadataPendingProrationAmount]); pendingRaw != "" {
+		if pending, parseErr := strconv.ParseInt(pendingRaw, 10, 64); parseErr == nil {
+			subtotal += pending
+		}
+		delete(sub.Metadata, MetadataPendingProrationAmount)
+		delete(sub.Metadata, MetadataPendingProrationAt)
+	}
 	discounts := DiscountsFromMetadata(sub.Metadata)
 	eligibleBase := EligibleDiscountBase(subtotal, discounts, lineAmounts)
 	total, discountAmount := ApplyDiscountsWithEligibleBase(subtotal, eligibleBase, currency, discounts)
@@ -2057,7 +2096,6 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 	sub.Status = "active"
 	sub.CurrentPeriodStart = periodStart
 	sub.CurrentPeriodEnd = periodEnd
-	sub.Metadata = copyMap(sub.Metadata)
 	sub.Metadata["billtap_last_renewal_at"] = at.Format(time.RFC3339Nano)
 	sub.Metadata["billtap_last_renewal_period_start"] = periodStart.Format(time.RFC3339Nano)
 	sub.Metadata["billtap_last_renewal_period_end"] = periodEnd.Format(time.RFC3339Nano)
@@ -2149,6 +2187,374 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		return InvoicePaymentResult{}, err
 	}
 	return InvoicePaymentResult{Invoice: invoice, Subscription: sub, PaymentIntent: intent}, nil
+}
+
+// SubscriptionProrationRequest describes an item change that may bill immediately.
+type SubscriptionProrationRequest struct {
+	SubscriptionID     string
+	NewItems           []LineItem
+	ProrationBehavior  string // "none" | "create_prorations" | "always_invoice"
+	ProrationDate      time.Time
+	BillingCycleAnchor string // "" | "unchanged" | "now"
+	PaymentBehavior    string // "" | "error_if_incomplete" | …
+	DefaultTaxRates    []AppliedTaxRate // optional override; empty uses subscription metadata
+	Metadata           map[string]string
+	CancelAtPeriodEnd  *bool
+}
+
+// SubscriptionProrationResult is the outcome of a proration-aware subscription update.
+type SubscriptionProrationResult struct {
+	Subscription  Subscription
+	Invoice       *Invoice
+	PaymentIntent *PaymentIntent
+	// PaymentResult is populated when an invoice was recorded (for emitRenewalWebhooks).
+	PaymentResult InvoicePaymentResult
+}
+
+// UpdateSubscriptionItemsWithProration applies item changes and, depending on
+// proration_behavior / billing_cycle_anchor, may create a subscription_update invoice.
+func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req SubscriptionProrationRequest) (SubscriptionProrationResult, error) {
+	if strings.TrimSpace(req.SubscriptionID) == "" {
+		return SubscriptionProrationResult{}, fmt.Errorf("%w: subscription is required", ErrInvalidInput)
+	}
+	if len(req.NewItems) == 0 {
+		return SubscriptionProrationResult{}, fmt.Errorf("%w: subscription items cannot be empty", ErrInvalidInput)
+	}
+	sub, err := s.repo.GetSubscription(ctx, req.SubscriptionID)
+	if err != nil {
+		return SubscriptionProrationResult{}, err
+	}
+
+	at := req.ProrationDate
+	if at.IsZero() {
+		at = s.now()
+	}
+
+	oldTotal, currency, oldLineAmounts, err := s.subscriptionLineAmounts(ctx, sub.Items)
+	if err != nil {
+		return SubscriptionProrationResult{}, err
+	}
+	newTotal, newCurrency, newLineAmounts, err := s.subscriptionLineAmounts(ctx, req.NewItems)
+	if err != nil {
+		return SubscriptionProrationResult{}, err
+	}
+	if currency == "" {
+		currency = newCurrency
+	}
+	if currency == "" {
+		currency = "usd"
+	}
+
+	behavior := strings.TrimSpace(req.ProrationBehavior)
+	if behavior == "" {
+		behavior = "none"
+	}
+	anchor := strings.TrimSpace(req.BillingCycleAnchor)
+	paymentBehavior := strings.TrimSpace(req.PaymentBehavior)
+
+	// Build the updated subscription snapshot (not yet committed).
+	updated := sub
+	updated.Items = append([]LineItem{}, req.NewItems...)
+	updated.Metadata = copyMap(sub.Metadata)
+	for key, value := range req.Metadata {
+		if value == "" {
+			delete(updated.Metadata, key)
+		} else {
+			updated.Metadata[key] = value
+		}
+	}
+	// Discounts: prefer post-merge metadata (request may attach a coupon); fall back to prior.
+	discounts := DiscountsFromMetadata(updated.Metadata)
+	if len(discounts) == 0 {
+		discounts = DiscountsFromMetadata(sub.Metadata)
+	}
+	eligibleOld := EligibleDiscountBase(oldTotal, discounts, oldLineAmounts)
+	oldDiscounted, _ := ApplyDiscountsWithEligibleBase(oldTotal, eligibleOld, currency, discounts)
+	eligibleNew := EligibleDiscountBase(newTotal, discounts, newLineAmounts)
+	newDiscounted, _ := ApplyDiscountsWithEligibleBase(newTotal, eligibleNew, currency, discounts)
+	if req.CancelAtPeriodEnd != nil {
+		updated.CancelAtPeriodEnd = *req.CancelAtPeriodEnd
+		if *req.CancelAtPeriodEnd {
+			if updated.CanceledAt == nil {
+				canceledAt := at
+				updated.CanceledAt = &canceledAt
+			}
+			updated.Metadata["cancel_at"] = updated.CurrentPeriodEnd.Format(time.RFC3339Nano)
+		} else {
+			updated.CanceledAt = nil
+			delete(updated.Metadata, "cancel_at")
+			delete(updated.Metadata, "cancellation_details_comment")
+			delete(updated.Metadata, "cancellation_details_feedback")
+			if updated.Status == "canceled" {
+				updated.Status = "active"
+			}
+		}
+	}
+	updated.Metadata["stripe_compat_updated_at"] = at.Format(time.RFC3339Nano)
+
+	rates := req.DefaultTaxRates
+	if len(rates) == 0 {
+		rates = DefaultTaxRatesFromMetadata(updated.Metadata)
+	}
+	automaticTax, taxPercent := AutomaticTaxFromMetadata(updated.Metadata)
+
+	// none: items + metadata only, no invoice, period unchanged.
+	if behavior == "none" {
+		saved, err := s.repo.UpdateSubscription(ctx, updated, []TimelineEntry{portalTimeline(
+			"stripe_compat_update_"+updated.ID+"_"+at.Format(time.RFC3339Nano),
+			"customer.subscription.updated",
+			"Stripe-compatible subscription updated",
+			updated,
+			map[string]string{"source": "stripe_compat", "status": updated.Status},
+			at,
+		)})
+		if err != nil {
+			return SubscriptionProrationResult{}, err
+		}
+		return SubscriptionProrationResult{Subscription: saved}, nil
+	}
+
+	remaining, periodSeconds, periodOK := ProrationFactor(sub.CurrentPeriodStart, sub.CurrentPeriodEnd, at)
+
+	// create_prorations: accumulate pending delta, no invoice.
+	if behavior == "create_prorations" {
+		delta := int64(0)
+		if periodOK {
+			delta = ProrateDelta(newDiscounted-oldDiscounted, remaining, periodSeconds)
+		}
+		if delta != 0 {
+			existing := int64(0)
+			if raw := strings.TrimSpace(updated.Metadata[MetadataPendingProrationAmount]); raw != "" {
+				existing, _ = strconv.ParseInt(raw, 10, 64)
+			}
+			updated.Metadata[MetadataPendingProrationAmount] = strconv.FormatInt(existing+delta, 10)
+			updated.Metadata[MetadataPendingProrationAt] = at.Format(time.RFC3339)
+		}
+		saved, err := s.repo.UpdateSubscription(ctx, updated, []TimelineEntry{portalTimeline(
+			"stripe_compat_update_"+updated.ID+"_"+at.Format(time.RFC3339Nano),
+			"customer.subscription.updated",
+			"Stripe-compatible subscription updated with pending proration",
+			updated,
+			map[string]string{"source": "stripe_compat", "status": updated.Status, "pending_proration": updated.Metadata[MetadataPendingProrationAmount]},
+			at,
+		)})
+		if err != nil {
+			return SubscriptionProrationResult{}, err
+		}
+		return SubscriptionProrationResult{Subscription: saved}, nil
+	}
+
+	// always_invoice
+	resetAnchor := anchor == "now"
+	var (
+		invoiceSubtotal  int64
+		invoiceDiscount  int64
+		invoiceBase      int64 // discounted amount before exclusive tax
+		creditSubtotal   int64 // pre-discount unused old-cycle credit (anchor=now)
+		prorationCredit  int64 // post-discount unused old-cycle credit (anchor=now)
+		shouldInvoice    bool
+	)
+	if resetAnchor {
+		// Full new cycle minus unused old-cycle credit.
+		// Subtotal uses pre-discount credit so serialization base (subtotal-discount)
+		// matches the tax base (invoiceBase); see Stripe amount identity.
+		if periodOK {
+			creditSubtotal = ProrateDelta(oldTotal, remaining, periodSeconds)
+			prorationCredit = ProrateDelta(oldDiscounted, remaining, periodSeconds)
+		}
+		invoiceSubtotal = newTotal - creditSubtotal
+		if invoiceSubtotal < 0 {
+			invoiceSubtotal = 0
+		}
+		invoiceBase = newDiscounted - prorationCredit
+		if invoiceBase < 0 {
+			invoiceBase = 0
+		}
+		invoiceDiscount = invoiceSubtotal - invoiceBase
+		if invoiceDiscount < 0 {
+			invoiceDiscount = 0
+		}
+		// Charge only when there is a positive post-credit amount to bill.
+		shouldInvoice = invoiceBase > 0
+		// Always reset period when anchor=now (even if no invoice).
+		periodEnd, err := s.nextPeriodEnd(ctx, req.NewItems, at)
+		if err != nil {
+			return SubscriptionProrationResult{}, err
+		}
+		updated.CurrentPeriodStart = at
+		updated.CurrentPeriodEnd = periodEnd
+	} else {
+		// Mid-cycle proration delta only; period unchanged.
+		if !periodOK {
+			// No usable period → no invoice, still apply items.
+			shouldInvoice = false
+		} else {
+			delta := ProrateDelta(newDiscounted-oldDiscounted, remaining, periodSeconds)
+			subtotalDelta := ProrateDelta(newTotal-oldTotal, remaining, periodSeconds)
+			if delta <= 0 {
+				// Downgrade / zero: no invoice (billtap does not model credit balance).
+				shouldInvoice = false
+			} else {
+				invoiceBase = delta
+				invoiceSubtotal = subtotalDelta
+				invoiceDiscount = subtotalDelta - delta
+				if invoiceDiscount < 0 {
+					invoiceDiscount = 0
+				}
+				shouldInvoice = true
+			}
+		}
+	}
+
+	if !shouldInvoice {
+		saved, err := s.repo.UpdateSubscription(ctx, updated, []TimelineEntry{portalTimeline(
+			"stripe_compat_update_"+updated.ID+"_"+at.Format(time.RFC3339Nano),
+			"customer.subscription.updated",
+			"Stripe-compatible subscription updated without proration invoice",
+			updated,
+			map[string]string{"source": "stripe_compat", "status": updated.Status},
+			at,
+		)})
+		if err != nil {
+			return SubscriptionProrationResult{}, err
+		}
+		return SubscriptionProrationResult{Subscription: saved}, nil
+	}
+
+	// Tax on discounted base (same rule as renewSubscription).
+	tax := int64(0)
+	invoiceTotal := invoiceBase
+	if len(rates) > 0 {
+		_, _, exclusiveTotal, taxTotal := ComputeTaxRateAmounts(invoiceBase, rates)
+		tax = taxTotal
+		invoiceTotal = invoiceBase + exclusiveTotal
+	} else if automaticTax {
+		tax = ExclusiveTaxAmount(invoiceBase, taxPercent)
+		invoiceTotal = invoiceBase + tax
+	}
+
+	// Payment outcome uses the same source as renewal (sub / customer metadata).
+	renewalOutcome := renewalOutcome(updated.Metadata)
+	if renewalOutcome == "" && updated.CustomerID != "" {
+		if customer, err := s.repo.GetCustomer(ctx, updated.CustomerID); err == nil {
+			renewalOutcome = CustomerDefaultInvoiceOutcome(customer.Metadata)
+		}
+	}
+	renewalFailed := renewalOutcome != ""
+
+	// error_if_incomplete + failure: do not commit item change or invoice.
+	if renewalFailed && paymentBehavior == "error_if_incomplete" {
+		spec, ok := intentOutcomeSpec(renewalOutcome)
+		if !ok {
+			spec, _ = intentOutcomeSpec("card_declined")
+		}
+		return SubscriptionProrationResult{}, &PaymentFailureError{
+			Code:        firstNonEmpty(spec.FailureCode, "card_declined"),
+			DeclineCode: spec.DeclineCode,
+			Message:     firstNonEmpty(spec.FailureMessage, "Your card was declined."),
+		}
+	}
+
+	invoice := Invoice{
+		ID:              id("in"),
+		Object:          ObjectInvoice,
+		CustomerID:      updated.CustomerID,
+		SubscriptionID:  updated.ID,
+		Status:          "paid",
+		Currency:        currency,
+		Subtotal:        invoiceSubtotal,
+		DiscountAmount:  invoiceDiscount,
+		Discounts:       discounts,
+		AutomaticTax:    automaticTax && len(rates) == 0,
+		DefaultTaxRates: rates,
+		Tax:             tax,
+		Total:           invoiceTotal,
+		AmountDue:       0,
+		AmountPaid:      invoiceTotal,
+		AttemptCount:    1,
+		CreatedAt:       at,
+		Metadata: map[string]string{
+			MetadataBillingReason: "subscription_update",
+		},
+	}
+	if creditSubtotal > 0 {
+		// Primary key is pre-discount credit (matches subtotal reduction).
+		invoice.Metadata[MetadataProrationCredit] = strconv.FormatInt(creditSubtotal, 10)
+		if prorationCredit != creditSubtotal {
+			invoice.Metadata[MetadataProrationCreditDiscounted] = strconv.FormatInt(prorationCredit, 10)
+		}
+	} else if prorationCredit > 0 {
+		invoice.Metadata[MetadataProrationCredit] = strconv.FormatInt(prorationCredit, 10)
+	}
+	if renewalFailed {
+		invoice.Status = "open"
+		invoice.AmountDue = invoiceTotal
+		invoice.AmountPaid = 0
+		nextPaymentAttempt := at.Add(24 * time.Hour)
+		invoice.NextPaymentAttempt = &nextPaymentAttempt
+		updated.Status = renewalFailureSubscriptionStatus(renewalOutcome)
+		updated.Metadata["billtap_last_renewal_outcome"] = renewalOutcome
+		updated.Metadata["billtap_next_retry_at"] = nextPaymentAttempt.Format(time.RFC3339Nano)
+	}
+
+	intent := PaymentIntent{
+		ID:              id("pi"),
+		Object:          ObjectPaymentIntent,
+		CustomerID:      updated.CustomerID,
+		InvoiceID:       invoice.ID,
+		Amount:          invoiceTotal,
+		Currency:        currency,
+		Status:          "succeeded",
+		CaptureMethod:   "automatic",
+		PaymentMethodID: "pm_card_visa",
+		CreatedAt:       at,
+	}
+	if renewalFailed {
+		spec, ok := intentOutcomeSpec(renewalOutcome)
+		if !ok {
+			spec, _ = intentOutcomeSpec("card_declined")
+		}
+		intent.Status = spec.PaymentIntentStatus
+		intent.PaymentMethodID = firstNonEmpty(spec.PaymentMethodID, "pm_card_declined")
+		intent.FailureCode = spec.FailureCode
+		intent.DeclineCode = spec.DeclineCode
+		intent.FailureMessage = spec.FailureMessage
+	}
+	invoice.PaymentIntentID = intent.ID
+	updated.LatestInvoiceID = invoice.ID
+
+	source := "subscription_update"
+	timeline := []TimelineEntry{
+		billingTimelineEntry("proration_invoice_created_"+invoice.ID, "invoice.created", "Subscription update invoice created", ObjectInvoice, invoice.ID, invoice.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
+		billingTimelineEntry("proration_invoice_finalized_"+invoice.ID, "invoice.finalized", "Subscription update invoice finalized", ObjectInvoice, invoice.ID, invoice.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
+		billingTimelineEntry("proration_payment_intent_created_"+intent.ID, "payment_intent.created", "Subscription update payment intent created", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": intent.Status}, at),
+	}
+	if renewalFailed {
+		timeline = append(timeline,
+			billingTimelineEntry("proration_payment_intent_failed_"+intent.ID, paymentIntentEvent(intent.Status), "Subscription update payment intent failed", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": intent.Status, "outcome": renewalOutcome}, at),
+			billingTimelineEntry("proration_invoice_payment_failed_"+invoice.ID, "invoice.payment_failed", "Subscription update invoice payment failed", ObjectInvoice, invoice.ID, invoice.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status, "outcome": renewalOutcome}, at),
+			billingTimelineEntry("proration_subscription_updated_"+updated.ID+"_"+invoice.ID, "customer.subscription.updated", "Subscription updated after proration payment failure", ObjectSubscription, updated.ID, updated.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": updated.Status, "outcome": renewalOutcome}, at),
+		)
+	} else {
+		timeline = append(timeline,
+			billingTimelineEntry("proration_payment_intent_succeeded_"+intent.ID, "payment_intent.succeeded", "Subscription update payment intent succeeded", ObjectPaymentIntent, intent.ID, intent.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": intent.Status}, at),
+			billingTimelineEntry("proration_invoice_payment_succeeded_"+invoice.ID, "invoice.payment_succeeded", "Subscription update invoice payment succeeded", ObjectInvoice, invoice.ID, invoice.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
+			billingTimelineEntry("proration_invoice_paid_"+invoice.ID, "invoice.paid", "Subscription update invoice paid", ObjectInvoice, invoice.ID, invoice.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": invoice.Status}, at),
+			billingTimelineEntry("proration_subscription_updated_"+updated.ID+"_"+invoice.ID, "customer.subscription.updated", "Subscription updated with proration invoice", ObjectSubscription, updated.ID, updated.CustomerID, "", updated.ID, invoice.ID, intent.ID, map[string]string{"source": source, "status": updated.Status}, at),
+		)
+	}
+
+	savedSub, savedInvoice, savedIntent, err := s.repo.RecordSubscriptionRenewal(ctx, updated, invoice, intent, timeline)
+	if err != nil {
+		return SubscriptionProrationResult{}, err
+	}
+	paymentResult := InvoicePaymentResult{Invoice: savedInvoice, Subscription: savedSub, PaymentIntent: savedIntent}
+	return SubscriptionProrationResult{
+		Subscription:  savedSub,
+		Invoice:       &savedInvoice,
+		PaymentIntent: &savedIntent,
+		PaymentResult: paymentResult,
+	}, nil
 }
 
 func (s *Service) subscriptionAttachedToClock(ctx context.Context, sub Subscription, clockID string) bool {

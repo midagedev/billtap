@@ -743,6 +743,65 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
     "payment_intent",
   ]);
 
+  await check(
+    "subscription update always_invoice proration",
+    async () => {
+      const lite = await stripe.prices.create({
+        product: product.id,
+        currency: "usd",
+        unit_amount: 4900,
+        recurring: { interval: "month" },
+        metadata: { billtap_smoke: "stripe_sdk", run_id: runId, tier: "lite" },
+      });
+      const proPrice = await stripe.prices.create({
+        product: product.id,
+        currency: "usd",
+        unit_amount: 9900,
+        recurring: { interval: "month" },
+        metadata: { billtap_smoke: "stripe_sdk", run_id: runId, tier: "pro" },
+      });
+      const sub = await stripe.subscriptions.create({
+        customer: customer.id,
+        items: [{ price: lite.id, quantity: 1 }],
+      });
+      assertEqual(sub.object, "subscription", "proration sub object");
+      const itemId = sub.items?.data?.[0]?.id;
+      assertEqual(Boolean(itemId), true, "proration sub item id");
+      const createInvoiceId = sub.latest_invoice;
+
+      const updated = await stripe.subscriptions.update(sub.id, {
+        items: [{ id: itemId, price: proPrice.id }],
+        proration_behavior: "always_invoice",
+        payment_behavior: "error_if_incomplete",
+      });
+      assertEqual(
+        Boolean(updated.latest_invoice),
+        true,
+        "updated latest_invoice present",
+      );
+      assert(
+        updated.latest_invoice !== createInvoiceId,
+        "latest_invoice should be a new proration invoice",
+      );
+
+      const invoiceId =
+        typeof updated.latest_invoice === "string"
+          ? updated.latest_invoice
+          : updated.latest_invoice?.id;
+      const invoice = await stripe.invoices.retrieve(invoiceId);
+      // Full remaining period: delta 5000; no tax on this smoke path.
+      assertEqual(invoice.subtotal, 5000, "proration invoice subtotal");
+      assertEqual(invoice.total, 5000, "proration invoice total");
+      assertEqual(invoice.amount_paid, 5000, "proration invoice amount_paid");
+      assertEqual(
+        invoice.billing_reason,
+        "subscription_update",
+        "proration invoice billing_reason",
+      );
+      return invoice;
+    },
+  );
+
   const checkoutEvent = await check("event list/retrieve", async () => {
     const events = await stripe.events.list({
       type: "checkout.session.completed",

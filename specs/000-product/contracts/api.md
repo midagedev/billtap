@@ -227,6 +227,42 @@ Invoice previews still do not apply either tax path.
 - `GET /v1/subscriptions/{id}/discount`
 - `DELETE /v1/subscriptions/{id}/discount`
 
+Revised 2026-08-05 (consumer plan-change adoption): item changes on
+`POST /v1/subscriptions/{id}` now bill, instead of only recording
+`proration_behavior` as metadata evidence.
+
+- `proration_behavior=always_invoice` issues a paid `subscription_update`
+  invoice immediately and repoints `latest_invoice` at it. Mid-cycle the
+  invoice bills the prorated delta between the old and new item totals,
+  scaled by the unused fraction of the period (truncating integer division,
+  the same calculator the invoice preview uses, so preview and actual agree).
+  A non-positive delta (downgrade) issues no invoice — credit balances are not
+  modeled.
+- `billing_cycle_anchor=now` additionally resets the period to
+  `now .. now + interval` and bills the new full cycle net of the unused
+  old-cycle credit. The credit is netted out of `subtotal` (and recorded as
+  `billtap_proration_credit` invoice metadata) so every proration invoice
+  satisfies `total == subtotal - discounts + tax`, and the serialized
+  `total_taxes` recomputation agrees with the stored `tax`.
+- `proration_behavior=create_prorations` issues no invoice; the delta
+  accumulates in `billtap_pending_proration_amount` subscription metadata and
+  is added to the next renewal invoice's subtotal before discounts and tax.
+- `proration_behavior=none` (the default) keeps the previous
+  items-and-metadata-only behavior.
+- Tax follows the same rule as completion and renewal: the subscription's
+  `default_tax_rates` (or the `automatic_tax` simulation) apply exclusively to
+  the post-discount base.
+- `payment_behavior=error_if_incomplete` with a configured failing outcome
+  returns HTTP 402 in Stripe's card-error shape and leaves the subscription
+  items unchanged (nothing is committed). Other `payment_behavior` values
+  leave the invoice `open` and still apply the item change, matching the
+  renewal-failure path.
+- Invoicing paths emit `invoice.created`, `invoice.finalized`,
+  `payment_intent.created`, the PaymentIntent terminal event,
+  `invoice.payment_succeeded`/`invoice.paid` (or `invoice.payment_failed`),
+  then `customer.subscription.updated`.
+- `billing_cycle_anchor` accepts `now`, `unchanged`, or a Unix timestamp.
+
 ### Subscription Schedules
 
 - `POST /v1/subscription_schedules`
