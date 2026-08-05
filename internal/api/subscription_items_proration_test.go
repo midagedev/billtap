@@ -13,7 +13,7 @@ import (
 )
 
 // Seat add/remove via POST|DELETE /v1/subscription_items with proration_behavior.
-// Amounts are integer cents; VAT 10% exclusive. Item IDs remain index-based.
+// Amounts are integer cents; VAT 10% exclusive. Item IDs are stored at creation (stable).
 
 type subItemResponse struct {
 	ID       string `json:"id"`
@@ -408,7 +408,8 @@ func TestSubscriptionItemDeleteLastItemRejected(t *testing.T) {
 }
 
 // 9. Middle item delete shifts subsequent item IDs (index-based; existing constraint).
-func TestSubscriptionItemDeleteMiddleShiftsIDs(t *testing.T) {
+func TestSubscriptionItemDeleteKeepsStableIDs(t *testing.T) {
+	// 2026-08-05: subscription item IDs are now stored at creation; deleting an item no longer shifts the IDs of later items (was asserted as shifting before).
 	handler := newTestHandler(t)
 	customer, base, seat, _ := setupSeatPlans(t, handler)
 	extra := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
@@ -451,17 +452,71 @@ func TestSubscriptionItemDeleteMiddleShiftsIDs(t *testing.T) {
 	if len(after.Items.Data) != 2 {
 		t.Fatalf("items after = %d, want 2", len(after.Items.Data))
 	}
-	// Index-based: former item2 (index 2) now has former item1's ID (index 1).
+	// Stable stored IDs: remaining items keep their creation-time IDs (no index shift).
 	if after.Items.Data[0].ID != item0 {
 		t.Fatalf("item0 id = %s, want stable %s", after.Items.Data[0].ID, item0)
 	}
-	if after.Items.Data[1].ID != item1.ID {
-		t.Fatalf("shifted id = %s, want former middle id %s (index shift constraint)", after.Items.Data[1].ID, item1.ID)
+	if after.Items.Data[1].ID != item2.ID {
+		t.Fatalf("remaining item id = %s, want stable former last id %s (no shift)", after.Items.Data[1].ID, item2.ID)
 	}
 	if after.Items.Data[1].Price.ID != extra.ID {
-		t.Fatalf("shifted item price = %s, want extra %s", after.Items.Data[1].Price.ID, extra.ID)
+		t.Fatalf("remaining item price = %s, want extra %s", after.Items.Data[1].Price.ID, extra.ID)
 	}
-	// Document: this is existing behavior; P3 did not change ID scheme.
+}
+
+// After middle delete, a new item reuses the lowest unused index; remaining IDs stay put.
+func TestSubscriptionItemDeleteThenAddReusesLowestIndex(t *testing.T) {
+	handler := newTestHandler(t)
+	customer, base, seat, _ := setupSeatPlans(t, handler)
+	extra := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {base.ProductID},
+		"currency":            {"usd"},
+		"unit_amount":         {"500"},
+		"recurring[interval]": {"month"},
+	})
+	created := postForm[prorationSubResponse](t, handler, "/v1/subscriptions", url.Values{
+		"customer":           {customer.ID},
+		"items[0][price]":    {base.ID},
+		"items[0][quantity]": {"1"},
+	})
+	item0 := created.Items.Data[0].ID
+	item1 := postForm[subItemResponse](t, handler, "/v1/subscription_items", url.Values{
+		"subscription": {created.ID},
+		"price":        {seat.ID},
+		"quantity":     {"1"},
+	})
+	item2 := postForm[subItemResponse](t, handler, "/v1/subscription_items", url.Values{
+		"subscription": {created.ID},
+		"price":        {extra.ID},
+		"quantity":     {"1"},
+	})
+	_ = deleteForm[map[string]any](t, handler, "/v1/subscription_items/"+item1.ID, url.Values{
+		"proration_behavior": {"none"},
+	})
+	added := postForm[subItemResponse](t, handler, "/v1/subscription_items", url.Values{
+		"subscription":       {created.ID},
+		"price":              {seat.ID},
+		"quantity":           {"1"},
+		"proration_behavior": {"none"},
+	})
+	// Lowest unused index was 1 (deleted); new item reuses that slot.
+	wantReused := billing.FormatSubscriptionItemID(created.ID, 1)
+	if added.ID != wantReused {
+		t.Fatalf("added id = %s, want reused lowest unused %s", added.ID, wantReused)
+	}
+	after := getJSON[prorationSubResponse](t, handler, "/v1/subscriptions/"+created.ID)
+	if len(after.Items.Data) != 3 {
+		t.Fatalf("items after add = %d, want 3", len(after.Items.Data))
+	}
+	if after.Items.Data[0].ID != item0 {
+		t.Fatalf("item0 id drifted to %s", after.Items.Data[0].ID)
+	}
+	if after.Items.Data[1].ID != item2.ID {
+		t.Fatalf("former last id drifted to %s, want %s", after.Items.Data[1].ID, item2.ID)
+	}
+	if after.Items.Data[2].ID != wantReused {
+		t.Fatalf("new item id = %s, want %s", after.Items.Data[2].ID, wantReused)
+	}
 }
 
 // 10. DELETE query-string params are parsed (bogus enum → 400).

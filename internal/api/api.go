@@ -7143,7 +7143,7 @@ func (h *Handler) stripeSubscriptionItem(r *http.Request, sub billing.Subscripti
 		}
 	}
 	return map[string]any{
-		"id":                   subscriptionItemID(sub, idx),
+		"id":                   resolvedSubscriptionItemID(sub, item, idx),
 		"object":               "subscription_item",
 		"subscription":         sub.ID,
 		"price":                priceObject,
@@ -7156,7 +7156,11 @@ func (h *Handler) stripeSubscriptionItem(r *http.Request, sub billing.Subscripti
 }
 
 func subscriptionItemID(sub billing.Subscription, idx int) string {
-	return "si_" + sanitizeID(sub.ID+"_"+strconv.Itoa(idx))
+	return billing.FormatSubscriptionItemID(sub.ID, idx)
+}
+
+func resolvedSubscriptionItemID(sub billing.Subscription, item billing.LineItem, idx int) string {
+	return billing.ResolvedSubscriptionItemID(sub.ID, item, idx)
 }
 
 func (h *Handler) stripeInvoice(ctx context.Context, invoice billing.Invoice) map[string]any {
@@ -8120,7 +8124,7 @@ func subscriptionItemsFromParams(p params, current billing.Subscription) []billi
 			if quantity <= 0 {
 				quantity = out[idx].Quantity
 			}
-			out[idx] = billing.LineItem{PriceID: priceID, Quantity: quantity}
+			out[idx] = billing.LineItem{ID: out[idx].ID, PriceID: priceID, Quantity: quantity}
 			continue
 		}
 		if priceID == "" {
@@ -8135,8 +8139,8 @@ func subscriptionItemsFromParams(p params, current billing.Subscription) []billi
 }
 
 func subscriptionItemIndexByID(sub billing.Subscription, itemID string) int {
-	for idx := range sub.Items {
-		if subscriptionItemID(sub, idx) == itemID {
+	for idx, item := range sub.Items {
+		if resolvedSubscriptionItemID(sub, item, idx) == itemID {
 			return idx
 		}
 	}
@@ -8209,8 +8213,8 @@ func (h *Handler) findSubscriptionItem(r *http.Request, itemID string) (billing.
 		return billing.Subscription{}, 0, false, err
 	}
 	for _, subscription := range subscriptions {
-		for idx := range subscription.Items {
-			if subscriptionItemID(subscription, idx) == itemID {
+		for idx, item := range subscription.Items {
+			if resolvedSubscriptionItemID(subscription, item, idx) == itemID {
 				return subscription, idx, true, nil
 			}
 		}

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Subscription item IDs are now stored when the item is created instead of
+  being derived from its array position, so deleting an item no longer shifts
+  the IDs of the items after it. The `si_<subscription>_<n>` shape is
+  unchanged, subscriptions stored before this release keep exposing their
+  position-derived IDs and are backfilled with those same values on their next
+  write, and a later add reuses the lowest unused index.
+- Renewal invoices now report `billing_reason: subscription_cycle`. They were
+  labelled `subscription_create` because the renewal check looked for an
+  `in_renewal_` ID prefix that renewals never had, leaving first charges and
+  renewals indistinguishable to webhook consumers.
 - Invoice previews without item overrides now return the subscription's next
   billing cycle instead of a zero-amount preview: `create_preview` and
   `upcoming` with just a subscription report the upcoming items, discounts, and

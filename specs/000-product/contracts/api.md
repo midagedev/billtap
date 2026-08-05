@@ -294,8 +294,15 @@ Revised 2026-08-05 (consumer plan-change adoption): item changes on
   the query string as well as the body, rejects deleting the last item, and
   accepts `clear_usage` as evidence only. Item-level `tax_rates` round-trip as
   evidence but do not affect totals — billtap taxes at the subscription level.
-  Subscription item IDs remain index-derived (`si_<subscription>_<index>`), so
-  deleting a middle item shifts the IDs of later items.
+  Subscription item IDs keep the `si_<subscription>_<n>` shape but, as of
+  2026-08-05, are stored when the item is created rather than derived from its
+  array position: deleting an item no longer shifts the IDs of later items, a
+  later add reuses the lowest unused index, and subscriptions stored before
+  that change keep their position-derived IDs (backfilled with the same values
+  on their next write).
+- Renewal invoices report `billing_reason: subscription_cycle` (2026-08-05;
+  they previously reported `subscription_create`), first charges report
+  `subscription_create`, and proration invoices report `subscription_update`.
 
 ### Subscription Schedules
 

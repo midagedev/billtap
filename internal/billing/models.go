@@ -76,6 +76,7 @@ type Price struct {
 }
 
 type LineItem struct {
+	ID       string `json:"id,omitempty"` // stable subscription item ID (si_…); empty for legacy rows
 	PriceID  string `json:"price"`
 	Quantity int64  `json:"quantity"`
 }

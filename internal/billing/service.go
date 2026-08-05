@@ -143,6 +143,12 @@ func NewService(repo Repository) *Service {
 	return &Service{repo: repo, now: func() time.Time { return time.Now().UTC() }}
 }
 
+// persistSubscription assigns stable item IDs then writes the subscription.
+func (s *Service) persistSubscription(ctx context.Context, sub Subscription, timeline []TimelineEntry) (Subscription, error) {
+	sub.Items = AssignSubscriptionItemIDs(sub.ID, sub.Items)
+	return s.repo.UpdateSubscription(ctx, sub, timeline)
+}
+
 func (s *Service) CreateCustomer(ctx context.Context, in Customer) (Customer, error) {
 	now := s.now()
 	if strings.TrimSpace(in.ID) == "" {
@@ -568,6 +574,7 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 	}
 	sub.LatestInvoiceID = invoice.ID
 	invoice.PaymentIntentID = intent.ID
+	sub.Items = AssignSubscriptionItemIDs(sub.ID, sub.Items)
 
 	return s.repo.RecordCheckoutCompletion(ctx, CheckoutCompletion{
 		SessionID:     session.ID,
@@ -762,7 +769,7 @@ func (s *Service) PatchSubscription(ctx context.Context, subscriptionID string, 
 	action := firstNonEmpty(patch.TimelineAction, "customer.subscription.updated")
 	message := firstNonEmpty(patch.TimelineMessage, "Stripe-compatible subscription updated")
 	source := firstNonEmpty(patch.TimelineSource, "stripe_compat")
-	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{portalTimeline(
+	return s.persistSubscription(ctx, sub, []TimelineEntry{portalTimeline(
 		"stripe_compat_update_"+sub.ID+"_"+now.Format(time.RFC3339Nano),
 		action,
 		message,
@@ -1801,7 +1808,7 @@ func (s *Service) ChangePortalPlan(ctx context.Context, subscriptionID string, c
 	}
 
 	now := s.now()
-	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{portalTimeline(
+	return s.persistSubscription(ctx, sub, []TimelineEntry{portalTimeline(
 		"portal_plan_change_"+sub.ID+"_"+now.Format(time.RFC3339Nano),
 		"customer.subscription.updated",
 		"Portal plan changed",
@@ -1841,7 +1848,7 @@ func (s *Service) ChangePortalSeats(ctx context.Context, subscriptionID string, 
 	sub.Metadata["portal_updated_at"] = s.now().Format(time.RFC3339Nano)
 
 	now := s.now()
-	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{portalTimeline(
+	return s.persistSubscription(ctx, sub, []TimelineEntry{portalTimeline(
 		"portal_seat_change_"+sub.ID+"_"+now.Format(time.RFC3339Nano),
 		"customer.subscription.updated",
 		"Portal seat quantity changed",
@@ -1895,7 +1902,7 @@ func (s *Service) CancelPortalSubscription(ctx context.Context, subscriptionID s
 		message = "Portal subscription canceled immediately"
 		data["status"] = sub.Status
 	}
-	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{portalTimeline(
+	return s.persistSubscription(ctx, sub, []TimelineEntry{portalTimeline(
 		"portal_cancel_"+sub.ID+"_"+mode+"_"+now.Format(time.RFC3339Nano),
 		action,
 		message,
@@ -1926,7 +1933,7 @@ func (s *Service) ResumePortalSubscription(ctx context.Context, subscriptionID s
 	sub.Metadata["portal_last_action"] = "resume"
 	sub.Metadata["portal_updated_at"] = now.Format(time.RFC3339Nano)
 
-	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{portalTimeline(
+	return s.persistSubscription(ctx, sub, []TimelineEntry{portalTimeline(
 		"portal_resume_"+sub.ID+"_"+now.Format(time.RFC3339Nano),
 		"customer.subscription.updated",
 		"Portal subscription resumed",
@@ -2008,7 +2015,7 @@ func (s *Service) cancelSubscriptionAtClock(ctx context.Context, sub Subscriptio
 	sub.Metadata = copyMap(sub.Metadata)
 	sub.Metadata["billtap_clock_canceled_at"] = at.Format(time.RFC3339Nano)
 	delete(sub.Metadata, "cancel_at")
-	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{billingTimelineEntry(
+	return s.persistSubscription(ctx, sub, []TimelineEntry{billingTimelineEntry(
 		"clock_cancel_"+sub.ID+"_"+at.Format(time.RFC3339Nano),
 		"customer.subscription.deleted",
 		"Subscription canceled at period end",
@@ -2040,7 +2047,7 @@ func (s *Service) activateTrialSubscriptionAtClock(ctx context.Context, sub Subs
 	sub.Metadata["billtap_trial_activated_at"] = at.Format(time.RFC3339Nano)
 	sub.Metadata["billtap_last_period_start"] = periodStart.Format(time.RFC3339Nano)
 	sub.Metadata["billtap_last_period_end"] = periodEnd.Format(time.RFC3339Nano)
-	return s.repo.UpdateSubscription(ctx, sub, []TimelineEntry{billingTimelineEntry(
+	return s.persistSubscription(ctx, sub, []TimelineEntry{billingTimelineEntry(
 		"clock_trial_activate_"+sub.ID+"_"+at.Format(time.RFC3339Nano),
 		"customer.subscription.updated",
 		"Trial subscription activated",
@@ -2125,6 +2132,9 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		AmountPaid:      total,
 		AttemptCount:    1,
 		CreatedAt:       at,
+		Metadata: map[string]string{
+			MetadataBillingReason: "subscription_cycle",
+		},
 	}
 	if renewalFailed {
 		invoice.Status = "open"
@@ -2182,6 +2192,7 @@ func (s *Service) renewSubscription(ctx context.Context, sub Subscription, at ti
 		)
 	}
 
+	sub.Items = AssignSubscriptionItemIDs(sub.ID, sub.Items)
 	sub, invoice, intent, err = s.repo.RecordSubscriptionRenewal(ctx, sub, invoice, intent, timeline)
 	if err != nil {
 		return InvoicePaymentResult{}, err
@@ -2254,7 +2265,7 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 
 	// Build the updated subscription snapshot (not yet committed).
 	updated := sub
-	updated.Items = append([]LineItem{}, req.NewItems...)
+	updated.Items = AssignSubscriptionItemIDs(sub.ID, append([]LineItem{}, req.NewItems...))
 	updated.Metadata = copyMap(sub.Metadata)
 	for key, value := range req.Metadata {
 		if value == "" {
@@ -2300,7 +2311,7 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 
 	// none: items + metadata only, no invoice, period unchanged.
 	if behavior == "none" {
-		saved, err := s.repo.UpdateSubscription(ctx, updated, []TimelineEntry{portalTimeline(
+		saved, err := s.persistSubscription(ctx, updated, []TimelineEntry{portalTimeline(
 			"stripe_compat_update_"+updated.ID+"_"+at.Format(time.RFC3339Nano),
 			"customer.subscription.updated",
 			"Stripe-compatible subscription updated",
@@ -2330,7 +2341,7 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 			updated.Metadata[MetadataPendingProrationAmount] = strconv.FormatInt(existing+delta, 10)
 			updated.Metadata[MetadataPendingProrationAt] = at.Format(time.RFC3339)
 		}
-		saved, err := s.repo.UpdateSubscription(ctx, updated, []TimelineEntry{portalTimeline(
+		saved, err := s.persistSubscription(ctx, updated, []TimelineEntry{portalTimeline(
 			"stripe_compat_update_"+updated.ID+"_"+at.Format(time.RFC3339Nano),
 			"customer.subscription.updated",
 			"Stripe-compatible subscription updated with pending proration",
@@ -2407,7 +2418,7 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 	}
 
 	if !shouldInvoice {
-		saved, err := s.repo.UpdateSubscription(ctx, updated, []TimelineEntry{portalTimeline(
+		saved, err := s.persistSubscription(ctx, updated, []TimelineEntry{portalTimeline(
 			"stripe_compat_update_"+updated.ID+"_"+at.Format(time.RFC3339Nano),
 			"customer.subscription.updated",
 			"Stripe-compatible subscription updated without proration invoice",
