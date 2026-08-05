@@ -900,6 +900,52 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
   );
 
   await check(
+    "invoice createPreview next-period upcoming without item overrides",
+    async () => {
+      const monthly = await stripe.prices.create({
+        product: product.id,
+        currency: "usd",
+        unit_amount: 4900,
+        recurring: { interval: "month" },
+        metadata: {
+          billtap_smoke: "stripe_sdk",
+          run_id: runId,
+          tier: "upcoming_next_period",
+        },
+      });
+      const txr = await stripe.taxRates.create({
+        display_name: "VAT upcoming",
+        percentage: 10,
+        inclusive: false,
+      });
+      const sub = await stripe.subscriptions.create({
+        customer: customer.id,
+        items: [{ price: monthly.id, quantity: 1 }],
+        default_tax_rates: [txr.id],
+      });
+      const preview = await stripe.invoices.createPreview({
+        customer: customer.id,
+        subscription: sub.id,
+      });
+      assertEqual(preview.billing_reason, "upcoming", "next-period billing_reason");
+      assertEqual(preview.subtotal, 4900, "next-period subtotal");
+      assertEqual(preview.tax, 490, "next-period tax");
+      assertEqual(preview.total, 5390, "next-period total");
+      assertEqual(
+        preview.total_taxes?.[0]?.amount,
+        490,
+        "next-period total_taxes[0].amount",
+      );
+      assertEqual(
+        preview.lines?.data?.[0]?.proration,
+        false,
+        "next-period line not proration",
+      );
+      return preview;
+    },
+  );
+
+  await check(
     "subscriptionItems create always_invoice + delete none",
     async () => {
       const seatProduct = await stripe.products.create({

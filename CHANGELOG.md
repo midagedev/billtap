@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Invoice previews without item overrides now return the subscription's next
+  billing cycle instead of a zero-amount preview: `create_preview` and
+  `upcoming` with just a subscription report the upcoming items, discounts, and
+  tax with `billing_reason: upcoming`, include any deferred
+  `create_prorations` amount without consuming it, and match the invoice the
+  next renewal actually produces. Previews that pass item overrides keep the
+  existing proration behaviour.
 - Fixture packs can now seed the tax and discount evidence their subscriptions
   need: top-level `coupons` and `promotion_codes` keys, and
   `subscriptions[].default_tax_rates`. Tax-rate and coupon evidence is seeded

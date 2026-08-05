@@ -2490,6 +2490,11 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 			customerID = subscription.CustomerID
 		}
 	}
+	// No item override + subscription → next-period upcoming invoice (Stripe-compatible).
+	// Override detection shares invoicePreviewHasItemOverrides with the items loader path.
+	if subscription.ID != "" && !invoicePreviewHasItemOverrides(p) {
+		return h.invoicePreviewNextPeriod(ctx, path, p, subscription, customerID, now)
+	}
 	items := invoicePreviewLineItems(p)
 	if len(items) == 0 && subscription.ID != "" {
 		items = append([]billing.LineItem{}, subscription.Items...)
@@ -2737,6 +2742,276 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 			"proration_skipped_reason": prorationSkippedReason,
 		},
 	}, nil
+}
+
+// invoicePreviewHasItemOverrides reports whether the request supplied any
+// subscription item price override. Detection uses invoicePreviewLineItems
+// before subscription fallback so empty-item upcoming previews take the
+// next-period path (same criterion for create_preview and /upcoming).
+func invoicePreviewHasItemOverrides(p params) bool {
+	return len(invoicePreviewLineItems(p)) > 0
+}
+
+// invoicePreviewNextPeriod builds the Stripe-compatible "next billing cycle"
+// invoice when no subscription_details items are overridden.
+func (h *Handler) invoicePreviewNextPeriod(ctx context.Context, path string, p params, subscription billing.Subscription, customerID string, now time.Time) (map[string]any, error) {
+	items := append([]billing.LineItem{}, subscription.Items...)
+	behavior := invoicePreviewProrationBehavior(p)
+	createdAt := invoicePreviewProrationDate(p, now)
+	billingCycleAnchor := invoicePreviewBillingCycleAnchor(p, createdAt)
+	testClock := emptyToNil(firstNonEmptyString(metadataValue(subscription.Metadata, "test_clock"), metadataValue(subscription.Metadata, "testClock")))
+
+	// Next period starts at current_period_end. For trialing, first charge is at trial_end.
+	periodStart := subscription.CurrentPeriodEnd
+	if strings.EqualFold(subscription.Status, "trialing") {
+		if trialEnd := subscriptionTrialEndTime(subscription); !trialEnd.IsZero() {
+			periodStart = trialEnd
+		}
+	}
+
+	var prorationSkippedReason any
+	periodStartUnix := int64(0)
+	periodEndUnix := int64(0)
+	subtotal := int64(0)
+	amount := int64(0) // post-discount pretax base
+	totalDiscountAmount := int64(0)
+	currency := strings.ToLower(p.stringDefault("currency", "usd"))
+	lines := []map[string]any{}
+	discounts := []billing.Discount{}
+	var rates []billing.AppliedTaxRate
+	automaticTaxEnabled := false
+	taxPercent := 0.0
+
+	if periodStart.IsZero() {
+		prorationSkippedReason = "no_period"
+	} else {
+		periodEnd, err := h.billing.NextPeriodEnd(ctx, items, periodStart)
+		if err != nil {
+			return nil, err
+		}
+		periodStartUnix = periodStart.Unix()
+		periodEndUnix = periodEnd.Unix()
+
+		itemTotal, itemCurrency, prices, err := h.lineItemTotal(ctx, items)
+		if err != nil {
+			return nil, err
+		}
+		if itemCurrency != "" {
+			currency = itemCurrency
+		}
+		subtotal = itemTotal
+		// create_prorations pending is rolled into the renewal subtotal (read-only here).
+		if pendingRaw := strings.TrimSpace(subscription.Metadata[billing.MetadataPendingProrationAmount]); pendingRaw != "" {
+			if pending, parseErr := strconv.ParseInt(pendingRaw, 10, 64); parseErr == nil {
+				subtotal += pending
+			}
+		}
+
+		discounts, err = h.invoicePreviewDiscounts(ctx, p, subscription, customerID)
+		if err != nil {
+			return nil, err
+		}
+		lineAmounts, err := h.lineAmounts(ctx, items)
+		if err != nil {
+			return nil, err
+		}
+		eligible := billing.EligibleDiscountBase(subtotal, discounts, lineAmounts)
+		amount, totalDiscountAmount = billing.ApplyDiscountsWithEligibleBase(subtotal, eligible, currency, discounts)
+
+		for idx, item := range items {
+			quantity := item.Quantity
+			if quantity <= 0 {
+				quantity = 1
+			}
+			lineAmount := int64(0)
+			var pricePayload any
+			if priceObj, ok := prices[item.PriceID]; ok {
+				pricePayload = priceObj
+				if unit, ok := priceObj["unit_amount"].(int64); ok {
+					lineAmount = unit * quantity
+				} else if unitF, ok := priceObj["unit_amount"].(float64); ok {
+					lineAmount = int64(unitF) * quantity
+				}
+			} else {
+				price, priceErr := h.billing.GetPrice(ctx, item.PriceID)
+				if priceErr != nil {
+					return nil, priceErr
+				}
+				lineAmount = price.UnitAmount * quantity
+				pricePayload = stripePrice(price)
+			}
+			lines = append(lines, map[string]any{
+				"id":               "il_preview_" + sanitizeID(subscription.ID) + "_" + strconv.Itoa(idx),
+				"object":           "line_item",
+				"amount":           lineAmount,
+				"currency":         currency,
+				"description":      "Upcoming subscription invoice",
+				"discount_amounts": []map[string]any{},
+				"discountable":     true,
+				"period": map[string]any{
+					"start": periodStartUnix,
+					"end":   periodEndUnix,
+				},
+				"proration":    false,
+				"price":        pricePayload,
+				"quantity":     quantity,
+				"subscription": subscription.ID,
+				"type":         "subscription",
+				"parent": map[string]any{
+					"type": "subscription_item_details",
+					"subscription_item_details": map[string]any{
+						"price":        item.PriceID,
+						"proration":    false,
+						"subscription": subscription.ID,
+					},
+				},
+			})
+		}
+
+		rates = billing.DefaultTaxRatesFromMetadata(subscription.Metadata)
+		automaticTaxEnabled, taxPercent = billing.AutomaticTaxFromMetadata(subscription.Metadata)
+		if len(rates) > 0 {
+			automaticTaxEnabled = false
+		}
+	}
+
+	taxValue := any(nil)
+	totalExcludingTax := amount
+	total := amount
+	totalTaxAmounts := []map[string]any{}
+	totalTaxes := []map[string]any{}
+	defaultTaxRates := []map[string]any{}
+	automaticTaxObj := stripeInvoiceAutomaticTax(false)
+	if len(rates) > 0 {
+		pretax, taxTotal, exclusiveTotal, tta, tt := invoiceTaxBreakdown(amount, rates)
+		taxValue = taxTotal
+		totalExcludingTax = pretax
+		total = amount + exclusiveTotal
+		totalTaxAmounts = tta
+		totalTaxes = tt
+		defaultTaxRates = h.stripeTaxRateObjects(rates)
+	} else if automaticTaxEnabled {
+		taxAmt := billing.ExclusiveTaxAmount(amount, taxPercent)
+		taxValue = taxAmt
+		total = amount + taxAmt
+		totalExcludingTax = amount
+		automaticTaxObj = stripeInvoiceAutomaticTax(true)
+		if taxAmt > 0 {
+			totalTaxAmounts = []map[string]any{{
+				"amount":            taxAmt,
+				"inclusive":         false,
+				"tax_rate":          "txr_billtap_simulated",
+				"taxability_reason": "standard_rated",
+			}}
+			totalTaxes = []map[string]any{{
+				"amount":            taxAmt,
+				"tax_behavior":      "exclusive",
+				"tax_rate_details":  map[string]any{"tax_rate": "txr_billtap_simulated"},
+				"taxability_reason": "standard_rated",
+				"taxable_amount":    totalExcludingTax,
+				"type":              "tax_rate_details",
+			}}
+		}
+	}
+
+	return map[string]any{
+		"id":                               "upcoming_in_" + strconv.FormatInt(now.Unix(), 10),
+		"object":                           "invoice",
+		"customer":                         emptyToNil(customerID),
+		"subscription":                     emptyToNil(subscription.ID),
+		"parent":                           stripeInvoiceParent(subscription.ID),
+		"amount_due":                       total,
+		"amount_paid":                      0,
+		"amount_remaining":                 total,
+		"amount_shipping":                  0,
+		"subtotal":                         subtotal,
+		"subtotal_excluding_tax":           subtotal,
+		"total":                            total,
+		"total_excluding_tax":              totalExcludingTax,
+		"discount":                         firstDiscountObject(h, discounts, customerID, subscription.ID, ""),
+		"discounts":                        discountObjects(h, discounts, customerID, subscription.ID, ""),
+		"total_discount_amounts":           discountAmounts(discounts, totalDiscountAmount),
+		"currency":                         currency,
+		"created":                          now.Unix(),
+		"effective_at":                     nil,
+		"period_start":                     periodStartUnix,
+		"period_end":                       periodEndUnix,
+		"status":                           "draft",
+		"lines":                            stripeList(path+"/lines", lines),
+		"payments":                         stripeList(path+"/payments", []map[string]any{}),
+		"livemode":                         false,
+		"description":                      "Upcoming subscription invoice",
+		"account_country":                  nil,
+		"account_name":                     nil,
+		"account_tax_ids":                  nil,
+		"application":                      nil,
+		"application_fee_amount":           nil,
+		"attempt_count":                    0,
+		"attempted":                        false,
+		"auto_advance":                     false,
+		"automatic_tax":                    automaticTaxObj,
+		"automatically_finalizes_at":       nil,
+		"billing_reason":                   "upcoming",
+		"charge":                           nil,
+		"collection_method":                "charge_automatically",
+		"custom_fields":                    nil,
+		"default_payment_method":           nil,
+		"default_source":                   nil,
+		"default_tax_rates":                defaultTaxRates,
+		"due_date":                         nil,
+		"ending_balance":                   0,
+		"footer":                           nil,
+		"from_invoice":                     nil,
+		"last_finalization_error":          nil,
+		"metadata":                         map[string]string{},
+		"next_payment_attempt":             nil,
+		"number":                           nil,
+		"on_behalf_of":                     nil,
+		"paid":                             false,
+		"paid_out_of_band":                 false,
+		"payment_intent":                   nil,
+		"payment_settings":                 stripeInvoicePaymentSettings(),
+		"post_payment_credit_notes_amount": 0,
+		"pre_payment_credit_notes_amount":  0,
+		"quote":                            nil,
+		"receipt_number":                   nil,
+		"rendering":                        nil,
+		"rendering_options":                nil,
+		"shipping_cost":                    nil,
+		"shipping_details":                 nil,
+		"starting_balance":                 0,
+		"statement_descriptor":             nil,
+		"status_transitions":               stripeInvoiceStatusTransitions(nil, nil),
+		"tax":                              taxValue,
+		"test_clock":                       testClock,
+		"total_tax_amounts":                totalTaxAmounts,
+		"total_taxes":                      totalTaxes,
+		"transfer_data":                    nil,
+		"webhooks_delivered_at":            nil,
+		"billtap_preview": map[string]any{
+			"proration_behavior":       behavior,
+			"proration_date":           createdAt.Unix(),
+			"billing_cycle_anchor":     billingCycleAnchor.Unix(),
+			"proration_skipped_reason": prorationSkippedReason,
+		},
+	}, nil
+}
+
+func subscriptionTrialEndTime(sub billing.Subscription) time.Time {
+	raw := strings.TrimSpace(sub.Metadata["trial_end"])
+	if raw == "" {
+		return time.Time{}
+	}
+	if seconds, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		return time.Unix(seconds, 0).UTC()
+	}
+	if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil {
+		return parsed.UTC()
+	}
+	if parsed, err := time.Parse(time.RFC3339, raw); err == nil {
+		return parsed.UTC()
+	}
+	return time.Time{}
 }
 
 func invoicePreviewPeriod(subscription billing.Subscription, createdAt time.Time) (int64, int64) {

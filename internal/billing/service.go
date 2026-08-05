@@ -3088,6 +3088,12 @@ func (s *Service) nextPeriodEnd(ctx context.Context, items []LineItem, start tim
 	}
 }
 
+// NextPeriodEnd is the public wrapper for next billing-period end calculation.
+// API preview uses this so period math stays in the billing service (no API-layer duplication).
+func (s *Service) NextPeriodEnd(ctx context.Context, items []LineItem, start time.Time) (time.Time, error) {
+	return s.nextPeriodEnd(ctx, items, start)
+}
+
 func invoicePaymentTimeline(sub Subscription, invoice Invoice, intent PaymentIntent, success bool, at time.Time) []TimelineEntry {
 	source := "invoice.pay"
 	attemptSuffix := fmt.Sprintf("_attempt_%d_%s", invoice.AttemptCount, at.Format(time.RFC3339Nano))

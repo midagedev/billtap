@@ -231,6 +231,16 @@ silently yielding a zero proration), and a preview that cannot prorate
 reports why in `billtap_preview.proration_skipped_reason` instead of
 returning a silent zero.
 
+Revised 2026-08-05 (upcoming-invoice parity): a preview that names a
+subscription but overrides no items now returns that subscription's **next
+billing cycle** instead of a zero-amount proration. The response carries one
+non-proration line per subscription item, the next period
+(`current_period_end` onward, or `trial_end` for a trialing subscription),
+discounts and tax over the item total, and `billing_reason: upcoming`. Any
+amount deferred by an earlier `create_prorations` update is included without
+being consumed, so the preview equals the invoice the next renewal produces.
+Previews that do override items keep the proration behaviour described above.
+
 ### Subscriptions
 
 - `GET /v1/subscriptions/{id}`
