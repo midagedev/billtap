@@ -4272,9 +4272,42 @@ func (h *Handler) handleFixtureApply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pack = applyRequestRunID(r, pack)
-	result, err := fixtures.NewService(h.billing).Apply(r.Context(), pack)
+	// Seed tax/coupon/promo evidence BEFORE fixtures.Apply so subscription create can resolve
+	// default_tax_rates (and coupon amounts) into the checkout session — first invoice is taxed.
+	taxRates, err := h.applyFixtureTaxRates(pack)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	coupons, err := h.applyFixtureCoupons(pack)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	promotionCodes, err := h.applyFixturePromotionCodes(pack)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	result, err := fixtures.NewService(h.billing).
+		WithTaxRateResolver(h.fixtureTaxRateResolver).
+		WithCouponResolver(h.fixtureCouponResolver).
+		Apply(r.Context(), pack)
 	if err != nil {
 		if errors.Is(err, fixtures.ErrAssertionFailed) {
+			// Still attach evidence summaries so callers see what was seeded.
+			if len(taxRates) > 0 {
+				result.TaxRates = taxRates
+				result.Summary["tax_rates"] = len(taxRates)
+			}
+			if len(coupons) > 0 {
+				result.Coupons = coupons
+				result.Summary["coupons"] = len(coupons)
+			}
+			if len(promotionCodes) > 0 {
+				result.PromotionCodes = promotionCodes
+				result.Summary["promotion_codes"] = len(promotionCodes)
+			}
 			writeJSON(w, http.StatusConflict, result)
 			return
 		}
@@ -4288,12 +4321,17 @@ func (h *Handler) handleFixtureApply(w http.ResponseWriter, r *http.Request) {
 		result.Disputes = disputes
 		result.Summary["disputes"] = len(disputes)
 	}
-	if taxRates, err := h.applyFixtureTaxRates(pack); err != nil {
-		writeResult(w, result, err)
-		return
-	} else if len(taxRates) > 0 {
+	if len(taxRates) > 0 {
 		result.TaxRates = taxRates
 		result.Summary["tax_rates"] = len(taxRates)
+	}
+	if len(coupons) > 0 {
+		result.Coupons = coupons
+		result.Summary["coupons"] = len(coupons)
+	}
+	if len(promotionCodes) > 0 {
+		result.PromotionCodes = promotionCodes
+		result.Summary["promotion_codes"] = len(promotionCodes)
 	}
 	h.emitFixtureApplyWebhooks(r, result)
 	writeJSON(w, http.StatusOK, result)
@@ -4334,6 +4372,8 @@ func (h *Handler) handleFixtureValidate(w http.ResponseWriter, r *http.Request) 
 			"credit_notes":       len(pack.CreditNotes),
 			"disputes":           len(pack.Disputes),
 			"tax_rates":          len(pack.TaxRates),
+			"coupons":            len(pack.Coupons),
+			"promotion_codes":    len(pack.PromotionCodes),
 		},
 	})
 }
@@ -4445,6 +4485,152 @@ func taxRateFixturePayload(fixture fixtures.TaxRateFixture) map[string]any {
 		"created":              now.Unix(),
 		"livemode":             false,
 	}
+}
+
+// applyFixtureCoupons seeds coupon evidence from the fixture pack (same path as tax_rates).
+// Same ID re-applies by overwrite for fixture idempotency.
+func (h *Handler) applyFixtureCoupons(pack fixtures.Pack) ([]map[string]any, error) {
+	if len(pack.Coupons) == 0 {
+		return nil, nil
+	}
+	out := make([]map[string]any, 0, len(pack.Coupons))
+	for _, fixture := range pack.Coupons {
+		coupon := couponFixturePayload(fixture)
+		h.local.mu.Lock()
+		h.local.coupons[fmt.Sprint(coupon["id"])] = coupon
+		h.local.mu.Unlock()
+		out = append(out, cloneEvidence(coupon))
+	}
+	return out, nil
+}
+
+// couponFixturePayload builds the same object shape as POST /v1/coupons.
+func couponFixturePayload(fixture fixtures.CouponFixture) map[string]any {
+	now := time.Now().UTC()
+	id := strings.TrimSpace(fixture.ID)
+	if id == "" {
+		id = "coupon_" + strconv.FormatInt(now.UnixNano(), 36)
+	}
+	duration := strings.TrimSpace(fixture.Duration)
+	if duration == "" {
+		duration = "once"
+	}
+	coupon := map[string]any{
+		"id":                 id,
+		"object":             "coupon",
+		"name":               emptyToNil(strings.TrimSpace(fixture.Name)),
+		"duration":           duration,
+		"percent_off":        nil,
+		"amount_off":         nil,
+		"currency":           emptyToNil(strings.ToLower(strings.TrimSpace(fixture.Currency))),
+		"duration_in_months": nil,
+		"max_redemptions":    nil,
+		"redeem_by":          nil,
+		"times_redeemed":     int64(0),
+		"valid":              true,
+		"metadata":           nonNilMap(fixture.Metadata),
+		"created":            now.Unix(),
+		"livemode":           false,
+	}
+	if fixture.PercentOff != 0 {
+		coupon["percent_off"] = fixture.PercentOff
+	}
+	if fixture.AmountOff != 0 {
+		coupon["amount_off"] = fixture.AmountOff
+	}
+	if fixture.DurationInMonths != 0 {
+		coupon["duration_in_months"] = fixture.DurationInMonths
+	}
+	if fixture.MaxRedemptions != 0 {
+		coupon["max_redemptions"] = fixture.MaxRedemptions
+	}
+	if fixture.RedeemBy != 0 {
+		coupon["redeem_by"] = fixture.RedeemBy
+	}
+	if len(fixture.AppliesTo) > 0 {
+		products := make([]string, len(fixture.AppliesTo))
+		copy(products, fixture.AppliesTo)
+		coupon["applies_to"] = map[string]any{"products": products}
+	}
+	return coupon
+}
+
+// applyFixturePromotionCodes seeds promotion_code evidence linked to coupons already in the pack or local store.
+// Same ID re-applies by overwrite for fixture idempotency.
+func (h *Handler) applyFixturePromotionCodes(pack fixtures.Pack) ([]map[string]any, error) {
+	if len(pack.PromotionCodes) == 0 {
+		return nil, nil
+	}
+	out := make([]map[string]any, 0, len(pack.PromotionCodes))
+	for _, fixture := range pack.PromotionCodes {
+		promo, err := h.promotionCodeFixturePayload(fixture)
+		if err != nil {
+			return nil, err
+		}
+		h.local.mu.Lock()
+		h.local.promotionCodes[fmt.Sprint(promo["id"])] = promo
+		h.local.mu.Unlock()
+		out = append(out, cloneEvidence(promo))
+	}
+	return out, nil
+}
+
+// promotionCodeFixturePayload builds the same object shape as POST /v1/promotion_codes.
+func (h *Handler) promotionCodeFixturePayload(fixture fixtures.PromotionCodeFixture) (map[string]any, error) {
+	now := time.Now().UTC()
+	id := strings.TrimSpace(fixture.ID)
+	if id == "" {
+		id = "promo_" + strconv.FormatInt(now.UnixNano(), 36)
+	}
+	code := strings.TrimSpace(fixture.Code)
+	if code == "" {
+		code = strings.ToUpper(id)
+	}
+	couponID := strings.TrimSpace(fixture.Coupon)
+	h.local.mu.Lock()
+	coupon, couponOK := h.local.coupons[couponID]
+	h.local.mu.Unlock()
+	if !couponOK {
+		return nil, fmt.Errorf("%w: promotion_codes code %q references unknown coupon %q", billing.ErrInvalidInput, code, couponID)
+	}
+	active := true
+	if fixture.Active != nil {
+		active = *fixture.Active
+	}
+	// Field set matches POST /v1/promotion_codes (max_redemptions/expires_at not stored by that handler).
+	return map[string]any{
+		"id":       id,
+		"object":   "promotion_code",
+		"code":     code,
+		"coupon":   cloneEvidence(coupon),
+		"active":   active,
+		"customer": emptyToNil(strings.TrimSpace(fixture.Customer)),
+		"metadata": nonNilMap(fixture.Metadata),
+		"created":  now.Unix(),
+		"livemode": false,
+	}, nil
+}
+
+// fixtureTaxRateResolver is injected into fixtures.Service so Apply can resolve
+// subscription default_tax_rates against local tax_rate evidence (shared conversion helper).
+func (h *Handler) fixtureTaxRateResolver(id string) (billing.AppliedTaxRate, error) {
+	id = strings.TrimSpace(id)
+	h.local.mu.Lock()
+	defer h.local.mu.Unlock()
+	evidence, ok := h.local.taxRates[id]
+	if !ok || evidence == nil {
+		return billing.AppliedTaxRate{}, fmt.Errorf("%w: no such tax rate: %q", billing.ErrInvalidInput, id)
+	}
+	return appliedTaxRateFromEvidence(id, evidence), nil
+}
+
+// fixtureCouponResolver fills subscription coupon discounts from local coupon evidence
+// when discount_percent_off/amount_off are omitted on the fixture.
+func (h *Handler) fixtureCouponResolver(id string) (billing.Discount, error) {
+	id = strings.TrimSpace(id)
+	h.local.mu.Lock()
+	defer h.local.mu.Unlock()
+	return discountFromCouponEvidence(id, h.local.coupons[id])
 }
 
 func (h *Handler) handleFixtureSnapshot(w http.ResponseWriter, r *http.Request) {
@@ -6409,7 +6595,11 @@ func stripeDeleted(id string, object string) map[string]any {
 
 // appliedTaxRatesFromParams resolves default_tax_rates IDs against local tax rate evidence.
 func (h *Handler) appliedTaxRatesFromParams(p params, prefix string) ([]billing.AppliedTaxRate, error) {
-	ids := p.defaultTaxRateIDs(prefix)
+	return h.appliedTaxRatesFromIDs(p.defaultTaxRateIDs(prefix))
+}
+
+// appliedTaxRatesFromIDs resolves tax rate evidence IDs into AppliedTaxRate snapshots.
+func (h *Handler) appliedTaxRatesFromIDs(ids []string) ([]billing.AppliedTaxRate, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -6417,20 +6607,30 @@ func (h *Handler) appliedTaxRatesFromParams(p params, prefix string) ([]billing.
 	h.local.mu.Lock()
 	defer h.local.mu.Unlock()
 	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
 		evidence, ok := h.local.taxRates[id]
 		if !ok || evidence == nil {
 			return nil, missingTaxRate(id)
 		}
-		percentage, _ := asFloat64Evidence(evidence["percentage"])
-		inclusive, _ := evidence["inclusive"].(bool)
-		out = append(out, billing.AppliedTaxRate{
-			ID:          id,
-			DisplayName: evidenceString(evidence["display_name"]),
-			Percentage:  percentage,
-			Inclusive:   inclusive,
-		})
+		out = append(out, appliedTaxRateFromEvidence(id, evidence))
 	}
 	return out, nil
+}
+
+// appliedTaxRateFromEvidence converts local tax_rate evidence into a billing snapshot.
+// Shared by params resolution and fixture subscription default_tax_rates injection.
+func appliedTaxRateFromEvidence(id string, evidence map[string]any) billing.AppliedTaxRate {
+	percentage, _ := asFloat64Evidence(evidence["percentage"])
+	inclusive, _ := evidence["inclusive"].(bool)
+	return billing.AppliedTaxRate{
+		ID:          id,
+		DisplayName: evidenceString(evidence["display_name"]),
+		Percentage:  percentage,
+		Inclusive:   inclusive,
+	}
 }
 
 func (h *Handler) stripeTaxRateObjects(rates []billing.AppliedTaxRate) []map[string]any {

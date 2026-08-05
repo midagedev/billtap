@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Fixture packs can now seed the tax and discount evidence their subscriptions
+  need: top-level `coupons` and `promotion_codes` keys, and
+  `subscriptions[].default_tax_rates`. Tax-rate and coupon evidence is seeded
+  before the subscription checkout runs and the resolved rates are passed into
+  the checkout session, so a seeded subscription's first invoice is taxed and
+  renewal/proration/preview inherit the snapshot. Subscription fixtures that
+  reference a seeded coupon no longer need to repeat its percent or amount,
+  and assertions accept `subtotal`/`tax`/`total` on the `invoice` target.
 - Subscription item create and delete now accept `proration_behavior` and
   `proration_date` (previously `parameter_unknown` on create and silently
   ignored on delete), routing through the same proration path as subscription

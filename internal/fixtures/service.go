@@ -16,13 +16,35 @@ var (
 	ErrAssertionFailed = errors.New("fixture assertion failed")
 )
 
+// TaxRateResolver resolves a local tax_rate evidence ID into an AppliedTaxRate snapshot.
+// Used when subscription fixtures declare default_tax_rates; nil means those IDs cannot be resolved.
+type TaxRateResolver func(id string) (billing.AppliedTaxRate, error)
+
+// CouponResolver resolves a local coupon evidence ID into a Discount (percent/amount/currency).
+// Used when a subscription fixture references coupon without explicit discount_percent_off/amount_off.
+type CouponResolver func(id string) (billing.Discount, error)
+
 type Service struct {
-	billing *billing.Service
-	now     func() time.Time
+	billing         *billing.Service
+	now             func() time.Time
+	taxRateResolver TaxRateResolver
+	couponResolver  CouponResolver
 }
 
 func NewService(billingService *billing.Service) *Service {
 	return &Service{billing: billingService, now: func() time.Time { return time.Now().UTC() }}
+}
+
+// WithTaxRateResolver returns the service with a tax-rate evidence resolver (chainable).
+func (s *Service) WithTaxRateResolver(resolver TaxRateResolver) *Service {
+	s.taxRateResolver = resolver
+	return s
+}
+
+// WithCouponResolver returns the service with a coupon evidence resolver (chainable).
+func (s *Service) WithCouponResolver(resolver CouponResolver) *Service {
+	s.couponResolver = resolver
+	return s
 }
 
 func (s *Service) Apply(ctx context.Context, pack Pack) (ApplyResult, error) {
@@ -505,6 +527,14 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 	if err != nil {
 		return billing.CheckoutSession{}, billing.Subscription{}, err
 	}
+	defaultTaxRates, err := s.resolveDefaultTaxRates(fixture)
+	if err != nil {
+		return billing.CheckoutSession{}, billing.Subscription{}, err
+	}
+	discounts, err := s.resolveFixtureDiscount(fixture)
+	if err != nil {
+		return billing.CheckoutSession{}, billing.Subscription{}, err
+	}
 	metadata := fixtureMetadata(fixture.Metadata, pack, ref)
 	if strings.TrimSpace(fixture.TestClock) != "" {
 		metadata = ensureStringMap(metadata)
@@ -522,8 +552,12 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 		metadata = ensureStringMap(metadata)
 		metadata["trial_end"] = strings.TrimSpace(fixture.TrialEnd)
 	}
-	if discount := fixtureDiscount(fixture); len(discount) > 0 {
-		metadata = billing.MergeDiscountMetadata(metadata, discount)
+	if len(discounts) > 0 {
+		metadata = billing.MergeDiscountMetadata(metadata, discounts)
+	}
+	// Patch path (re-apply): keep/refresh tax-rate snapshot on metadata without recreating the sub.
+	if len(defaultTaxRates) > 0 {
+		metadata = billing.MergeDefaultTaxRatesMetadata(metadata, defaultTaxRates)
 	}
 	if found {
 		patch, err := subscriptionStatePatch(fixture, metadata, items)
@@ -543,12 +577,15 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 	if err != nil {
 		return billing.CheckoutSession{}, billing.Subscription{}, err
 	}
+	// Inject DefaultTaxRates at session create so completeCheckout taxes the first invoice
+	// and snapshots rates onto subscription metadata in one pass.
 	session, err := s.billing.CreateCheckoutSession(ctx, billing.CheckoutSession{
 		ID:              strings.TrimSpace(fixtureCheckoutSessionID(fixture)),
 		CustomerID:      fixture.Customer,
 		Mode:            "subscription",
 		LineItems:       items,
-		Discounts:       fixtureDiscount(fixture),
+		Discounts:       discounts,
+		DefaultTaxRates: defaultTaxRates,
 		TrialPeriodDays: trialDays,
 	})
 	if err != nil {
@@ -576,6 +613,62 @@ func (s *Service) upsertSubscription(ctx context.Context, pack Pack, fixture Sub
 	}
 	subscription, err = s.billing.PatchSubscription(ctx, subscription.ID, patch)
 	return completed, subscription, err
+}
+
+// resolveDefaultTaxRates maps fixture default_tax_rates IDs through the injected resolver.
+func (s *Service) resolveDefaultTaxRates(fixture SubscriptionFixture) ([]billing.AppliedTaxRate, error) {
+	if len(fixture.DefaultTaxRates) == 0 {
+		return nil, nil
+	}
+	subID := strings.TrimSpace(fixture.ID)
+	if subID == "" {
+		subID = subscriptionRef(fixture)
+	}
+	if s.taxRateResolver == nil {
+		return nil, fmt.Errorf("%w: subscription %q has default_tax_rates but no tax rate resolver is configured", ErrInvalidFixture, subID)
+	}
+	out := make([]billing.AppliedTaxRate, 0, len(fixture.DefaultTaxRates))
+	for _, id := range fixture.DefaultTaxRates {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		rate, err := s.taxRateResolver(id)
+		if err != nil {
+			return nil, fmt.Errorf("%w: subscription %q references unknown tax rate %q", ErrInvalidFixture, subID, id)
+		}
+		out = append(out, rate)
+	}
+	return out, nil
+}
+
+// resolveFixtureDiscount builds subscription discounts, filling percent/amount from coupon
+// evidence when only coupon is set (explicit discount_* fields still win).
+func (s *Service) resolveFixtureDiscount(fixture SubscriptionFixture) ([]billing.Discount, error) {
+	couponID := strings.TrimSpace(fixture.Coupon)
+	promotionCodeID := strings.TrimSpace(fixture.PromotionCode)
+	if couponID == "" && promotionCodeID == "" && fixture.DiscountPercentOff == 0 && fixture.DiscountAmountOff == 0 {
+		return nil, nil
+	}
+	discount := billing.Discount{
+		CouponID:        couponID,
+		PromotionCodeID: promotionCodeID,
+		PercentOff:      fixture.DiscountPercentOff,
+		AmountOff:       fixture.DiscountAmountOff,
+		Currency:        strings.ToLower(strings.TrimSpace(fixture.DiscountCurrency)),
+	}
+	if couponID != "" && fixture.DiscountPercentOff == 0 && fixture.DiscountAmountOff == 0 && s.couponResolver != nil {
+		resolved, err := s.couponResolver(couponID)
+		if err != nil {
+			return nil, fmt.Errorf("%w: subscription %q references unknown coupon %q", ErrInvalidFixture, subscriptionRef(fixture), couponID)
+		}
+		discount.PercentOff = resolved.PercentOff
+		discount.AmountOff = resolved.AmountOff
+		if discount.Currency == "" {
+			discount.Currency = resolved.Currency
+		}
+	}
+	return []billing.Discount{discount}, nil
 }
 
 func (s *Service) findSubscription(ctx context.Context, pack Pack, fixture SubscriptionFixture, ref string) (billing.Subscription, bool, error) {
@@ -834,6 +927,38 @@ func validatePack(pack Pack) error {
 	for idx, taxRate := range pack.TaxRates {
 		if strings.TrimSpace(taxRate.DisplayName) == "" {
 			problems = append(problems, fmt.Sprintf("tax_rates[%d].display_name is required", idx))
+		}
+	}
+	for idx, coupon := range pack.Coupons {
+		hasPercent := coupon.PercentOff != 0
+		hasAmount := coupon.AmountOff != 0
+		if hasPercent == hasAmount {
+			// Exactly one of percent_off / amount_off is required.
+			problems = append(problems, fmt.Sprintf("coupons[%d] requires exactly one of percent_off or amount_off", idx))
+		}
+		if hasPercent && (coupon.PercentOff <= 0 || coupon.PercentOff > 100) {
+			problems = append(problems, fmt.Sprintf("coupons[%d].percent_off must be > 0 and <= 100", idx))
+		}
+		if hasAmount && coupon.AmountOff < 0 {
+			problems = append(problems, fmt.Sprintf("coupons[%d].amount_off must be non-negative", idx))
+		}
+		if hasAmount && strings.TrimSpace(coupon.Currency) == "" {
+			problems = append(problems, fmt.Sprintf("coupons[%d].currency is required with amount_off", idx))
+		}
+	}
+	for idx, promo := range pack.PromotionCodes {
+		if strings.TrimSpace(promo.Code) == "" {
+			problems = append(problems, fmt.Sprintf("promotion_codes[%d].code is required", idx))
+		}
+		if strings.TrimSpace(promo.Coupon) == "" {
+			problems = append(problems, fmt.Sprintf("promotion_codes[%d].coupon is required", idx))
+		}
+	}
+	for idx, expectation := range pack.Assertions {
+		if expectation.Total != nil || expectation.Tax != nil || expectation.Subtotal != nil {
+			if normalizeTarget(expectation.Target) != "invoice" {
+				problems = append(problems, fmt.Sprintf("assertions[%d].total/tax/subtotal are only valid for target invoice", idx))
+			}
 		}
 	}
 	if len(problems) > 0 {

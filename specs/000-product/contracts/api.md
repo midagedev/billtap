@@ -747,6 +747,27 @@ objects with `billtap_fixture_ref`, and the resolve endpoint below can map a
 fixture ref to the generated or stable customer, subscription, invoice, payment
 intent, checkout session, product, and price IDs.
 
+Revised 2026-08-05 (consumer seeding ergonomics): packs can declare the tax and
+discount evidence their subscriptions need, so an E2E seed no longer needs
+side-channel API calls.
+
+- Top-level `coupons` and `promotion_codes` seed local coupon and
+  promotion-code evidence in the same shapes `POST /v1/coupons` and
+  `POST /v1/promotion_codes` produce. A promotion code whose coupon is neither
+  in the pack nor already seeded fails the apply.
+- `subscriptions[].default_tax_rates` attaches seeded `txr_*` rates to a
+  subscription. Tax-rate, coupon, and promotion-code evidence is seeded
+  *before* the subscription checkout runs and the resolved rates are passed
+  into the checkout session, so the subscription's **first** invoice is taxed
+  like any other billing flow (no post-hoc metadata patching), and renewal,
+  proration, and preview inherit the same snapshot. Unknown rate IDs fail the
+  apply, naming the subscription and rate.
+- A subscription fixture that references a seeded coupon no longer has to
+  repeat its `discount_percent_off` / `discount_amount_off`: the values are
+  read from the coupon evidence, and an explicit value still wins.
+- Assertions accept `subtotal`, `tax`, and `total` on the `invoice` target
+  (rejected on other targets), so a seed can prove its own tax math.
+
 ### `GET /api/fixtures/resolve`
 
 Resolve fixture-backed objects. Query fields:
