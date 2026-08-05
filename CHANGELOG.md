@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Asynchronous webhook deliveries are now waitable. They ran on a detached
+  context with no lifecycle handle, so they could still be writing delivery
+  records after a caller tore down its storage — which surfaced as intermittent
+  `TempDir ... directory not empty` test failures. `WaitForAsyncDeliveries`
+  drains in-flight deliveries, the server drains every run's deliveries on
+  `Close` before releasing run storage, and tests wait before closing their
+  store. Async delivery still never blocks the request that triggered it.
 - Subscription item IDs are now stored when the item is created instead of
   being derived from its array position, so deleting an item no longer shifts
   the IDs of the items after it. The `si_<subscription>_<n>` shape is

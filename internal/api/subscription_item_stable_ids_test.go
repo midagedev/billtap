@@ -13,6 +13,7 @@ import (
 	"github.com/hckim/billtap/internal/diagnostics"
 	"github.com/hckim/billtap/internal/storage"
 	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/hckim/billtap/internal/webhooks/webhookstest"
 )
 
 // newTestHandlerWithStore returns handler + raw store for legacy row injection.
@@ -22,14 +23,12 @@ func newTestHandlerWithStore(t *testing.T) (http.Handler, *storage.SQLiteStore) 
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	})
+	webhookService := webhooks.NewService(store)
+	// After t.TempDir(): LIFO runs wait+close before TempDir removal.
+	webhookstest.RegisterStoreCleanup(t, webhookService, store)
 	opts := Options{
 		Billing:     billing.NewService(store),
-		Webhooks:    webhooks.NewService(store),
+		Webhooks:    webhookService,
 		Diagnostics: diagnostics.NewService(store),
 	}
 	return New(opts), store

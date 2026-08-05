@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/hckim/billtap/internal/webhooks/webhookstest"
 )
 
 func TestWebhookPersistenceAndDeliveryAttempt(t *testing.T) {
@@ -96,7 +97,8 @@ func TestWebhookServiceRecordsSignedDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
-	defer store.Close()
+	service := webhooks.NewService(store)
+	webhookstest.RegisterStoreCleanup(t, service, store)
 
 	var gotSignature string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +107,6 @@ func TestWebhookServiceRecordsSignedDelivery(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service := webhooks.NewService(store)
 	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
 		t.Fatalf("CreateEndpoint returned error: %v", err)
 	}
@@ -132,7 +133,9 @@ func TestWebhookServiceAsyncDeliveryDoesNotWaitForReceiver(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
-	defer store.Close()
+	service := webhooks.NewService(store)
+	// Defers (release, server) run before Cleanup: unblock delivery, then wait+close.
+	webhookstest.RegisterStoreCleanup(t, service, store)
 
 	var received atomic.Int32
 	release := make(chan struct{})
@@ -144,7 +147,6 @@ func TestWebhookServiceAsyncDeliveryDoesNotWaitForReceiver(t *testing.T) {
 	defer server.Close()
 	defer close(release)
 
-	service := webhooks.NewService(store)
 	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
 		t.Fatalf("CreateEndpoint returned error: %v", err)
 	}
@@ -182,7 +184,12 @@ func TestWebhookServiceLimitsConcurrentDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
-	defer store.Close()
+	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{
+		StoreRawPayloads:    true,
+		RetentionDays:       30,
+		DeliveryConcurrency: 1,
+	})
+	webhookstest.RegisterStoreCleanup(t, service, store)
 
 	var received atomic.Int32
 	var inFlight atomic.Int32
@@ -209,11 +216,6 @@ func TestWebhookServiceLimitsConcurrentDelivery(t *testing.T) {
 		}
 	}()
 
-	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{
-		StoreRawPayloads:    true,
-		RetentionDays:       30,
-		DeliveryConcurrency: 1,
-	})
 	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
 		t.Fatalf("CreateEndpoint returned error: %v", err)
 	}
@@ -273,7 +275,12 @@ func TestWebhookServiceCanUseStripeSignatureHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
-	defer store.Close()
+	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{
+		StoreRawPayloads:    true,
+		SignatureHeaderName: webhooks.StripeSignatureHeaderName,
+		APIVersion:          "2025-03-31.basil",
+	})
+	webhookstest.RegisterStoreCleanup(t, service, store)
 
 	var gotStripeSignature string
 	var gotAPIVersion string
@@ -293,11 +300,6 @@ func TestWebhookServiceCanUseStripeSignatureHeader(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{
-		StoreRawPayloads:    true,
-		SignatureHeaderName: webhooks.StripeSignatureHeaderName,
-		APIVersion:          "2025-03-31.basil",
-	})
 	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
 		t.Fatalf("CreateEndpoint returned error: %v", err)
 	}
@@ -330,7 +332,8 @@ func TestRelayModeDoesNotPersistRawPayloadsAndAuditsOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenSQLite returned error: %v", err)
 	}
-	defer store.Close()
+	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{StoreRawPayloads: false, RetentionDays: 30})
+	webhookstest.RegisterStoreCleanup(t, service, store)
 
 	var receivedBody string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -343,7 +346,6 @@ func TestRelayModeDoesNotPersistRawPayloadsAndAuditsOverrides(t *testing.T) {
 	}))
 	defer server.Close()
 
-	service := webhooks.NewServiceWithOptions(store, webhooks.ServiceOptions{StoreRawPayloads: false, RetentionDays: 30})
 	if _, err := service.CreateEndpoint(ctx, webhooks.Endpoint{URL: server.URL, EnabledEvents: []string{"checkout.session.completed"}}); err != nil {
 		t.Fatalf("CreateEndpoint returned error: %v", err)
 	}

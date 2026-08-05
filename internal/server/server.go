@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/hckim/billtap/internal/api"
 	"github.com/hckim/billtap/internal/billing"
@@ -27,6 +29,11 @@ type Server struct {
 	store storage.Store
 	mux   *http.ServeMux
 	runs  *runManager
+
+	// webhookServices tracks every Service built for a run so Close can drain
+	// in-flight async deliveries before storage is torn down.
+	webhookMu       sync.Mutex
+	webhookServices []*webhooks.Service
 }
 
 func New(opts Options) *Server {
@@ -41,9 +48,21 @@ func New(opts Options) *Server {
 	return s
 }
 
-// Close releases run storage opened on demand. The default store passed
-// via Options is owned by the caller and is not closed here.
+// Close drains async webhook deliveries for every run, then releases run storage
+// opened on demand. The default store passed via Options is owned by the caller
+// and is not closed here — callers should Close after this returns so delivery
+// records are flushed first.
 func (s *Server) Close() error {
+	s.webhookMu.Lock()
+	services := append([]*webhooks.Service(nil), s.webhookServices...)
+	s.webhookMu.Unlock()
+	if len(services) > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		for _, svc := range services {
+			_ = svc.WaitForAsyncDeliveries(ctx)
+		}
+		cancel()
+	}
 	if s.runs == nil {
 		return nil
 	}
@@ -210,6 +229,9 @@ func (s *Server) buildAPIHandler(store storage.Store) (http.Handler, error) {
 			SignatureHeaderName: s.cfg.WebhookSignatureHeader,
 			APIVersion:          s.cfg.WebhookAPIVersion,
 		})
+		s.webhookMu.Lock()
+		s.webhookServices = append(s.webhookServices, webhookService)
+		s.webhookMu.Unlock()
 	}
 	var diagnosticsService *diagnostics.Service
 	if diagnosticsRepo, ok := store.(diagnostics.Repository); ok {

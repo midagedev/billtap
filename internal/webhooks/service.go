@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -28,6 +29,7 @@ type Service struct {
 	retentionDays       int
 	signatureHeaderName string
 	apiVersion          string
+	wg                  sync.WaitGroup
 }
 
 func NewService(repo Repository) *Service {
@@ -161,7 +163,9 @@ func (s *Service) CreateEvent(ctx context.Context, in EventInput) (Event, []Deli
 	event.RawPayload = raw
 
 	if in.AsyncDelivery && len(endpoints) > 0 {
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			_, _ = s.createAttempts(context.WithoutCancel(ctx), event, endpoints, in.DeliveryOptions)
 		}()
 		return event, nil, nil
@@ -175,6 +179,23 @@ func (s *Service) CreateEvent(ctx context.Context, in EventInput) (Event, []Deli
 		_ = s.audit(ctx, "webhook.delivery_override", "event", event.ID, deliveryMetadata(in.DeliveryOptions))
 	}
 	return event, attempts, nil
+}
+
+// WaitForAsyncDeliveries blocks until in-flight asynchronous deliveries finish
+// or ctx is done. It returns ctx.Err() on timeout.
+// The service remains usable after Wait returns; this is not a permanent Close.
+func (s *Service) WaitForAsyncDeliveries(ctx context.Context) error {
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (s *Service) GetEvent(ctx context.Context, eventID string) (Event, error) {

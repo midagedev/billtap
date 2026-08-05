@@ -325,10 +325,15 @@ func newSQLiteBackedServer(t *testing.T, cfg config.Config) http.Handler {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
+	srv := New(Options{Config: cfg, Store: store})
+	// Close drains async webhook deliveries before the default store is closed.
 	t.Cleanup(func() {
+		if err := srv.Close(); err != nil {
+			t.Fatalf("close server: %v", err)
+		}
 		if err := store.Close(); err != nil {
 			t.Fatalf("close store: %v", err)
 		}
 	})
-	return New(Options{Config: cfg, Store: store})
+	return srv
 }
