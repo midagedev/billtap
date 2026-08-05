@@ -425,8 +425,8 @@ func (s *SQLiteStore) DeleteConnectResource(ctx context.Context, object string, 
 }
 
 func (s *SQLiteStore) CreateCheckoutSession(ctx context.Context, cs billing.CheckoutSession) (billing.CheckoutSession, error) {
-	if _, err := s.db.ExecContext(ctx, `INSERT INTO checkout_sessions (id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, automatic_tax, tax_id_collection, tax_percent, default_tax_rates, client_reference_id, payment_intent_data, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, cs.ID, cs.CustomerID, cs.Mode, encodeLineItems(cs.LineItems), encodeDiscounts(cs.Discounts), cs.SuccessURL, cs.CancelURL, cs.Status, cs.PaymentStatus, boolInt(cs.AllowPromotionCodes), cs.TrialPeriodDays, boolInt(cs.AutomaticTax), boolInt(cs.TaxIDCollection), cs.TaxPercent, encodeAppliedTaxRates(cs.DefaultTaxRates), cs.ClientReferenceID, encodePaymentIntentData(cs), encodeTime(cs.CreatedAt)); err != nil {
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO checkout_sessions (id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, automatic_tax, tax_id_collection, tax_percent, default_tax_rates, client_reference_id, payment_intent_data, metadata, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, cs.ID, cs.CustomerID, cs.Mode, encodeLineItems(cs.LineItems), encodeDiscounts(cs.Discounts), cs.SuccessURL, cs.CancelURL, cs.Status, cs.PaymentStatus, boolInt(cs.AllowPromotionCodes), cs.TrialPeriodDays, boolInt(cs.AutomaticTax), boolInt(cs.TaxIDCollection), cs.TaxPercent, encodeAppliedTaxRates(cs.DefaultTaxRates), cs.ClientReferenceID, encodePaymentIntentData(cs), encodeMap(cs.Metadata), encodeTime(cs.CreatedAt)); err != nil {
 		return billing.CheckoutSession{}, err
 	}
 	if err := s.insertTimeline(ctx, nil, timelineCreate(cs.ID, "checkout_session.created", "Checkout session created", billing.ObjectCheckoutSession, cs.ID, cs.CustomerID, cs.ID, "", "", "", nil, cs.CreatedAt)); err != nil {
@@ -436,7 +436,7 @@ func (s *SQLiteStore) CreateCheckoutSession(ctx context.Context, cs billing.Chec
 }
 
 func (s *SQLiteStore) GetCheckoutSession(ctx context.Context, id string) (billing.CheckoutSession, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, automatic_tax, tax_id_collection, tax_percent, default_tax_rates, client_reference_id, payment_intent_data, subscription_id, invoice_id, payment_intent_id, created_at, completed_at FROM checkout_sessions WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, automatic_tax, tax_id_collection, tax_percent, default_tax_rates, client_reference_id, payment_intent_data, metadata, subscription_id, invoice_id, payment_intent_id, created_at, completed_at FROM checkout_sessions WHERE id = ?`, id)
 	cs, err := scanCheckoutSession(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.CheckoutSession{}, billing.ErrNotFound
@@ -445,7 +445,7 @@ func (s *SQLiteStore) GetCheckoutSession(ctx context.Context, id string) (billin
 }
 
 func (s *SQLiteStore) ListCheckoutSessions(ctx context.Context) ([]billing.CheckoutSession, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, automatic_tax, tax_id_collection, tax_percent, default_tax_rates, client_reference_id, payment_intent_data, subscription_id, invoice_id, payment_intent_id, created_at, completed_at FROM checkout_sessions ORDER BY created_at DESC, id DESC`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status, allow_promotion_codes, trial_period_days, automatic_tax, tax_id_collection, tax_percent, default_tax_rates, client_reference_id, payment_intent_data, metadata, subscription_id, invoice_id, payment_intent_id, created_at, completed_at FROM checkout_sessions ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -1539,10 +1539,10 @@ func scanConnectResource(row scanner) (billing.ConnectResource, error) {
 
 func scanCheckoutSession(row scanner) (billing.CheckoutSession, error) {
 	var cs billing.CheckoutSession
-	var items, discounts, defaultTaxRates, paymentIntentData, createdAt string
+	var items, discounts, defaultTaxRates, paymentIntentData, metadata, createdAt string
 	var allowPromotionCodes, automaticTax, taxIDCollection int
 	var completedAt, subscriptionID, invoiceID, paymentIntentID sql.NullString
-	if err := row.Scan(&cs.ID, &cs.CustomerID, &cs.Mode, &items, &discounts, &cs.SuccessURL, &cs.CancelURL, &cs.Status, &cs.PaymentStatus, &allowPromotionCodes, &cs.TrialPeriodDays, &automaticTax, &taxIDCollection, &cs.TaxPercent, &defaultTaxRates, &cs.ClientReferenceID, &paymentIntentData, &subscriptionID, &invoiceID, &paymentIntentID, &createdAt, &completedAt); err != nil {
+	if err := row.Scan(&cs.ID, &cs.CustomerID, &cs.Mode, &items, &discounts, &cs.SuccessURL, &cs.CancelURL, &cs.Status, &cs.PaymentStatus, &allowPromotionCodes, &cs.TrialPeriodDays, &automaticTax, &taxIDCollection, &cs.TaxPercent, &defaultTaxRates, &cs.ClientReferenceID, &paymentIntentData, &metadata, &subscriptionID, &invoiceID, &paymentIntentID, &createdAt, &completedAt); err != nil {
 		return cs, err
 	}
 	cs.Object = billing.ObjectCheckoutSession
@@ -1550,6 +1550,7 @@ func scanCheckoutSession(row scanner) (billing.CheckoutSession, error) {
 	cs.Discounts = decodeDiscounts(discounts)
 	cs.DefaultTaxRates = decodeAppliedTaxRates(defaultTaxRates)
 	applyPaymentIntentData(&cs, paymentIntentData)
+	cs.Metadata = decodeMap(metadata)
 	cs.URL = "/checkout/" + cs.ID
 	cs.AllowPromotionCodes = allowPromotionCodes != 0
 	cs.AutomaticTax = automaticTax != 0

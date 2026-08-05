@@ -120,6 +120,8 @@ type CheckoutSession struct {
 	DefaultTaxRates []AppliedTaxRate `json:"default_tax_rates_snapshot,omitempty"`
 	// ClientReferenceID is Stripe's client_reference_id (always present on API responses as string|null).
 	ClientReferenceID string `json:"client_reference_id,omitempty"`
+	// Session-level metadata (metadata[key]=value on create). Independent of PaymentIntentMetadata.
+	Metadata map[string]string `json:"metadata,omitempty"`
 	// Payment-mode payment_intent_data snapshot fields (persisted as JSON in payment_intent_data).
 	PaymentIntentMetadata    map[string]string `json:"-"`
 	SetupFutureUsage         string            `json:"-"`

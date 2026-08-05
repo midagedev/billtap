@@ -126,6 +126,15 @@ Response includes:
 - `status`
 - `payment_status`
 
+Revised 2026-08-05 (consumer session metadata parity): session create accepts
+session-level `metadata[...]` and every session response carries `metadata`
+(an object; `{}` when unset). Session metadata is stored, survives retrieval
+and completion, and is kept strictly independent of
+`payment_intent_data[metadata]` — identical keys on both sides do not
+overwrite each other, and session metadata is never promoted onto the
+PaymentIntent created at completion (SDK callers that attach the same map to
+both places get exactly what they sent in each place).
+
 Revised 2026-08-04 (SaaS tax/discount adoption): responses also include
 `currency`, `amount_subtotal`, `amount_total`, `total_details`
 (`amount_discount`/`amount_shipping`/`amount_tax`), array-shaped `discounts`,

@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Checkout session create now accepts session-level `metadata[...]` and
+  round-trips it through retrieval and completion, restoring Stripe parity for
+  SDK callers that attach the same map to both the session and
+  `payment_intent_data[metadata]`. The two maps stay independent: session
+  metadata is never promoted into the completed PaymentIntent.
 - Added a promotion-code input to the hosted checkout page for
   `allow_promotion_codes` sessions, backed by Billtap-specific
   `POST/DELETE /api/checkout/sessions/{id}/promotion_code`: applying a valid

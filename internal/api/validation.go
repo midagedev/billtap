@@ -726,9 +726,10 @@ func validateCheckoutSessionCreate(p params) error {
 			checkoutSubscriptionDataRE,
 			discountParamRE,
 		},
-		RequiredAny: [][]string{{"customer", "customer_id"}},
-		Int64Params: []string{"subscription_data[trial_period_days]"},
-		BoolParams:  []string{"allow_promotion_codes", "automatic_tax[enabled]", "tax_id_collection[enabled]"},
+		RequiredAny:   [][]string{{"customer", "customer_id"}},
+		AllowMetadata: true,
+		Int64Params:   []string{"subscription_data[trial_period_days]"},
+		BoolParams:    []string{"allow_promotion_codes", "automatic_tax[enabled]", "tax_id_collection[enabled]"},
 		EnumParams: map[string][]string{
 			"mode": {"subscription", "payment"},
 			"payment_intent_data[setup_future_usage]": {"off_session", "on_session"},

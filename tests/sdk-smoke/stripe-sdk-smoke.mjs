@@ -642,6 +642,7 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
         customer: customer.id,
         mode: "payment",
         client_reference_id: "ref_sdk_1",
+        metadata: { paymentType: "EXTRA_EXPORT" },
         line_items: [
           {
             price_data: {
@@ -667,6 +668,11 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
         "payment session client_reference_id",
       );
       assertEqual(created.amount_total, 12900, "payment session amount_total");
+      assertEqual(
+        created.metadata?.paymentType,
+        "EXTRA_EXPORT",
+        "payment session metadata.paymentType",
+      );
 
       await stripe.rawRequest(
         "POST",
@@ -688,6 +694,11 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
         null,
         "payment mode subscription should be null",
       );
+      assertEqual(
+        retrieved.metadata?.paymentType,
+        "EXTRA_EXPORT",
+        "payment session metadata preserved after complete",
+      );
 
       const pi = await stripe.paymentIntents.retrieve(
         retrieved.payment_intent,
@@ -695,6 +706,11 @@ async function runStripeSDKSmoke(stripe, receiver, runId, ownsBilltapServer) {
       assertEqual(pi.amount, 12900, "payment mode PI amount");
       // Caller metadata round-trips unchanged (no unprefixed house keys).
       assertEqual(pi.metadata?.order_id, "ord_1", "payment mode PI metadata");
+      assertEqual(
+        pi.metadata?.paymentType,
+        undefined,
+        "session metadata must not auto-inject into PI metadata",
+      );
       assertEqual(
         pi.metadata?.setup_future_usage,
         undefined,
