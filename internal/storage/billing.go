@@ -1567,11 +1567,11 @@ func scanCheckoutSession(row scanner) (billing.CheckoutSession, error) {
 }
 
 type paymentIntentDataSnapshot struct {
-	Metadata      map[string]string `json:"metadata,omitempty"`
-	SetupFutureUsage string         `json:"setup_future_usage,omitempty"`
-	Description   string            `json:"description,omitempty"`
-	ReceiptEmail  string            `json:"receipt_email,omitempty"`
-	CaptureMethod string            `json:"capture_method,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty"`
+	SetupFutureUsage string            `json:"setup_future_usage,omitempty"`
+	Description      string            `json:"description,omitempty"`
+	ReceiptEmail     string            `json:"receipt_email,omitempty"`
+	CaptureMethod    string            `json:"capture_method,omitempty"`
 }
 
 func encodePaymentIntentData(cs billing.CheckoutSession) string {

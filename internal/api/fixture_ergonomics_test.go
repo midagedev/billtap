@@ -370,11 +370,11 @@ func TestFixtureSubscriptionCouponAndTaxFirstInvoice(t *testing.T) {
 			"interval":    "month",
 		}},
 		"subscriptions": []map[string]any{{
-			"id":                "sub_fx_ct",
-			"customer":          "cus_fx_ct",
-			"price":             "price_fx_ct",
-			"quantity":          1,
-			"coupon":            "coupon_ct_25",
+			"id":       "sub_fx_ct",
+			"customer": "cus_fx_ct",
+			"price":    "price_fx_ct",
+			"quantity": 1,
+			"coupon":   "coupon_ct_25",
 			// discount_percent_off omitted — filled from coupon evidence via resolver.
 			"default_tax_rates": []string{"txr_ct_vat10"},
 		}},
