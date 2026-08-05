@@ -617,4 +617,3 @@ func deleteFormStatus(t *testing.T, handler http.Handler, path string, values ur
 	handler.ServeHTTP(rec, req)
 	return rec.Code, rec.Body.String()
 }
-

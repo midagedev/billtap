@@ -12,16 +12,16 @@ import (
 
 // upcomingPreviewFields covers next-period upcoming / create_preview assertions.
 type upcomingPreviewFields struct {
-	Object               string  `json:"object"`
-	Subtotal             int64   `json:"subtotal"`
-	Tax                  *int64  `json:"tax"`
-	Total                int64   `json:"total"`
-	TotalExcludingTax    int64   `json:"total_excluding_tax"`
-	AmountDue            int64   `json:"amount_due"`
-	AmountRemaining      int64   `json:"amount_remaining"`
-	BillingReason        string  `json:"billing_reason"`
-	PeriodStart          int64   `json:"period_start"`
-	PeriodEnd            int64   `json:"period_end"`
+	Object               string `json:"object"`
+	Subtotal             int64  `json:"subtotal"`
+	Tax                  *int64 `json:"tax"`
+	Total                int64  `json:"total"`
+	TotalExcludingTax    int64  `json:"total_excluding_tax"`
+	AmountDue            int64  `json:"amount_due"`
+	AmountRemaining      int64  `json:"amount_remaining"`
+	BillingReason        string `json:"billing_reason"`
+	PeriodStart          int64  `json:"period_start"`
+	PeriodEnd            int64  `json:"period_end"`
 	TotalDiscountAmounts []struct {
 		Amount int64 `json:"amount"`
 	} `json:"total_discount_amounts"`
@@ -34,8 +34,8 @@ type upcomingPreviewFields struct {
 	} `json:"billtap_preview"`
 	Lines struct {
 		Data []struct {
-			Amount      int64 `json:"amount"`
-			Proration   bool  `json:"proration"`
+			Amount      int64  `json:"amount"`
+			Proration   bool   `json:"proration"`
 			Description string `json:"description"`
 			Period      struct {
 				Start int64 `json:"start"`

@@ -2206,8 +2206,8 @@ type SubscriptionProrationRequest struct {
 	NewItems           []LineItem
 	ProrationBehavior  string // "none" | "create_prorations" | "always_invoice"
 	ProrationDate      time.Time
-	BillingCycleAnchor string // "" | "unchanged" | "now"
-	PaymentBehavior    string // "" | "error_if_incomplete" | …
+	BillingCycleAnchor string           // "" | "unchanged" | "now"
+	PaymentBehavior    string           // "" | "error_if_incomplete" | …
 	DefaultTaxRates    []AppliedTaxRate // optional override; empty uses subscription metadata
 	Metadata           map[string]string
 	CancelAtPeriodEnd  *bool
@@ -2358,12 +2358,12 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 	// always_invoice
 	resetAnchor := anchor == "now"
 	var (
-		invoiceSubtotal  int64
-		invoiceDiscount  int64
-		invoiceBase      int64 // discounted amount before exclusive tax
-		creditSubtotal   int64 // pre-discount unused old-cycle credit (anchor=now)
-		prorationCredit  int64 // post-discount unused old-cycle credit (anchor=now)
-		shouldInvoice    bool
+		invoiceSubtotal int64
+		invoiceDiscount int64
+		invoiceBase     int64 // discounted amount before exclusive tax
+		creditSubtotal  int64 // pre-discount unused old-cycle credit (anchor=now)
+		prorationCredit int64 // post-discount unused old-cycle credit (anchor=now)
+		shouldInvoice   bool
 	)
 	if resetAnchor {
 		// Full new cycle minus unused old-cycle credit.
@@ -2702,11 +2702,6 @@ func renewalFailureSubscriptionStatus(outcome string) string {
 	default:
 		return "past_due"
 	}
-}
-
-func (s *Service) subscriptionTotal(ctx context.Context, items []LineItem) (int64, string, error) {
-	total, currency, _, err := s.subscriptionLineAmounts(ctx, items)
-	return total, currency, err
 }
 
 func (s *Service) subscriptionLineAmounts(ctx context.Context, items []LineItem) (int64, string, []LineAmount, error) {

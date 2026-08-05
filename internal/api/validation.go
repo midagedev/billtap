@@ -16,14 +16,14 @@ const (
 )
 
 var (
-	metadataParamRE            = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
-	expandParamRE              = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
-	enabledEventsParamRE       = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
-	retryBackoffParamRE        = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
+	metadataParamRE       = regexp.MustCompile(`^metadata\[[^\]]+\]$`)
+	expandParamRE         = regexp.MustCompile(`^expand(\[[^\]]*\])?$`)
+	enabledEventsParamRE  = regexp.MustCompile(`^enabled_events(\[[^\]]*\])?$`)
+	retryBackoffParamRE   = regexp.MustCompile(`^retry_backoff(\[[^\]]*\])?$`)
 	checkoutLineItemRE    = regexp.MustCompile(`^line_items\[(\d+)\]\[(price|quantity)\]$`)
 	legacyLineItemParamRE = regexp.MustCompile(`^lineItems\[(\d+)\]\[(price|quantity)\]$`)
 	// price_data nested keys for payment-mode one-off line items (Stripe Checkout Sessions).
-	checkoutPriceDataRE = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[(currency|unit_amount|unit_amount_decimal|tax_behavior|product)\]$`)
+	checkoutPriceDataRE            = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[(currency|unit_amount|unit_amount_decimal|tax_behavior|product)\]$`)
 	checkoutPriceDataProductDataRE = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[product_data\]\[(name|description)\]$`)
 	checkoutPriceDataProductMetaRE = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[product_data\]\[metadata\]\[[^\]]+\]$`)
 	checkoutPriceDataRecurringRE   = regexp.MustCompile(`^line_items\[(\d+)\]\[price_data\]\[recurring\]\[(interval|interval_count)\]$`)
@@ -35,16 +35,16 @@ var (
 	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days|default_tax_rates)\](\[\d*\])?$`)
 	defaultTaxRatesParamRE     = regexp.MustCompile(`^default_tax_rates(\[\d*\])?$`)
 	// Item-level tax_rates on subscription_items create: evidence only (not used for totals).
-	taxRatesParamRE            = regexp.MustCompile(`^tax_rates(\[\d*\])?$`)
-	discountParamRE            = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
-	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
-	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
-	paymentMethodTypesRE       = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
-	automaticPaymentMethodsRE  = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
-	paymentMethodOptionsRE     = regexp.MustCompile(`^payment_method_options\[.+\]$`)
-	accountNestedParamRE       = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
-	eventTypeFilterParamRE     = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
-	portalFlowDataParamRE      = regexp.MustCompile(`^flow_data(\[[^\]]+\])+$`)
+	taxRatesParamRE           = regexp.MustCompile(`^tax_rates(\[\d*\])?$`)
+	discountParamRE           = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
+	subscriptionItemRE        = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
+	cancellationDetailsRE     = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
+	paymentMethodTypesRE      = regexp.MustCompile(`^payment_method_types(\[[^\]]*\])?$`)
+	automaticPaymentMethodsRE = regexp.MustCompile(`^automatic_payment_methods\[(enabled)\]$`)
+	paymentMethodOptionsRE    = regexp.MustCompile(`^payment_method_options\[.+\]$`)
+	accountNestedParamRE      = regexp.MustCompile(`^(business_profile|company|individual|settings|tos_acceptance|controller)\[.+\]$`)
+	eventTypeFilterParamRE    = regexp.MustCompile(`^(type|types|event_type|event_types)(\[[^\]]*\])?$`)
+	portalFlowDataParamRE     = regexp.MustCompile(`^flow_data(\[[^\]]+\])+$`)
 	// Allow empty brackets for Stripe array form applies_to[products][].
 	couponAppliesToParamRE      = regexp.MustCompile(`^applies_to(\[[^\]]*\])+$`)
 	promotionRestrictionParamRE = regexp.MustCompile(`^restrictions(\[[^\]]+\])+$`)
@@ -863,7 +863,7 @@ func validateCheckoutPriceData(p params, idx int, mode string) error {
 	if hasProductData && !p.has(productDataNameKey) {
 		return missingParam(productDataNameKey)
 	}
-	if p.has(prefix + "[recurring][interval]") || p.has(prefix+"[recurring][interval_count]") {
+	if p.has(prefix+"[recurring][interval]") || p.has(prefix+"[recurring][interval_count]") {
 		if mode == "payment" {
 			return invalidParam(prefix+"[recurring]", "Recurring price_data is not supported in payment mode.")
 		}
@@ -1554,9 +1554,9 @@ func validateCouponCreate(p params) error {
 		},
 		AllowedRegex: []*regexp.Regexp{couponAppliesToParamRE},
 		// percent_off is a Stripe number (may be fractional, e.g. 12.5).
-		Int64Params:  []string{"amount_off", "duration_in_months", "redeem_by", "max_redemptions"},
-		FloatParams:  []string{"percent_off"},
-		Positive:     []string{"amount_off", "duration_in_months", "max_redemptions"},
+		Int64Params: []string{"amount_off", "duration_in_months", "redeem_by", "max_redemptions"},
+		FloatParams: []string{"percent_off"},
+		Positive:    []string{"amount_off", "duration_in_months", "max_redemptions"},
 		EnumParams: map[string][]string{
 			"duration": {"forever", "once", "repeating"},
 		},

@@ -94,14 +94,14 @@ func TestCheckoutSessionMetadataDefaultAndRoundTrip(t *testing.T) {
 
 	// Explicit metadata round-trip + survives completion UPDATE (metadata column not touched).
 	created, err := store.CreateCheckoutSession(ctx, billing.CheckoutSession{
-		ID:         "cs_with_meta",
-		CustomerID: customer.ID,
-		Mode:       "payment",
-		LineItems:  []billing.LineItem{{PriceID: price.ID, Quantity: 1}},
-		Status:     "open",
+		ID:            "cs_with_meta",
+		CustomerID:    customer.ID,
+		Mode:          "payment",
+		LineItems:     []billing.LineItem{{PriceID: price.ID, Quantity: 1}},
+		Status:        "open",
 		PaymentStatus: "unpaid",
-		Metadata:   map[string]string{"paymentType": "EXTRA_EXPORT", "accountId": "acc_1"},
-		CreatedAt:  time.Now().UTC(),
+		Metadata:      map[string]string{"paymentType": "EXTRA_EXPORT", "accountId": "acc_1"},
+		CreatedAt:     time.Now().UTC(),
 	})
 	if err != nil {
 		t.Fatalf("CreateCheckoutSession: %v", err)

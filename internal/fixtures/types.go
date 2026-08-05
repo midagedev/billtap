@@ -14,23 +14,23 @@ const (
 )
 
 type Pack struct {
-	Name              string                `json:"name" yaml:"name"`
-	RunID             string                `json:"runId" yaml:"runId"`
-	Namespace         string                `json:"namespace" yaml:"namespace"`
-	Customers         []CustomerFixture     `json:"customers" yaml:"customers"`
-	Catalog           CatalogFixture        `json:"catalog" yaml:"catalog"`
-	Products          []ProductFixture      `json:"products" yaml:"products"`
-	Prices            []PriceFixture        `json:"prices" yaml:"prices"`
-	ConnectedAccounts []AccountFixture      `json:"connected_accounts" yaml:"connected_accounts"`
-	TestClocks        []TestClockFixture    `json:"test_clocks" yaml:"test_clocks"`
-	Subscriptions     []SubscriptionFixture `json:"subscriptions" yaml:"subscriptions"`
-	Refunds           []RefundFixture       `json:"refunds" yaml:"refunds"`
-	CreditNotes       []CreditNoteFixture   `json:"credit_notes" yaml:"credit_notes"`
-	Disputes          []DisputeFixture         `json:"disputes" yaml:"disputes"`
-	TaxRates          []TaxRateFixture         `json:"tax_rates" yaml:"tax_rates"`
-	Coupons           []CouponFixture          `json:"coupons" yaml:"coupons"`
-	PromotionCodes    []PromotionCodeFixture   `json:"promotion_codes" yaml:"promotion_codes"`
-	Assertions        []Expectation            `json:"assertions" yaml:"assertions"`
+	Name              string                 `json:"name" yaml:"name"`
+	RunID             string                 `json:"runId" yaml:"runId"`
+	Namespace         string                 `json:"namespace" yaml:"namespace"`
+	Customers         []CustomerFixture      `json:"customers" yaml:"customers"`
+	Catalog           CatalogFixture         `json:"catalog" yaml:"catalog"`
+	Products          []ProductFixture       `json:"products" yaml:"products"`
+	Prices            []PriceFixture         `json:"prices" yaml:"prices"`
+	ConnectedAccounts []AccountFixture       `json:"connected_accounts" yaml:"connected_accounts"`
+	TestClocks        []TestClockFixture     `json:"test_clocks" yaml:"test_clocks"`
+	Subscriptions     []SubscriptionFixture  `json:"subscriptions" yaml:"subscriptions"`
+	Refunds           []RefundFixture        `json:"refunds" yaml:"refunds"`
+	CreditNotes       []CreditNoteFixture    `json:"credit_notes" yaml:"credit_notes"`
+	Disputes          []DisputeFixture       `json:"disputes" yaml:"disputes"`
+	TaxRates          []TaxRateFixture       `json:"tax_rates" yaml:"tax_rates"`
+	Coupons           []CouponFixture        `json:"coupons" yaml:"coupons"`
+	PromotionCodes    []PromotionCodeFixture `json:"promotion_codes" yaml:"promotion_codes"`
+	Assertions        []Expectation          `json:"assertions" yaml:"assertions"`
 }
 
 type CatalogFixture struct {
@@ -218,14 +218,14 @@ type CouponFixture struct {
 
 // PromotionCodeFixture seeds a local promotion_code evidence object linked to a coupon.
 type PromotionCodeFixture struct {
-	ID            string            `json:"id,omitempty" yaml:"id,omitempty"`
-	Code          string            `json:"code" yaml:"code"`
-	Coupon        string            `json:"coupon" yaml:"coupon"`
-	Customer      string            `json:"customer,omitempty" yaml:"customer,omitempty"`
-	Active        *bool             `json:"active,omitempty" yaml:"active,omitempty"` // default true
-	MaxRedemptions int64            `json:"max_redemptions,omitempty" yaml:"max_redemptions,omitempty"`
-	ExpiresAt     int64             `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
-	Metadata      map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	ID             string            `json:"id,omitempty" yaml:"id,omitempty"`
+	Code           string            `json:"code" yaml:"code"`
+	Coupon         string            `json:"coupon" yaml:"coupon"`
+	Customer       string            `json:"customer,omitempty" yaml:"customer,omitempty"`
+	Active         *bool             `json:"active,omitempty" yaml:"active,omitempty"` // default true
+	MaxRedemptions int64             `json:"max_redemptions,omitempty" yaml:"max_redemptions,omitempty"`
+	ExpiresAt      int64             `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
 type ApplyResult struct {

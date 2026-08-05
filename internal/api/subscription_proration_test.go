@@ -176,14 +176,14 @@ func TestSubscriptionUpdateAlwaysInvoiceBillingCycleAnchorNow(t *testing.T) {
 
 	invoice := getJSON[struct {
 		prorationInvoiceResponse
-		TotalExcludingTax int64             `json:"total_excluding_tax"`
-		Metadata          map[string]string `json:"metadata"`
+		TotalExcludingTax    int64             `json:"total_excluding_tax"`
+		Metadata             map[string]string `json:"metadata"`
 		TotalDiscountAmounts []struct {
 			Amount int64 `json:"amount"`
 		} `json:"total_discount_amounts"`
 		TotalTaxes []struct {
-			Amount         int64 `json:"amount"`
-			TaxableAmount  int64 `json:"taxable_amount"`
+			Amount        int64 `json:"amount"`
+			TaxableAmount int64 `json:"taxable_amount"`
 		} `json:"total_taxes"`
 	}](t, handler, "/v1/invoices/"+upgraded.LatestInvoice)
 	if invoice.Subtotal != 5000 || invoice.Tax != 500 || invoice.Total != 5500 || invoice.AmountPaid != 5500 {
@@ -605,10 +605,10 @@ func TestSubscriptionUpdateAlwaysInvoiceWithDiscountAndTax(t *testing.T) {
 
 // invoiceAmountView is the serialized invoice fields needed for Stripe amount identity.
 type invoiceAmountView struct {
-	Subtotal             int64 `json:"subtotal"`
-	Tax                  int64 `json:"tax"`
-	Total                int64 `json:"total"`
-	TotalExcludingTax    int64 `json:"total_excluding_tax"`
+	Subtotal             int64  `json:"subtotal"`
+	Tax                  int64  `json:"tax"`
+	Total                int64  `json:"total"`
+	TotalExcludingTax    int64  `json:"total_excluding_tax"`
 	BillingReason        string `json:"billing_reason"`
 	TotalDiscountAmounts []struct {
 		Amount int64 `json:"amount"`
@@ -621,9 +621,10 @@ type invoiceAmountView struct {
 }
 
 // assertInvoiceAmountIdentity checks:
-//   total == subtotal - sum(total_discount_amounts) + tax
-//   tax == sum(total_taxes[].amount)
-//   total_excluding_tax == pretax base (subtotal - discount for exclusive rates)
+//
+//	total == subtotal - sum(total_discount_amounts) + tax
+//	tax == sum(total_taxes[].amount)
+//	total_excluding_tax == pretax base (subtotal - discount for exclusive rates)
 func assertInvoiceAmountIdentity(t *testing.T, subtotal int64, discounts []struct {
 	Amount int64 `json:"amount"`
 }, tax, total, totalExcludingTax int64, totalTaxes []struct {
@@ -687,12 +688,12 @@ func TestSubscriptionProrationInvoiceAmountIdentity(t *testing.T) {
 	mid := time.Date(2030, 1, 16, 0, 0, 0, 0, time.UTC)
 
 	type caseSpec struct {
-		name     string
-		subID    string
-		price    string
-		coupon   string
-		taxRate  string
-		params   url.Values
+		name    string
+		subID   string
+		price   string
+		coupon  string
+		taxRate string
+		params  url.Values
 		// optional numeric checks
 		wantSubtotal *int64
 		wantTotal    *int64

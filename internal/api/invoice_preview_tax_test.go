@@ -10,11 +10,11 @@ import (
 
 // previewTaxFields is the subset compared for preview == confirmed invoice tax parity.
 type previewTaxFields struct {
-	Subtotal          int64 `json:"subtotal"`
+	Subtotal          int64  `json:"subtotal"`
 	Tax               *int64 `json:"tax"`
-	Total             int64 `json:"total"`
-	TotalExcludingTax int64 `json:"total_excluding_tax"`
-	AmountDue         int64 `json:"amount_due"`
+	Total             int64  `json:"total"`
+	TotalExcludingTax int64  `json:"total_excluding_tax"`
+	AmountDue         int64  `json:"amount_due"`
 	DefaultTaxRates   []struct {
 		ID         string  `json:"id"`
 		Percentage float64 `json:"percentage"`
@@ -298,10 +298,10 @@ func TestInvoicePreviewPriceIDFormMatchesPrice(t *testing.T) {
 		"subscription_details[proration_date]":     {strconv.FormatInt(periodStart, 10)},
 	})
 	viaPriceID := postForm[previewTaxFields](t, handler, "/v1/invoices/create_preview", url.Values{
-		"subscription":                               {created.ID},
-		"subscription_details[items][0][price_id]":   {pro.ID},
-		"subscription_details[proration_behavior]":   {"always_invoice"},
-		"subscription_details[proration_date]":       {strconv.FormatInt(periodStart, 10)},
+		"subscription": {created.ID},
+		"subscription_details[items][0][price_id]": {pro.ID},
+		"subscription_details[proration_behavior]": {"always_invoice"},
+		"subscription_details[proration_date]":     {strconv.FormatInt(periodStart, 10)},
 	})
 	if viaPrice.Subtotal != viaPriceID.Subtotal || viaPrice.Total != viaPriceID.Total ||
 		viaPrice.Tax == nil || viaPriceID.Tax == nil || *viaPrice.Tax != *viaPriceID.Tax ||

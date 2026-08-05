@@ -114,9 +114,9 @@ type CheckoutSession struct {
 	TrialPeriodDays     int64      `json:"trial_period_days,omitempty"`
 	// Stored as distinct keys so Stripe API objects (automatic_tax/tax_id_collection
 	// maps) do not collide when tests or clients decode session responses into this type.
-	AutomaticTax    bool       `json:"automatic_tax_enabled,omitempty"`
-	TaxIDCollection bool       `json:"tax_id_collection_enabled,omitempty"`
-	TaxPercent      float64    `json:"tax_percent,omitempty"`
+	AutomaticTax    bool    `json:"automatic_tax_enabled,omitempty"`
+	TaxIDCollection bool    `json:"tax_id_collection_enabled,omitempty"`
+	TaxPercent      float64 `json:"tax_percent,omitempty"`
 	// default_tax_rates_snapshot avoids collision with Stripe's default_tax_rates array of TaxRate objects.
 	DefaultTaxRates []AppliedTaxRate `json:"default_tax_rates_snapshot,omitempty"`
 	// ClientReferenceID is Stripe's client_reference_id (always present on API responses as string|null).
@@ -172,7 +172,7 @@ type Invoice struct {
 	DiscountAmount int64      `json:"discount_amount,omitempty"`
 	Discounts      []Discount `json:"discounts,omitempty"`
 	// automatic_tax_enabled avoids collision with Stripe's automatic_tax object shape.
-	AutomaticTax       bool              `json:"automatic_tax_enabled,omitempty"`
+	AutomaticTax bool `json:"automatic_tax_enabled,omitempty"`
 	// default_tax_rates_snapshot avoids collision with Stripe's default_tax_rates array of TaxRate objects.
 	DefaultTaxRates    []AppliedTaxRate  `json:"default_tax_rates_snapshot,omitempty"`
 	Tax                int64             `json:"tax"`
