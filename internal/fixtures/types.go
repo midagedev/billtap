@@ -26,9 +26,11 @@ type Pack struct {
 	Subscriptions     []SubscriptionFixture `json:"subscriptions" yaml:"subscriptions"`
 	Refunds           []RefundFixture       `json:"refunds" yaml:"refunds"`
 	CreditNotes       []CreditNoteFixture   `json:"credit_notes" yaml:"credit_notes"`
-	Disputes          []DisputeFixture      `json:"disputes" yaml:"disputes"`
-	TaxRates          []TaxRateFixture      `json:"tax_rates" yaml:"tax_rates"`
-	Assertions        []Expectation         `json:"assertions" yaml:"assertions"`
+	Disputes          []DisputeFixture         `json:"disputes" yaml:"disputes"`
+	TaxRates          []TaxRateFixture         `json:"tax_rates" yaml:"tax_rates"`
+	Coupons           []CouponFixture          `json:"coupons" yaml:"coupons"`
+	PromotionCodes    []PromotionCodeFixture   `json:"promotion_codes" yaml:"promotion_codes"`
+	Assertions        []Expectation            `json:"assertions" yaml:"assertions"`
 }
 
 type CatalogFixture struct {
@@ -138,6 +140,9 @@ type SubscriptionFixture struct {
 	DiscountPercentOff     float64                   `json:"discount_percent_off" yaml:"discount_percent_off"`
 	DiscountAmountOff      int64                     `json:"discount_amount_off" yaml:"discount_amount_off"`
 	DiscountCurrency       string                    `json:"discount_currency" yaml:"discount_currency"`
+	// DefaultTaxRates attaches local tax_rate evidence IDs to the subscription after apply
+	// (API-layer hook). Applied to renewals/prorations/previews; the creation invoice is not backfilled.
+	DefaultTaxRates []string `json:"default_tax_rates,omitempty" yaml:"default_tax_rates,omitempty"`
 }
 
 type SubscriptionItemFixture struct {
@@ -196,6 +201,33 @@ type TaxRateFixture struct {
 	Metadata    map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 }
 
+// CouponFixture seeds a local coupon evidence object (same path as tax_rates).
+type CouponFixture struct {
+	ID               string            `json:"id,omitempty" yaml:"id,omitempty"`
+	Name             string            `json:"name,omitempty" yaml:"name,omitempty"`
+	PercentOff       float64           `json:"percent_off,omitempty" yaml:"percent_off,omitempty"`
+	AmountOff        int64             `json:"amount_off,omitempty" yaml:"amount_off,omitempty"`
+	Currency         string            `json:"currency,omitempty" yaml:"currency,omitempty"`
+	Duration         string            `json:"duration,omitempty" yaml:"duration,omitempty"` // default "once"
+	DurationInMonths int64             `json:"duration_in_months,omitempty" yaml:"duration_in_months,omitempty"`
+	MaxRedemptions   int64             `json:"max_redemptions,omitempty" yaml:"max_redemptions,omitempty"`
+	RedeemBy         int64             `json:"redeem_by,omitempty" yaml:"redeem_by,omitempty"`
+	AppliesTo        []string          `json:"applies_to_products,omitempty" yaml:"applies_to_products,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
+// PromotionCodeFixture seeds a local promotion_code evidence object linked to a coupon.
+type PromotionCodeFixture struct {
+	ID            string            `json:"id,omitempty" yaml:"id,omitempty"`
+	Code          string            `json:"code" yaml:"code"`
+	Coupon        string            `json:"coupon" yaml:"coupon"`
+	Customer      string            `json:"customer,omitempty" yaml:"customer,omitempty"`
+	Active        *bool             `json:"active,omitempty" yaml:"active,omitempty"` // default true
+	MaxRedemptions int64            `json:"max_redemptions,omitempty" yaml:"max_redemptions,omitempty"`
+	ExpiresAt     int64             `json:"expires_at,omitempty" yaml:"expires_at,omitempty"`
+	Metadata      map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
 type ApplyResult struct {
 	ID                string                    `json:"id"`
 	Object            string                    `json:"object"`
@@ -214,6 +246,8 @@ type ApplyResult struct {
 	CreditNotes       []billing.CreditNote      `json:"creditNotes,omitempty"`
 	Disputes          []map[string]any          `json:"disputes,omitempty"`
 	TaxRates          []map[string]any          `json:"tax_rates,omitempty"`
+	Coupons           []map[string]any          `json:"coupons,omitempty"`
+	PromotionCodes    []map[string]any          `json:"promotion_codes,omitempty"`
 	Assertions        *AssertionReport          `json:"assertions,omitempty"`
 	Summary           map[string]int            `json:"summary"`
 }
@@ -282,6 +316,10 @@ type Expectation struct {
 	Count        *int              `json:"count" yaml:"count"`
 	CountAtLeast *int              `json:"countAtLeast" yaml:"countAtLeast"`
 	Quantity     *int64            `json:"quantity" yaml:"quantity"`
+	// Total/Tax/Subtotal filter invoice amounts (smallest currency unit). Invoice target only.
+	Total    *int64 `json:"total" yaml:"total"`
+	Tax      *int64 `json:"tax" yaml:"tax"`
+	Subtotal *int64 `json:"subtotal" yaml:"subtotal"`
 }
 
 type AssertionReport struct {

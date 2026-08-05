@@ -82,6 +82,159 @@ func TestCheckoutMVPFlow(t *testing.T) {
 	}
 }
 
+func TestCheckoutSessionMetadata(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"meta@example.test"},
+		"name":  {"Meta Buyer"},
+	})
+
+	t.Run("payment mode session metadata independent of payment_intent_data", func(t *testing.T) {
+		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                                       {customer.ID},
+			"mode":                                           {"payment"},
+			"client_reference_id":                            {"ref_meta_1"},
+			"line_items[0][price_data][currency]":            {"usd"},
+			"line_items[0][price_data][unit_amount]":         {"1500"},
+			"line_items[0][price_data][product_data][name]":  {"Extra Export"},
+			"line_items[0][quantity]":                        {"1"},
+			"metadata[paymentType]":                          {"EXTRA_EXPORT"},
+			"metadata[accountId]":                            {"acc_1"},
+			"payment_intent_data[metadata][paymentType]":     {"PI_SIDE"},
+			"success_url":                                    {"http://app.test/success"},
+		})
+		meta, _ := session["metadata"].(map[string]any)
+		if meta["paymentType"] != "EXTRA_EXPORT" || meta["accountId"] != "acc_1" {
+			t.Fatalf("create metadata=%v, want paymentType=EXTRA_EXPORT accountId=acc_1", meta)
+		}
+		if len(meta) != 2 {
+			t.Fatalf("create metadata keys=%v, want exactly 2", meta)
+		}
+
+		got := getJSON[map[string]any](t, handler, "/v1/checkout/sessions/"+fmt.Sprint(session["id"]))
+		gotMeta, _ := got["metadata"].(map[string]any)
+		if gotMeta["paymentType"] != "EXTRA_EXPORT" || gotMeta["accountId"] != "acc_1" {
+			t.Fatalf("GET metadata=%v, want round-trip", gotMeta)
+		}
+
+		completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+fmt.Sprint(session["id"])+"/complete", map[string]string{
+			"outcome": "payment_succeeded",
+		})
+		var completed billing.CheckoutSession
+		if err := json.Unmarshal(completion["session"], &completed); err != nil {
+			t.Fatalf("decode completed: %v", err)
+		}
+		if completed.PaymentIntentID == "" {
+			t.Fatalf("completed missing payment_intent: %#v", completed)
+		}
+
+		after := getJSON[map[string]any](t, handler, "/v1/checkout/sessions/"+fmt.Sprint(session["id"]))
+		afterMeta, _ := after["metadata"].(map[string]any)
+		if afterMeta["paymentType"] != "EXTRA_EXPORT" || afterMeta["accountId"] != "acc_1" {
+			t.Fatalf("post-complete session metadata=%v, want preserved", afterMeta)
+		}
+
+		pi := getJSON[map[string]any](t, handler, "/v1/payment_intents/"+completed.PaymentIntentID)
+		piMeta, _ := pi["metadata"].(map[string]any)
+		if piMeta["paymentType"] != "PI_SIDE" {
+			t.Fatalf("pi metadata paymentType=%v, want PI_SIDE", piMeta["paymentType"])
+		}
+		if _, ok := piMeta["EXTRA_EXPORT"]; ok {
+			t.Fatalf("pi metadata must not contain EXTRA_EXPORT value key: %#v", piMeta)
+		}
+		if piMeta["paymentType"] == "EXTRA_EXPORT" {
+			t.Fatalf("pi metadata paymentType leaked session value EXTRA_EXPORT: %#v", piMeta)
+		}
+		if _, ok := piMeta["accountId"]; ok {
+			t.Fatalf("pi metadata must not include session-only accountId: %#v", piMeta)
+		}
+	})
+
+	t.Run("subscription mode session metadata round-trip", func(t *testing.T) {
+		product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Pro plan"}})
+		price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+			"product":             {product.ID},
+			"currency":            {"usd"},
+			"unit_amount":         {"9900"},
+			"recurring[interval]": {"month"},
+		})
+		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":             {customer.ID},
+			"mode":                 {"subscription"},
+			"line_items[0][price]": {price.ID},
+			"metadata[plan]":       {"pro"},
+		})
+		meta, _ := session["metadata"].(map[string]any)
+		if meta["plan"] != "pro" {
+			t.Fatalf("subscription metadata=%v, want plan=pro", meta)
+		}
+		got := getJSON[map[string]any](t, handler, "/v1/checkout/sessions/"+fmt.Sprint(session["id"]))
+		gotMeta, _ := got["metadata"].(map[string]any)
+		if gotMeta["plan"] != "pro" {
+			t.Fatalf("GET subscription metadata=%v, want plan=pro", gotMeta)
+		}
+	})
+
+	t.Run("omitted metadata is empty object", func(t *testing.T) {
+		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
+			"customer":                                    {customer.ID},
+			"mode":                                        {"payment"},
+			"line_items[0][price_data][currency]":         {"usd"},
+			"line_items[0][price_data][unit_amount]":      {"500"},
+			"line_items[0][price_data][product_data][name]": {"No meta"},
+			"line_items[0][quantity]":                     {"1"},
+		})
+		meta, ok := session["metadata"].(map[string]any)
+		if !ok {
+			t.Fatalf("metadata key missing or wrong type: %#v", session["metadata"])
+		}
+		if len(meta) != 0 {
+			t.Fatalf("metadata=%v, want empty object", meta)
+		}
+	})
+
+	t.Run("consumer app eight metadata keys round-trip", func(t *testing.T) {
+		keys := map[string]string{
+			"paymentType":          "EXTRA_EXPORT",
+			"extraExportPaymentId": "eep_1",
+			"accountId":            "acc_1",
+			"requesterAccountId":   "acc_req",
+			"workspaceId":          "ws_1",
+			"exportRequestHash":    "hash_abc",
+			"extraCount":           "3",
+			"provisionAttemptId":   "prov_1",
+		}
+		values := url.Values{
+			"customer":                                    {customer.ID},
+			"mode":                                        {"payment"},
+			"line_items[0][price_data][currency]":         {"usd"},
+			"line_items[0][price_data][unit_amount]":      {"1500"},
+			"line_items[0][price_data][product_data][name]": {"Extra Export"},
+			"line_items[0][quantity]":                     {"1"},
+		}
+		for k, v := range keys {
+			values.Set("metadata["+k+"]", v)
+		}
+		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", values)
+		meta, _ := session["metadata"].(map[string]any)
+		if len(meta) != len(keys) {
+			t.Fatalf("metadata len=%d want %d: %#v", len(meta), len(keys), meta)
+		}
+		for k, want := range keys {
+			if meta[k] != want {
+				t.Fatalf("metadata[%s]=%v, want %s", k, meta[k], want)
+			}
+		}
+		got := getJSON[map[string]any](t, handler, "/v1/checkout/sessions/"+fmt.Sprint(session["id"]))
+		gotMeta, _ := got["metadata"].(map[string]any)
+		for k, want := range keys {
+			if gotMeta[k] != want {
+				t.Fatalf("GET metadata[%s]=%v, want %s", k, gotMeta[k], want)
+			}
+		}
+	})
+}
+
 func TestCheckoutPaymentMode(t *testing.T) {
 	handler := newTestHandler(t)
 	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{

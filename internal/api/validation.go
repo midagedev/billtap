@@ -34,6 +34,8 @@ var (
 	// (firstValues leaves single-value [] keys unexpanded).
 	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days|default_tax_rates)\](\[\d*\])?$`)
 	defaultTaxRatesParamRE     = regexp.MustCompile(`^default_tax_rates(\[\d*\])?$`)
+	// Item-level tax_rates on subscription_items create: evidence only (not used for totals).
+	taxRatesParamRE            = regexp.MustCompile(`^tax_rates(\[\d*\])?$`)
 	discountParamRE            = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
 	subscriptionItemRE         = regexp.MustCompile(`^items\[(\d+)\]\[(id|price|price_id|quantity)\]$`)
 	cancellationDetailsRE      = regexp.MustCompile(`^cancellation_details\[(comment|feedback)\]$`)
@@ -375,6 +377,20 @@ func (p params) validateUnixTimestampOrNow(key string) error {
 	}
 	if _, err := strconv.ParseInt(p.string(key), 10, 64); err != nil {
 		return invalidParam(key, "Expected a Unix timestamp or now.")
+	}
+	return nil
+}
+
+func (p params) validateUnixTimestampOrNowOrUnchanged(key string) error {
+	if !p.has(key) {
+		return nil
+	}
+	switch p.string(key) {
+	case "now", "unchanged":
+		return nil
+	}
+	if _, err := strconv.ParseInt(p.string(key), 10, 64); err != nil {
+		return invalidParam(key, "Expected a Unix timestamp, now, or unchanged.")
 	}
 	return nil
 }
@@ -726,9 +742,10 @@ func validateCheckoutSessionCreate(p params) error {
 			checkoutSubscriptionDataRE,
 			discountParamRE,
 		},
-		RequiredAny: [][]string{{"customer", "customer_id"}},
-		Int64Params: []string{"subscription_data[trial_period_days]"},
-		BoolParams:  []string{"allow_promotion_codes", "automatic_tax[enabled]", "tax_id_collection[enabled]"},
+		RequiredAny:   [][]string{{"customer", "customer_id"}},
+		AllowMetadata: true,
+		Int64Params:   []string{"subscription_data[trial_period_days]"},
+		BoolParams:    []string{"allow_promotion_codes", "automatic_tax[enabled]", "tax_id_collection[enabled]"},
 		EnumParams: map[string][]string{
 			"mode": {"subscription", "payment"},
 			"payment_intent_data[setup_future_usage]": {"off_session", "on_session"},
@@ -977,7 +994,12 @@ func validateSubscriptionUpdate(p params) error {
 		EnumParams: map[string][]string{
 			"pause_collection[behavior]": {"void", "keep_as_draft", "mark_uncollectible"},
 			"proration_behavior":         {"none", "create_prorations", "always_invoice"},
-			"payment_behavior":           {"allow_incomplete", "error_if_incomplete", "pending_if_incomplete"},
+			"payment_behavior": {
+				"allow_incomplete",
+				"default_incomplete",
+				"error_if_incomplete",
+				"pending_if_incomplete",
+			},
 			"cancellation_details[feedback]": {
 				"customer_service",
 				"low_quality",
@@ -998,10 +1020,12 @@ func validateSubscriptionUpdate(p params) error {
 			return err
 		}
 	}
-	for _, key := range []string{"billing_cycle_anchor", "trial_end"} {
-		if err := p.validateUnixTimestampOrNow(key); err != nil {
-			return err
-		}
+	// billing_cycle_anchor accepts now | unchanged | unix timestamp (Stripe dual form).
+	if err := p.validateUnixTimestampOrNowOrUnchanged("billing_cycle_anchor"); err != nil {
+		return err
+	}
+	if err := p.validateUnixTimestampOrNow("trial_end"); err != nil {
+		return err
 	}
 	return nil
 }
@@ -1023,11 +1047,38 @@ func validateSubscriptionResume(p params) error {
 
 func validateSubscriptionItemCreate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:     []string{"subscription", "price", "price_id", "quantity"},
-		Required:    []string{"subscription"},
-		RequiredAny: [][]string{{"price", "price_id"}},
-		Int64Params: []string{"quantity"},
-		Positive:    []string{"quantity"},
+		Allowed: []string{
+			"subscription",
+			"price",
+			"price_id",
+			"quantity",
+			"proration_behavior",
+			"proration_date",
+		},
+		AllowedRegex: []*regexp.Regexp{taxRatesParamRE},
+		Required:     []string{"subscription"},
+		RequiredAny:  [][]string{{"price", "price_id"}},
+		Int64Params:  []string{"quantity", "proration_date"},
+		Positive:     []string{"quantity"},
+		EnumParams: map[string][]string{
+			"proration_behavior": {"none", "create_prorations", "always_invoice"},
+		},
+		AllowMetadata: true,
+	})
+}
+
+func validateSubscriptionItemDelete(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"proration_behavior",
+			"proration_date",
+			"clear_usage",
+		},
+		Int64Params: []string{"proration_date"},
+		BoolParams:  []string{"clear_usage"},
+		EnumParams: map[string][]string{
+			"proration_behavior": {"none", "create_prorations", "always_invoice"},
+		},
 	})
 }
 

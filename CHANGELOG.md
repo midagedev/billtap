@@ -2,6 +2,63 @@
 
 ## Unreleased
 
+- Subscription item IDs are now stored when the item is created instead of
+  being derived from its array position, so deleting an item no longer shifts
+  the IDs of the items after it. The `si_<subscription>_<n>` shape is
+  unchanged, subscriptions stored before this release keep exposing their
+  position-derived IDs and are backfilled with those same values on their next
+  write, and a later add reuses the lowest unused index.
+- Renewal invoices now report `billing_reason: subscription_cycle`. They were
+  labelled `subscription_create` because the renewal check looked for an
+  `in_renewal_` ID prefix that renewals never had, leaving first charges and
+  renewals indistinguishable to webhook consumers.
+- Invoice previews without item overrides now return the subscription's next
+  billing cycle instead of a zero-amount preview: `create_preview` and
+  `upcoming` with just a subscription report the upcoming items, discounts, and
+  tax with `billing_reason: upcoming`, include any deferred
+  `create_prorations` amount without consuming it, and match the invoice the
+  next renewal actually produces. Previews that pass item overrides keep the
+  existing proration behaviour.
+- Fixture packs can now seed the tax and discount evidence their subscriptions
+  need: top-level `coupons` and `promotion_codes` keys, and
+  `subscriptions[].default_tax_rates`. Tax-rate and coupon evidence is seeded
+  before the subscription checkout runs and the resolved rates are passed into
+  the checkout session, so a seeded subscription's first invoice is taxed and
+  renewal/proration/preview inherit the snapshot. Subscription fixtures that
+  reference a seeded coupon no longer need to repeat its percent or amount,
+  and assertions accept `subtotal`/`tax`/`total` on the `invoice` target.
+- Subscription item create and delete now accept `proration_behavior` and
+  `proration_date` (previously `parameter_unknown` on create and silently
+  ignored on delete), routing through the same proration path as subscription
+  update so a seat add with `always_invoice` bills the prorated delta with the
+  subscription's tax rates. Deleting the last item is rejected, delete accepts
+  its parameters from the query string as well as the body, and item-level
+  `tax_rates` are kept as evidence only — totals still come from the
+  subscription's `default_tax_rates`.
+- Invoice previews now apply tax: `create_preview` and `upcoming` read the
+  subscription's `default_tax_rates` (or `automatic_tax`) and tax the
+  post-discount proration base through the same helper the confirmed invoice
+  serialization uses, so preview and confirmed amounts match field for field
+  including decimal-rate rounding and inclusive rates. Preview item parsing
+  also accepts `[price_id]`, which the validator already allowed but the
+  parser ignored, and previews that cannot prorate now report
+  `billtap_preview.proration_skipped_reason` instead of a silent zero.
+- Subscription item changes now bill instead of only recording proration
+  parameters as metadata: `proration_behavior=always_invoice` issues a paid
+  `subscription_update` invoice and repoints `latest_invoice`,
+  `billing_cycle_anchor=now` also resets the period and bills the new cycle
+  net of the unused old-cycle credit, and `create_prorations` defers the delta
+  to the next renewal invoice. Proration reuses the invoice preview's
+  calculator so preview and actual agree, applies `default_tax_rates` after
+  discounts, keeps `total == subtotal - discounts + tax` on every proration
+  invoice, emits the full invoice/payment-intent webhook sequence, and returns
+  HTTP 402 without committing the item change when
+  `payment_behavior=error_if_incomplete` meets a failing outcome.
+- Checkout session create now accepts session-level `metadata[...]` and
+  round-trips it through retrieval and completion, restoring Stripe parity for
+  SDK callers that attach the same map to both the session and
+  `payment_intent_data[metadata]`. The two maps stay independent: session
+  metadata is never promoted into the completed PaymentIntent.
 - Added a promotion-code input to the hosted checkout page for
   `allow_promotion_codes` sessions, backed by Billtap-specific
   `POST/DELETE /api/checkout/sessions/{id}/promotion_code`: applying a valid

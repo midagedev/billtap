@@ -14,6 +14,12 @@ func evaluateExpectation(snapshot Snapshot, expectation Expectation) AssertionRe
 		Expected: expectationMap(expectation),
 	}
 
+	if (expectation.Total != nil || expectation.Tax != nil || expectation.Subtotal != nil) && target != "invoice" {
+		result.Pass = false
+		result.Message = fmt.Sprintf("total/tax/subtotal filters are only valid for target invoice, got %q", expectation.Target)
+		return result
+	}
+
 	switch target {
 	case "customer":
 		result.Matched = countCustomers(snapshot.Customers, expectation)
@@ -153,6 +159,15 @@ func countInvoices(items []billing.Invoice, expectation Expectation) int {
 		if expectation.Status != "" && item.Status != expectation.Status {
 			continue
 		}
+		if expectation.Tax != nil && item.Tax != *expectation.Tax {
+			continue
+		}
+		if expectation.Total != nil && item.Total != *expectation.Total {
+			continue
+		}
+		if expectation.Subtotal != nil && item.Subtotal != *expectation.Subtotal {
+			continue
+		}
 		count++
 	}
 	return count
@@ -269,6 +284,15 @@ func expectationMap(expectation Expectation) map[string]any {
 	}
 	if expectation.Quantity != nil {
 		out["quantity"] = *expectation.Quantity
+	}
+	if expectation.Total != nil {
+		out["total"] = *expectation.Total
+	}
+	if expectation.Tax != nil {
+		out["tax"] = *expectation.Tax
+	}
+	if expectation.Subtotal != nil {
+		out["subtotal"] = *expectation.Subtotal
 	}
 	return out
 }

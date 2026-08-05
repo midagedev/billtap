@@ -126,6 +126,15 @@ Response includes:
 - `status`
 - `payment_status`
 
+Revised 2026-08-05 (consumer session metadata parity): session create accepts
+session-level `metadata[...]` and every session response carries `metadata`
+(an object; `{}` when unset). Session metadata is stored, survives retrieval
+and completion, and is kept strictly independent of
+`payment_intent_data[metadata]` — identical keys on both sides do not
+overwrite each other, and session metadata is never promoted onto the
+PaymentIntent created at completion (SDK callers that attach the same map to
+both places get exactly what they sent in each place).
+
 Revised 2026-08-04 (SaaS tax/discount adoption): responses also include
 `currency`, `amount_subtotal`, `amount_total`, `total_details`
 (`amount_discount`/`amount_shipping`/`amount_tax`), array-shaped `discounts`,
@@ -205,7 +214,32 @@ exclusive amounts add on the pretax base. Subscriptions serialize
 `default_tax_rates` and per-rate `total_taxes`/`total_tax_amounts` entries
 with real `txr_*` IDs and `taxability_reason: null`. `automatic_tax[enabled]`
 and `default_tax_rates` are mutually exclusive (400 `parameter_invalid`).
-Invoice previews still do not apply either tax path.
+Invoice previews did not apply either tax path at the time of this revision.
+
+Revised 2026-08-05 (consumer preview parity): invoice previews now apply tax.
+`POST /v1/invoices/create_preview` and `GET,POST /v1/invoices/upcoming` read
+the subscription's `default_tax_rates` snapshot (or the `automatic_tax`
+simulation) and tax the post-discount proration base through the same helper
+the confirmed invoice serialization uses, so a preview and the invoice
+produced by actually applying the same change are identical field for field —
+`subtotal`, `tax`, `total`, `total_excluding_tax`, and per-rate `total_taxes`
+/ `total_tax_amounts` — including decimal-rate rounding and inclusive rates.
+Previews for a customer with no subscription keep `tax: null` and empty tax
+arrays. Preview item parsing also accepts `[price_id]` alongside `[price]`
+(previously the validator allowed `price_id` while the parser ignored it,
+silently yielding a zero proration), and a preview that cannot prorate
+reports why in `billtap_preview.proration_skipped_reason` instead of
+returning a silent zero.
+
+Revised 2026-08-05 (upcoming-invoice parity): a preview that names a
+subscription but overrides no items now returns that subscription's **next
+billing cycle** instead of a zero-amount proration. The response carries one
+non-proration line per subscription item, the next period
+(`current_period_end` onward, or `trial_end` for a trialing subscription),
+discounts and tax over the item total, and `billing_reason: upcoming`. Any
+amount deferred by an earlier `create_prorations` update is included without
+being consumed, so the preview equals the invoice the next renewal produces.
+Previews that do override items keep the proration behaviour described above.
 
 ### Subscriptions
 
@@ -217,6 +251,58 @@ Invoice previews still do not apply either tax path.
 - `DELETE /v1/customers/{id}/discount`
 - `GET /v1/subscriptions/{id}/discount`
 - `DELETE /v1/subscriptions/{id}/discount`
+
+Revised 2026-08-05 (consumer plan-change adoption): item changes on
+`POST /v1/subscriptions/{id}` now bill, instead of only recording
+`proration_behavior` as metadata evidence.
+
+- `proration_behavior=always_invoice` issues a paid `subscription_update`
+  invoice immediately and repoints `latest_invoice` at it. Mid-cycle the
+  invoice bills the prorated delta between the old and new item totals,
+  scaled by the unused fraction of the period (truncating integer division,
+  the same calculator the invoice preview uses, so preview and actual agree).
+  A non-positive delta (downgrade) issues no invoice — credit balances are not
+  modeled.
+- `billing_cycle_anchor=now` additionally resets the period to
+  `now .. now + interval` and bills the new full cycle net of the unused
+  old-cycle credit. The credit is netted out of `subtotal` (and recorded as
+  `billtap_proration_credit` invoice metadata) so every proration invoice
+  satisfies `total == subtotal - discounts + tax`, and the serialized
+  `total_taxes` recomputation agrees with the stored `tax`.
+- `proration_behavior=create_prorations` issues no invoice; the delta
+  accumulates in `billtap_pending_proration_amount` subscription metadata and
+  is added to the next renewal invoice's subtotal before discounts and tax.
+- `proration_behavior=none` (the default) keeps the previous
+  items-and-metadata-only behavior.
+- Tax follows the same rule as completion and renewal: the subscription's
+  `default_tax_rates` (or the `automatic_tax` simulation) apply exclusively to
+  the post-discount base.
+- `payment_behavior=error_if_incomplete` with a configured failing outcome
+  returns HTTP 402 in Stripe's card-error shape and leaves the subscription
+  items unchanged (nothing is committed). Other `payment_behavior` values
+  leave the invoice `open` and still apply the item change, matching the
+  renewal-failure path.
+- Invoicing paths emit `invoice.created`, `invoice.finalized`,
+  `payment_intent.created`, the PaymentIntent terminal event,
+  `invoice.payment_succeeded`/`invoice.paid` (or `invoice.payment_failed`),
+  then `customer.subscription.updated`.
+- `billing_cycle_anchor` accepts `now`, `unchanged`, or a Unix timestamp.
+- `POST /v1/subscription_items` and `DELETE /v1/subscription_items/{id}` accept
+  `proration_behavior` and `proration_date` and route through the same
+  proration path, so adding seats with `always_invoice` bills the prorated
+  delta under the subscription's tax rates. Delete reads its parameters from
+  the query string as well as the body, rejects deleting the last item, and
+  accepts `clear_usage` as evidence only. Item-level `tax_rates` round-trip as
+  evidence but do not affect totals — billtap taxes at the subscription level.
+  Subscription item IDs keep the `si_<subscription>_<n>` shape but, as of
+  2026-08-05, are stored when the item is created rather than derived from its
+  array position: deleting an item no longer shifts the IDs of later items, a
+  later add reuses the lowest unused index, and subscriptions stored before
+  that change keep their position-derived IDs (backfilled with the same values
+  on their next write).
+- Renewal invoices report `billing_reason: subscription_cycle` (2026-08-05;
+  they previously reported `subscription_create`), first charges report
+  `subscription_create`, and proration invoices report `subscription_update`.
 
 ### Subscription Schedules
 
@@ -677,6 +763,27 @@ Fixture-provided IDs are preserved for seeded objects. Fixtures also tag
 objects with `billtap_fixture_ref`, and the resolve endpoint below can map a
 fixture ref to the generated or stable customer, subscription, invoice, payment
 intent, checkout session, product, and price IDs.
+
+Revised 2026-08-05 (consumer seeding ergonomics): packs can declare the tax and
+discount evidence their subscriptions need, so an E2E seed no longer needs
+side-channel API calls.
+
+- Top-level `coupons` and `promotion_codes` seed local coupon and
+  promotion-code evidence in the same shapes `POST /v1/coupons` and
+  `POST /v1/promotion_codes` produce. A promotion code whose coupon is neither
+  in the pack nor already seeded fails the apply.
+- `subscriptions[].default_tax_rates` attaches seeded `txr_*` rates to a
+  subscription. Tax-rate, coupon, and promotion-code evidence is seeded
+  *before* the subscription checkout runs and the resolved rates are passed
+  into the checkout session, so the subscription's **first** invoice is taxed
+  like any other billing flow (no post-hoc metadata patching), and renewal,
+  proration, and preview inherit the same snapshot. Unknown rate IDs fail the
+  apply, naming the subscription and rate.
+- A subscription fixture that references a seeded coupon no longer has to
+  repeat its `discount_percent_off` / `discount_amount_off`: the values are
+  read from the coupon evidence, and an explicit value still wins.
+- Assertions accept `subtotal`, `tax`, and `total` on the `invoice` target
+  (rejected on other targets), so a seed can prove its own tax math.
 
 ### `GET /api/fixtures/resolve`
 

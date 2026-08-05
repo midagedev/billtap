@@ -22,8 +22,8 @@ func TestSQLiteMigrationsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersions returned error: %v", err)
 	}
-	if len(versions) != 18 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 || versions[4] != 5 || versions[5] != 6 || versions[6] != 7 || versions[7] != 8 || versions[8] != 9 || versions[9] != 10 || versions[10] != 11 || versions[11] != 12 || versions[12] != 13 || versions[13] != 14 || versions[14] != 15 || versions[15] != 16 || versions[16] != 17 || versions[17] != 18 {
-		t.Fatalf("versions = %#v, want [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18]", versions)
+	if len(versions) != 19 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 || versions[4] != 5 || versions[5] != 6 || versions[6] != 7 || versions[7] != 8 || versions[8] != 9 || versions[9] != 10 || versions[10] != 11 || versions[11] != 12 || versions[12] != 13 || versions[13] != 14 || versions[14] != 15 || versions[15] != 16 || versions[16] != 17 || versions[17] != 18 || versions[18] != 19 {
+		t.Fatalf("versions = %#v, want [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19]", versions)
 	}
 }
 
@@ -41,6 +41,95 @@ func TestMemoryStoreWorksInTests(t *testing.T) {
 	}
 	if err := store.Ping(ctx); err == nil {
 		t.Fatal("Ping after Close succeeded, want error")
+	}
+}
+
+func TestCheckoutSessionMetadataDefaultAndRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer store.Close()
+
+	service := billing.NewService(store)
+	customer, err := service.CreateCustomer(ctx, billing.Customer{ID: "cus_meta", Email: "meta@example.test"})
+	if err != nil {
+		t.Fatalf("CreateCustomer: %v", err)
+	}
+	product, err := service.CreateProduct(ctx, billing.Product{ID: "prod_meta", Name: "Meta"})
+	if err != nil {
+		t.Fatalf("CreateProduct: %v", err)
+	}
+	price, err := service.CreatePrice(ctx, billing.Price{ID: "price_meta", ProductID: product.ID, Currency: "usd", UnitAmount: 1500})
+	if err != nil {
+		t.Fatalf("CreatePrice: %v", err)
+	}
+
+	// Pre-019-style insert: omit metadata column so DEFAULT '{}' applies; decode must not break.
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO checkout_sessions (
+		id, customer_id, mode, line_items, discounts, success_url, cancel_url, status, payment_status,
+		allow_promotion_codes, trial_period_days, automatic_tax, tax_id_collection, tax_percent,
+		default_tax_rates, client_reference_id, payment_intent_data, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 0, 0, 0, 0, '[]', '', '{}', ?)`,
+		"cs_default_meta", customer.ID, "payment", `[{"price":"price_meta","quantity":1}]`, "[]",
+		"https://x.test/ok", "", "open", "unpaid", now); err != nil {
+		t.Fatalf("insert without metadata column: %v", err)
+	}
+	var rawMeta string
+	if err := store.db.QueryRowContext(ctx, `SELECT metadata FROM checkout_sessions WHERE id = ?`, "cs_default_meta").Scan(&rawMeta); err != nil {
+		t.Fatalf("SELECT metadata: %v", err)
+	}
+	if rawMeta != "{}" {
+		t.Fatalf("DEFAULT metadata = %q, want {}", rawMeta)
+	}
+	legacy, err := store.GetCheckoutSession(ctx, "cs_default_meta")
+	if err != nil {
+		t.Fatalf("GetCheckoutSession legacy: %v", err)
+	}
+	if len(legacy.Metadata) != 0 {
+		t.Fatalf("legacy Metadata = %#v, want empty", legacy.Metadata)
+	}
+
+	// Explicit metadata round-trip + survives completion UPDATE (metadata column not touched).
+	created, err := store.CreateCheckoutSession(ctx, billing.CheckoutSession{
+		ID:         "cs_with_meta",
+		CustomerID: customer.ID,
+		Mode:       "payment",
+		LineItems:  []billing.LineItem{{PriceID: price.ID, Quantity: 1}},
+		Status:     "open",
+		PaymentStatus: "unpaid",
+		Metadata:   map[string]string{"paymentType": "EXTRA_EXPORT", "accountId": "acc_1"},
+		CreatedAt:  time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("CreateCheckoutSession: %v", err)
+	}
+	if created.Metadata["paymentType"] != "EXTRA_EXPORT" || created.Metadata["accountId"] != "acc_1" {
+		t.Fatalf("created metadata = %#v", created.Metadata)
+	}
+
+	completed, err := store.RecordCheckoutCompletion(ctx, billing.CheckoutCompletion{
+		SessionID:     created.ID,
+		SessionStatus: "complete",
+		Outcome:       "payment_succeeded",
+		CompletedAt:   time.Now().UTC(),
+		PaymentIntent: billing.PaymentIntent{
+			ID:         "pi_meta_keep",
+			CustomerID: customer.ID,
+			Amount:     1500,
+			Currency:   "usd",
+			Status:     "succeeded",
+			Metadata:   map[string]string{"paymentType": "PI_SIDE"},
+			CreatedAt:  time.Now().UTC(),
+		},
+	})
+	if err != nil {
+		t.Fatalf("RecordCheckoutCompletion: %v", err)
+	}
+	if completed.Metadata["paymentType"] != "EXTRA_EXPORT" || completed.Metadata["accountId"] != "acc_1" {
+		t.Fatalf("completed session metadata = %#v, want preserved", completed.Metadata)
 	}
 }
 
