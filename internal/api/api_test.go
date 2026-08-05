@@ -23,6 +23,7 @@ import (
 	"github.com/hckim/billtap/internal/security"
 	"github.com/hckim/billtap/internal/storage"
 	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/hckim/billtap/internal/webhooks/webhookstest"
 )
 
 func TestCheckoutMVPFlow(t *testing.T) {
@@ -91,17 +92,17 @@ func TestCheckoutSessionMetadata(t *testing.T) {
 
 	t.Run("payment mode session metadata independent of payment_intent_data", func(t *testing.T) {
 		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
-			"customer":                                       {customer.ID},
-			"mode":                                           {"payment"},
-			"client_reference_id":                            {"ref_meta_1"},
-			"line_items[0][price_data][currency]":            {"usd"},
-			"line_items[0][price_data][unit_amount]":         {"1500"},
-			"line_items[0][price_data][product_data][name]":  {"Extra Export"},
-			"line_items[0][quantity]":                        {"1"},
-			"metadata[paymentType]":                          {"EXTRA_EXPORT"},
-			"metadata[accountId]":                            {"acc_1"},
-			"payment_intent_data[metadata][paymentType]":     {"PI_SIDE"},
-			"success_url":                                    {"http://app.test/success"},
+			"customer":                               {customer.ID},
+			"mode":                                   {"payment"},
+			"client_reference_id":                    {"ref_meta_1"},
+			"line_items[0][price_data][currency]":    {"usd"},
+			"line_items[0][price_data][unit_amount]": {"1500"},
+			"line_items[0][price_data][product_data][name]": {"Extra Export"},
+			"line_items[0][quantity]":                       {"1"},
+			"metadata[paymentType]":                         {"EXTRA_EXPORT"},
+			"metadata[accountId]":                           {"acc_1"},
+			"payment_intent_data[metadata][paymentType]":    {"PI_SIDE"},
+			"success_url":                                   {"http://app.test/success"},
 		})
 		meta, _ := session["metadata"].(map[string]any)
 		if meta["paymentType"] != "EXTRA_EXPORT" || meta["accountId"] != "acc_1" {
@@ -177,12 +178,12 @@ func TestCheckoutSessionMetadata(t *testing.T) {
 
 	t.Run("omitted metadata is empty object", func(t *testing.T) {
 		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
-			"customer":                                    {customer.ID},
-			"mode":                                        {"payment"},
-			"line_items[0][price_data][currency]":         {"usd"},
-			"line_items[0][price_data][unit_amount]":      {"500"},
+			"customer":                               {customer.ID},
+			"mode":                                   {"payment"},
+			"line_items[0][price_data][currency]":    {"usd"},
+			"line_items[0][price_data][unit_amount]": {"500"},
 			"line_items[0][price_data][product_data][name]": {"No meta"},
-			"line_items[0][quantity]":                     {"1"},
+			"line_items[0][quantity]":                       {"1"},
 		})
 		meta, ok := session["metadata"].(map[string]any)
 		if !ok {
@@ -205,12 +206,12 @@ func TestCheckoutSessionMetadata(t *testing.T) {
 			"provisionAttemptId":   "prov_1",
 		}
 		values := url.Values{
-			"customer":                                    {customer.ID},
-			"mode":                                        {"payment"},
-			"line_items[0][price_data][currency]":         {"usd"},
-			"line_items[0][price_data][unit_amount]":      {"1500"},
+			"customer":                               {customer.ID},
+			"mode":                                   {"payment"},
+			"line_items[0][price_data][currency]":    {"usd"},
+			"line_items[0][price_data][unit_amount]": {"1500"},
 			"line_items[0][price_data][product_data][name]": {"Extra Export"},
-			"line_items[0][quantity]":                     {"1"},
+			"line_items[0][quantity]":                       {"1"},
 		}
 		for k, v := range keys {
 			values.Set("metadata["+k+"]", v)
@@ -244,14 +245,14 @@ func TestCheckoutPaymentMode(t *testing.T) {
 
 	t.Run("price_data + payment_intent_data + client_reference_id complete", func(t *testing.T) {
 		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
-			"customer":                                    {customer.ID},
-			"mode":                                        {"payment"},
-			"client_reference_id":                         {"ref_1"},
-			"line_items[0][price_data][currency]":         {"usd"},
-			"line_items[0][price_data][unit_amount]":      {"12900"},
+			"customer":                               {customer.ID},
+			"mode":                                   {"payment"},
+			"client_reference_id":                    {"ref_1"},
+			"line_items[0][price_data][currency]":    {"usd"},
+			"line_items[0][price_data][unit_amount]": {"12900"},
 			"line_items[0][price_data][product_data][name]": {"Extra export"},
-			"line_items[0][quantity]":                     {"1"},
-			"payment_intent_data[metadata][order_id]":     {"ord_1"},
+			"line_items[0][quantity]":                       {"1"},
+			"payment_intent_data[metadata][order_id]":       {"ord_1"},
 			"success_url": {"http://app.test/success"},
 			"cancel_url":  {"http://app.test/cancel"},
 		})
@@ -320,13 +321,13 @@ func TestCheckoutPaymentMode(t *testing.T) {
 
 	t.Run("setup_future_usage attaches payment method", func(t *testing.T) {
 		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
-			"customer":                                    {customer.ID},
-			"mode":                                        {"payment"},
-			"line_items[0][price_data][currency]":         {"usd"},
-			"line_items[0][price_data][unit_amount]":      {"500"},
+			"customer":                               {customer.ID},
+			"mode":                                   {"payment"},
+			"line_items[0][price_data][currency]":    {"usd"},
+			"line_items[0][price_data][unit_amount]": {"500"},
 			"line_items[0][price_data][product_data][name]": {"Attach me"},
-			"line_items[0][quantity]":                     {"1"},
-			"payment_intent_data[setup_future_usage]":     {"off_session"},
+			"line_items[0][quantity]":                       {"1"},
+			"payment_intent_data[setup_future_usage]":       {"off_session"},
 		})
 		completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+fmt.Sprint(session["id"])+"/complete", map[string]string{
 			// pm_card_visa is a success alias that also stamps a payment_method id.
@@ -412,10 +413,10 @@ func TestCheckoutPaymentMode(t *testing.T) {
 			"duration":    {"once"},
 		})
 		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
-			"customer":              {customer.ID},
-			"mode":                  {"payment"},
-			"line_items[0][price]":  {price.ID},
-			"discounts[0][coupon]":  {coupon.ID},
+			"customer":             {customer.ID},
+			"mode":                 {"payment"},
+			"line_items[0][price]": {price.ID},
+			"discounts[0][coupon]": {coupon.ID},
 		})
 		if amount, _ := session["amount_total"].(float64); int64(amount) != 5000 {
 			t.Fatalf("amount_total=%v, want 5000 after 50%% off", session["amount_total"])
@@ -442,9 +443,9 @@ func TestCheckoutPaymentMode(t *testing.T) {
 		})
 
 		status, body := postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
-			"customer":                                {customer.ID},
-			"mode":                                    {"subscription"},
-			"line_items[0][price]":                    {price.ID},
+			"customer":             {customer.ID},
+			"mode":                 {"subscription"},
+			"line_items[0][price]": {price.ID},
 			"payment_intent_data[setup_future_usage]": {"off_session"},
 		})
 		errBody := decodeErrorBody(t, body)
@@ -464,10 +465,10 @@ func TestCheckoutPaymentMode(t *testing.T) {
 		}
 
 		status, body = postFormStatus(t, handler, "/v1/checkout/sessions", url.Values{
-			"customer":                                       {customer.ID},
-			"mode":                                           {"payment"},
-			"line_items[0][price_data][currency]":            {"usd"},
-			"line_items[0][price_data][unit_amount]":         {"100"},
+			"customer":                               {customer.ID},
+			"mode":                                   {"payment"},
+			"line_items[0][price_data][currency]":    {"usd"},
+			"line_items[0][price_data][unit_amount]": {"100"},
 			"line_items[0][price_data][product_data][name]":  {"Recurring no"},
 			"line_items[0][price_data][recurring][interval]": {"month"},
 		})
@@ -505,12 +506,12 @@ func TestCheckoutPaymentMode(t *testing.T) {
 
 	t.Run("free payment session no_payment_required", func(t *testing.T) {
 		session := postForm[map[string]any](t, handler, "/v1/checkout/sessions", url.Values{
-			"customer":                                    {customer.ID},
-			"mode":                                        {"payment"},
-			"line_items[0][price_data][currency]":         {"usd"},
-			"line_items[0][price_data][unit_amount]":      {"0"},
+			"customer":                               {customer.ID},
+			"mode":                                   {"payment"},
+			"line_items[0][price_data][currency]":    {"usd"},
+			"line_items[0][price_data][unit_amount]": {"0"},
 			"line_items[0][price_data][product_data][name]": {"Freebie"},
-			"line_items[0][quantity]":                     {"1"},
+			"line_items[0][quantity]":                       {"1"},
 		})
 		completion := postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+fmt.Sprint(session["id"])+"/complete", map[string]string{
 			"outcome": "payment_succeeded",
@@ -6158,15 +6159,12 @@ func TestFixtureApplyBackfillsCreatedEventForExistingSubscriptionSeed(t *testing
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	})
 	billingService := billing.NewService(store)
+	webhookService := webhooks.NewService(store)
+	webhookstest.RegisterStoreCleanup(t, webhookService, store)
 	handler := New(Options{
 		Billing:     billingService,
-		Webhooks:    webhooks.NewService(store),
+		Webhooks:    webhookService,
 		Diagnostics: diagnostics.NewService(store),
 	})
 
@@ -6773,14 +6771,12 @@ func newTestHandlerWithOptions(t *testing.T, opts Options) http.Handler {
 	if err != nil {
 		t.Fatalf("open sqlite: %v", err)
 	}
-	t.Cleanup(func() {
-		if err := store.Close(); err != nil {
-			t.Fatalf("close store: %v", err)
-		}
-	})
 	opts.Billing = billing.NewService(store)
-	opts.Webhooks = webhooks.NewService(store)
+	webhookService := webhooks.NewService(store)
+	opts.Webhooks = webhookService
 	opts.Diagnostics = diagnostics.NewService(store)
+	// After t.TempDir(): LIFO runs wait+close before TempDir removal.
+	webhookstest.RegisterStoreCleanup(t, webhookService, store)
 	return New(opts)
 }
 
