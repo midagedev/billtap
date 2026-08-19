@@ -6074,9 +6074,32 @@ func filterPrices(prices []billing.Price, r *http.Request) []billing.Price {
 		if priceType := query.Get("type"); priceType != "" && priceSearchType(price) != priceType {
 			continue
 		}
+		// Stripe 의 `lookup_keys[]` 는 OR 매칭 필터다. 이걸 무시하면 호출자가 특정 lookup key 로
+		// 조회한 뒤 `.firstOrNull()` 을 하는 순간 **전혀 다른 테넌트의 상품**을 집는다.
+		// 실측(2026-08-19): dentbird 워크스페이스 플랜 목록이 highdental 상품 6건으로 채워져
+		// Upgrade plan 화면이 통째로 비었다.
+		if keys := lookupKeysFilter(query); len(keys) > 0 && !keys[price.LookupKey] {
+			continue
+		}
 		out = append(out, price)
 	}
 	return out
+}
+
+// lookupKeysFilter 는 `lookup_keys[]=a&lookup_keys[]=b` 와 `lookup_keys=a` 양쪽 표기를 받는다.
+func lookupKeysFilter(query url.Values) map[string]bool {
+	keys := map[string]bool{}
+	for name, values := range query {
+		if name != "lookup_keys" && !strings.HasPrefix(name, "lookup_keys[") {
+			continue
+		}
+		for _, v := range values {
+			if v != "" {
+				keys[v] = true
+			}
+		}
+	}
+	return keys
 }
 
 func filterAccounts(accounts []billing.Account, r *http.Request) []billing.Account {
