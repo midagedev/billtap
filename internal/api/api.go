@@ -263,6 +263,12 @@ func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
 		} else if len(discounts) > 0 {
 			metadata = billing.MergeDiscountMetadata(metadata, discounts)
 		}
+		if _, ok := p.values["invoice_settings[default_payment_method]"]; ok {
+			if metadata == nil {
+				metadata = map[string]string{}
+			}
+			metadata[billing.MetadataDefaultPaymentMethod] = strings.TrimSpace(p.string("invoice_settings[default_payment_method]"))
+		}
 		customer, err := h.billing.CreateCustomer(r.Context(), billing.Customer{
 			ID:       p.string("id"),
 			Email:    p.string("email"),
@@ -345,7 +351,7 @@ func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		metadata := p.metadata()
-		if metadata != nil || p.has("test_clock") || hasDiscountParams(p) {
+		if metadata != nil || p.has("test_clock") || hasDiscountParams(p) || p.has("invoice_settings[default_payment_method]") {
 			current, err := h.billing.GetCustomer(r.Context(), id)
 			if err != nil {
 				writeResult(w, nil, err)
@@ -356,6 +362,13 @@ func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 				merged[key] = value
 			}
 			metadata = merged
+		}
+		// Stripe contract: invoice_settings[default_payment_method] (possibly empty to clear).
+		if _, ok := p.values["invoice_settings[default_payment_method]"]; ok {
+			if metadata == nil {
+				metadata = map[string]string{}
+			}
+			metadata[billing.MetadataDefaultPaymentMethod] = strings.TrimSpace(p.string("invoice_settings[default_payment_method]"))
 		}
 		if p.string("test_clock") != "" {
 			if metadata == nil {
@@ -576,6 +589,14 @@ func (h *Handler) handlePrices(w http.ResponseWriter, r *http.Request) {
 			Active:                 p.boolDefault("active", true),
 			Metadata:               p.metadata(),
 		})
+		if err == nil && p.boolDefault("transfer_lookup_key", false) {
+			// Stripe contract: the new price takes the key, others lose it.
+			if transferErr := h.billing.TransferLookupKey(r.Context(), price.ID, price.LookupKey); transferErr != nil {
+				writeResult(w, nil, transferErr)
+				return
+			}
+			price, err = h.billing.GetPrice(r.Context(), price.ID)
+		}
 		writeResult(w, stripePrice(price), err)
 	case http.MethodGet:
 		prices, err := h.billing.ListPrices(r.Context())
@@ -1658,6 +1679,15 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 		h.completeCheckout(w, r, id)
 		return
 	}
+	if strings.HasSuffix(rest, "/expire") {
+		id := strings.TrimSuffix(rest, "/expire")
+		if id == "" || strings.Contains(id, "/") {
+			h.notFound(w, r)
+			return
+		}
+		h.expireCheckoutSession(w, r, id)
+		return
+	}
 	if rest == "" || strings.Contains(rest, "/") {
 		h.notFound(w, r)
 		return
@@ -1677,6 +1707,29 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 		payload["billtap_return_url"] = rewritten
 	}
 	writeResult(w, payload, err)
+}
+
+// expireCheckoutSession implements POST /v1/checkout/sessions/{id}/expire:
+// immediately expire an open session so a stranded hosted page cannot complete.
+func (h *Handler) expireCheckoutSession(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := p.validate(paramSpec{}); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	session, err := h.billing.ExpireCheckoutSession(r.Context(), id)
+	if err == nil {
+		h.emitGenericWebhook(r, "checkout.session.expired", session.ID, h.stripeCheckoutSession(r, session), webhooks.SourceAPI)
+	}
+	writeResult(w, h.stripeCheckoutSession(r, session), err)
 }
 
 func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Request) {
@@ -2186,6 +2239,14 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		if prorationBehavior == "" {
 			prorationBehavior = "none"
 		}
+		// trial_end=now (or a past timestamp) ends the trial immediately:
+		// trialing subscriptions become active (Stripe update contract).
+		var trialEnd time.Time
+		if raw := p.string("trial_end"); raw != "" {
+			if parsed, parseErr := parseTimestampParam(raw); parseErr == nil && !parsed.After(time.Now().UTC()) {
+				trialEnd = parsed
+			}
+		}
 		// Item change with create_prorations / always_invoice bills (or defers) proration.
 		if replaceItems && (prorationBehavior == "always_invoice" || prorationBehavior == "create_prorations") {
 			prorationDate := time.Now().UTC()
@@ -2204,6 +2265,7 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 				DefaultTaxRates:    defaultTaxRates,
 				Metadata:           metadata,
 				CancelAtPeriodEnd:  p.boolPtr("cancel_at_period_end"),
+				TrialEnd:           trialEnd,
 			})
 			if err != nil {
 				writeResult(w, nil, err)
@@ -2220,12 +2282,45 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 			writeResult(w, h.stripeSubscription(r, result.Subscription), nil)
 			return
 		}
-		subscription, err := h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
+		patch := billing.SubscriptionPatch{
 			Items:             items,
 			ReplaceItems:      replaceItems,
 			Metadata:          metadata,
 			CancelAtPeriodEnd: p.boolPtr("cancel_at_period_end"),
-		})
+		}
+		// anchor=now on the plain path (proration none / no items): Stripe resets
+		// the billing cycle regardless of the proration policy.
+		if p.string("billing_cycle_anchor") == "now" {
+			anchorItems := items
+			if len(anchorItems) == 0 {
+				if current.ID == "" {
+					if fetched, fetchErr := h.billing.GetSubscription(r.Context(), id); fetchErr == nil {
+						current = fetched
+						anchorItems = fetched.Items
+					}
+				} else {
+					anchorItems = current.Items
+				}
+			}
+			if len(anchorItems) > 0 {
+				if periodEnd, periodErr := h.billing.NextPeriodEnd(r.Context(), anchorItems, time.Now().UTC()); periodErr == nil {
+					anchorNow := time.Now().UTC()
+					patch.CurrentPeriodStart = &anchorNow
+					patch.CurrentPeriodEnd = &periodEnd
+				}
+			}
+		}
+		subscription, err := h.billing.PatchSubscription(r.Context(), id, patch)
+		if err == nil && !trialEnd.IsZero() && subscription.Status == "trialing" {
+			// End the trial on the plain patch path too (no proration invoice).
+			status := "active"
+			subscription, err = h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
+				Status: &status,
+				Metadata: map[string]string{
+					"trial_end": trialEnd.Format(time.RFC3339Nano),
+				},
+			})
+		}
 		if err == nil {
 			h.emitSubscriptionWebhook(r, "customer.subscription.updated", subscription, webhooks.SourceAPI)
 			if len(discounts) > 0 {
@@ -2234,7 +2329,23 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		}
 		writeResult(w, h.stripeSubscription(r, subscription), err)
 	case http.MethodDelete:
+		// Stripe accepts cancellation_details on immediate cancel; keep it as
+		// subscription evidence so BO screens can redisplay the reason.
+		p, err := parseParamsAllowingDeleteBody(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateSubscriptionCancel(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
 		subscription, err := h.billing.CancelPortalSubscription(r.Context(), id, billing.PortalCancel{Mode: "immediate"})
+		if err == nil && len(subscriptionUpdateMetadata(p)) > 0 {
+			subscription, err = h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
+				Metadata: subscriptionUpdateMetadata(p),
+			})
+		}
 		if err == nil {
 			h.emitSubscriptionWebhook(r, "customer.subscription.deleted", subscription, webhooks.SourceAPI)
 		}
@@ -3174,14 +3285,27 @@ func (h *Handler) handleInvoices(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		subscriptionID := p.string("subscription")
+		if subscriptionID != "" {
+			if _, err := h.billing.GetSubscription(r.Context(), subscriptionID); err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+		}
 		metadata := invoiceMetadataFromParams(p)
 		invoice, err := h.billing.CreateInvoice(r.Context(), billing.Invoice{
-			ID:         p.string("id"),
-			CustomerID: p.string("customer"),
-			Currency:   p.stringDefault("currency", "usd"),
-			Status:     "draft",
-			Metadata:   metadata,
+			ID:             p.string("id"),
+			CustomerID:     p.string("customer"),
+			SubscriptionID: subscriptionID,
+			Currency:       p.stringDefault("currency", "usd"),
+			Status:         "draft",
+			Metadata:       metadata,
 		})
+		// Stripe default: pending_invoice_items_behavior=include sweeps the
+		// customer's pending items into the new invoice; exclude skips them.
+		if err == nil && p.string("pending_invoice_items_behavior") != "exclude" {
+			invoice, err = h.billing.SweepPendingInvoiceItems(r.Context(), invoice.ID)
+		}
 		if err == nil {
 			h.emitGenericWebhook(r, "invoice.created", invoice.ID, h.stripeInvoice(r.Context(), invoice), webhooks.SourceAPI)
 		}
@@ -3246,15 +3370,7 @@ func (h *Handler) handleInvoiceItems(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		item, _, err := h.billing.CreateInvoiceItem(r.Context(), billing.InvoiceItem{
-			ID:          p.string("id"),
-			CustomerID:  p.string("customer"),
-			InvoiceID:   p.string("invoice"),
-			Amount:      p.int64("amount"),
-			Currency:    p.string("currency"),
-			Description: p.string("description"),
-			Metadata:    p.metadata(),
-		})
+		item, _, err := h.createInvoiceItemFromParams(r.Context(), p)
 		writeResult(w, stripeInvoiceItem(item), err)
 	case http.MethodGet:
 		items, err := h.billing.ListInvoiceItems(r.Context(), billing.InvoiceItemFilter{
@@ -3269,6 +3385,37 @@ func (h *Handler) handleInvoiceItems(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
+}
+
+// createInvoiceItemFromParams resolves the two Stripe invoice-item forms:
+// amount+currency, or pricing[price]/price where amount = unit_amount × quantity
+// and currency inherits from the price. A missing invoice stores a pending item.
+func (h *Handler) createInvoiceItemFromParams(ctx context.Context, p params) (billing.InvoiceItem, billing.Invoice, error) {
+	item := billing.InvoiceItem{
+		ID:             p.string("id"),
+		CustomerID:     p.string("customer"),
+		InvoiceID:      p.string("invoice"),
+		SubscriptionID: p.string("subscription"),
+		Amount:         p.int64("amount"),
+		Currency:       p.string("currency"),
+		Description:    p.string("description"),
+		Metadata:       p.metadata(),
+	}
+	if priceID := p.first("pricing[price]", "pricing[price_id]", "price", "price_id"); priceID != "" {
+		price, err := h.billing.GetPrice(ctx, priceID)
+		if err != nil {
+			return billing.InvoiceItem{}, billing.Invoice{}, err
+		}
+		quantity := p.int64Default("quantity", 1)
+		if quantity <= 0 {
+			quantity = 1
+		}
+		item.Amount = price.UnitAmount * quantity
+		if item.Currency == "" {
+			item.Currency = price.Currency
+		}
+	}
+	return h.billing.CreateInvoiceItem(ctx, item)
 }
 
 func (h *Handler) handleInvoiceItem(w http.ResponseWriter, r *http.Request) {
@@ -3383,6 +3530,48 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 			h.emitInvoicePaymentWebhooks(r, result, webhooks.SourceAPI)
 		}
 		writeResult(w, h.stripeInvoiceWithPaymentIntent(result.Invoice, result.PaymentIntent), err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "void" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceTerminalAction(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.VoidInvoice(r.Context(), id)
+		if err == nil {
+			h.emitGenericWebhook(r, "invoice.voided", invoice.ID, h.stripeInvoice(r.Context(), invoice), webhooks.SourceAPI)
+		}
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "mark_uncollectible" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceTerminalAction(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.MarkInvoiceUncollectible(r.Context(), id)
+		if err == nil {
+			h.emitGenericWebhook(r, "invoice.marked_uncollectible", invoice.ID, h.stripeInvoice(r.Context(), invoice), webhooks.SourceAPI)
+		}
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "lines" {
@@ -3541,14 +3730,16 @@ func (h *Handler) handleCreditNotes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		note, err := h.billing.CreateCreditNote(r.Context(), billing.CreditNote{
-			ID:         p.string("id"),
-			InvoiceID:  p.string("invoice"),
-			CustomerID: p.string("customer"),
-			Amount:     p.int64("amount"),
-			Currency:   p.string("currency"),
-			Reason:     p.string("reason"),
-			Status:     p.string("status"),
-			Metadata:   p.metadata(),
+			ID:              p.string("id"),
+			InvoiceID:       p.string("invoice"),
+			CustomerID:      p.string("customer"),
+			Amount:          p.int64("amount"),
+			OutOfBandAmount: p.int64Default("out_of_band_amount", 0),
+			Memo:            p.string("memo"),
+			Currency:        p.string("currency"),
+			Reason:          p.string("reason"),
+			Status:          p.string("status"),
+			Metadata:        p.metadata(),
 		})
 		if err == nil {
 			h.emitGenericWebhook(r, "credit_note.created", note.ID, stripeCreditNote(note), webhooks.SourceAPI)
@@ -7103,12 +7294,14 @@ func subscriptionPauseCollection(sub billing.Subscription) any {
 	}
 }
 
+// cancel_at is honored independently of cancel_at_period_end: Stripe lets
+// callers schedule a cancellation timestamp on its own (BO reserved cancellation).
 func subscriptionCancelAt(sub billing.Subscription) any {
-	if !sub.CancelAtPeriodEnd {
-		return nil
-	}
 	if value := metadataUnix(sub.Metadata["cancel_at"]); value != nil {
 		return value
+	}
+	if !sub.CancelAtPeriodEnd {
+		return nil
 	}
 	return unix(sub.CurrentPeriodEnd)
 }
@@ -7373,16 +7566,17 @@ func stripeInvoiceWithPaymentIntentAndTaxRates(invoice billing.Invoice, intent *
 
 func stripeInvoiceItem(item billing.InvoiceItem) map[string]any {
 	return map[string]any{
-		"id":          item.ID,
-		"object":      billing.ObjectInvoiceItem,
-		"customer":    item.CustomerID,
-		"invoice":     item.InvoiceID,
-		"amount":      item.Amount,
-		"currency":    item.Currency,
-		"description": emptyToNil(item.Description),
-		"metadata":    nonNilMap(item.Metadata),
-		"created":     unix(item.CreatedAt),
-		"livemode":    false,
+		"id":           item.ID,
+		"object":       billing.ObjectInvoiceItem,
+		"customer":     item.CustomerID,
+		"invoice":      emptyToNil(item.InvoiceID),
+		"subscription": emptyToNil(item.SubscriptionID),
+		"amount":       item.Amount,
+		"currency":     item.Currency,
+		"description":  emptyToNil(item.Description),
+		"metadata":     nonNilMap(item.Metadata),
+		"created":      unix(item.CreatedAt),
+		"livemode":     false,
 	}
 }
 
@@ -7670,6 +7864,12 @@ func stripeCreditNote(note billing.CreditNote) map[string]any {
 		"created":  unix(note.CreatedAt),
 		"livemode": false,
 		"lines":    stripeList("/v1/credit_notes/"+note.ID+"/lines", []map[string]any{}),
+		// Out-of-band notes never touch the customer balance or refunds; ds2's
+		// out-of-band refund path asserts both stay empty.
+		"out_of_band_amount":           note.OutOfBandAmount,
+		"memo":                         emptyToNil(note.Memo),
+		"customer_balance_transaction": nil,
+		"refunds":                      stripeList("/v1/credit_notes/"+note.ID+"/refunds", []map[string]any{}),
 	}
 }
 
@@ -7689,6 +7889,7 @@ func paymentIntentReceivedAmount(intent billing.PaymentIntent) int64 {
 
 func filterPrices(prices []billing.Price, r *http.Request) []billing.Price {
 	query := r.URL.Query()
+	lookupKeys := lookupKeysFilter(query)
 	out := make([]billing.Price, 0, len(prices))
 	for _, price := range prices {
 		if product := query.Get("product"); product != "" && price.ProductID != product {
@@ -7704,7 +7905,7 @@ func filterPrices(prices []billing.Price, r *http.Request) []billing.Price {
 		// 조회한 뒤 `.firstOrNull()` 을 하는 순간 **전혀 다른 테넌트의 상품**을 집는다.
 		// 실측: 한 테넌트의 플랜 목록이 다른 테넌트 상품으로 채워져
 		// Upgrade plan 화면이 통째로 비었다.
-		if keys := lookupKeysFilter(query); len(keys) > 0 && !keys[price.LookupKey] {
+		if len(lookupKeys) > 0 && !lookupKeys[priceLookupKey(price)] {
 			continue
 		}
 		out = append(out, price)
@@ -7747,9 +7948,40 @@ func filterAccounts(accounts []billing.Account, r *http.Request) []billing.Accou
 	return out
 }
 
+// subscriptionPeriodEndRange extracts current_period_end[gte|gt|lt|lte] filters
+// (unix seconds). A zero time.Time means the bound is absent.
+func subscriptionPeriodEndRange(query url.Values) (gte, gt, lt, lte time.Time) {
+	parse := func(key string) time.Time {
+		for _, value := range query[key] {
+			if seconds, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+				return time.Unix(seconds, 0).UTC()
+			}
+		}
+		return time.Time{}
+	}
+	return parse("current_period_end[gte]"), parse("current_period_end[gt]"), parse("current_period_end[lt]"), parse("current_period_end[lte]")
+}
+
+func subscriptionMatchesPeriodEndRange(item billing.Subscription, gte, gt, lt, lte time.Time) bool {
+	if !gte.IsZero() && item.CurrentPeriodEnd.Before(gte) {
+		return false
+	}
+	if !gt.IsZero() && !item.CurrentPeriodEnd.After(gt) {
+		return false
+	}
+	if !lt.IsZero() && !item.CurrentPeriodEnd.Before(lt) {
+		return false
+	}
+	if !lte.IsZero() && !item.CurrentPeriodEnd.Before(lte) && !item.CurrentPeriodEnd.Equal(lte) {
+		return false
+	}
+	return true
+}
+
 func filterSubscriptions(items []billing.Subscription, r *http.Request) []billing.Subscription {
 	query := r.URL.Query()
 	metadataFilters := queryMetadataFilters(query)
+	gte, gt, lt, lte := subscriptionPeriodEndRange(query)
 	out := make([]billing.Subscription, 0, len(items))
 	for _, item := range items {
 		if customer := query.Get("customer"); customer != "" && item.CustomerID != customer {
@@ -7762,6 +7994,9 @@ func filterSubscriptions(items []billing.Subscription, r *http.Request) []billin
 		if !metadataMatches(item.Metadata, metadataFilters) {
 			continue
 		}
+		if !subscriptionMatchesPeriodEndRange(item, gte, gt, lt, lte) {
+			continue
+		}
 		out = append(out, item)
 	}
 	return out
@@ -7770,6 +8005,7 @@ func filterSubscriptions(items []billing.Subscription, r *http.Request) []billin
 func filterSubscriptionsForCustomer(items []billing.Subscription, r *http.Request, customerID string) []billing.Subscription {
 	query := r.URL.Query()
 	metadataFilters := queryMetadataFilters(query)
+	gte, gt, lt, lte := subscriptionPeriodEndRange(query)
 	out := make([]billing.Subscription, 0, len(items))
 	for _, item := range items {
 		if item.CustomerID != customerID {
@@ -7780,6 +8016,9 @@ func filterSubscriptionsForCustomer(items []billing.Subscription, r *http.Reques
 			continue
 		}
 		if !metadataMatches(item.Metadata, metadataFilters) {
+			continue
+		}
+		if !subscriptionMatchesPeriodEndRange(item, gte, gt, lt, lte) {
 			continue
 		}
 		out = append(out, item)
@@ -8204,6 +8443,7 @@ func subscriptionUpdateMetadata(p params) map[string]string {
 		{param: "payment_behavior", key: "payment_behavior"},
 		{param: "billing_cycle_anchor", key: "billing_cycle_anchor"},
 		{param: "trial_end", key: "trial_end"},
+		{param: "cancel_at", key: "cancel_at"},
 	} {
 		if value := p.string(item.param); value != "" {
 			if metadata == nil {

@@ -187,15 +187,16 @@ type Invoice struct {
 }
 
 type InvoiceItem struct {
-	ID          string            `json:"id"`
-	Object      string            `json:"object"`
-	CustomerID  string            `json:"customer"`
-	InvoiceID   string            `json:"invoice"`
-	Amount      int64             `json:"amount"`
-	Currency    string            `json:"currency"`
-	Description string            `json:"description,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
+	ID             string            `json:"id"`
+	Object         string            `json:"object"`
+	CustomerID     string            `json:"customer"`
+	InvoiceID      string            `json:"invoice"`
+	SubscriptionID string            `json:"subscription,omitempty"`
+	Amount         int64             `json:"amount"`
+	Currency       string            `json:"currency"`
+	Description    string            `json:"description,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
 }
 
 type InvoicePaymentOptions struct {
@@ -285,16 +286,18 @@ type Refund struct {
 }
 
 type CreditNote struct {
-	ID         string            `json:"id"`
-	Object     string            `json:"object"`
-	InvoiceID  string            `json:"invoice"`
-	CustomerID string            `json:"customer,omitempty"`
-	Amount     int64             `json:"amount"`
-	Currency   string            `json:"currency"`
-	Reason     string            `json:"reason,omitempty"`
-	Status     string            `json:"status"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
+	ID              string            `json:"id"`
+	Object          string            `json:"object"`
+	InvoiceID       string            `json:"invoice"`
+	CustomerID      string            `json:"customer,omitempty"`
+	Amount          int64             `json:"amount"`
+	OutOfBandAmount int64             `json:"out_of_band_amount,omitempty"`
+	Memo            string            `json:"memo,omitempty"`
+	Currency        string            `json:"currency"`
+	Reason          string            `json:"reason,omitempty"`
+	Status          string            `json:"status"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
 }
 
 type Account struct {
@@ -371,8 +374,9 @@ type InvoiceFilter struct {
 }
 
 type InvoiceItemFilter struct {
-	CustomerID string
-	InvoiceID  string
+	CustomerID  string
+	InvoiceID   string
+	PendingOnly bool
 }
 
 type PaymentIntentFilter struct {

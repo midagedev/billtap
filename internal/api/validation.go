@@ -34,6 +34,10 @@ var (
 	// (firstValues leaves single-value [] keys unexpanded).
 	checkoutSubscriptionDataRE = regexp.MustCompile(`^subscription_data\[(trial_period_days|default_tax_rates)\](\[\d*\])?$`)
 	defaultTaxRatesParamRE     = regexp.MustCompile(`^default_tax_rates(\[\d*\])?$`)
+	// invoice_settings[default_payment_method] on customer create/update (empty clears).
+	customerInvoiceSettingsRE = regexp.MustCompile(`^invoice_settings\[default_payment_method\]$`)
+	// pricing[price] is the current stripe-java form for price-based invoice items.
+	invoiceItemPricingRE = regexp.MustCompile(`^pricing\[(price|price_id)\]$`)
 	// Item-level tax_rates on subscription_items create: evidence only (not used for totals).
 	taxRatesParamRE           = regexp.MustCompile(`^tax_rates(\[\d*\])?$`)
 	discountParamRE           = regexp.MustCompile(`^discounts\[\d+\]\[(coupon|promotion_code)\]$`)
@@ -398,7 +402,7 @@ func (p params) validateUnixTimestampOrNowOrUnchanged(key string) error {
 func validateCustomerCreate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:       []string{"id", "email", "name", "test_clock", "coupon", "promotion_code"},
-		AllowedRegex:  []*regexp.Regexp{discountParamRE},
+		AllowedRegex:  []*regexp.Regexp{discountParamRE, customerInvoiceSettingsRE},
 		AllowMetadata: true,
 	})
 }
@@ -406,7 +410,7 @@ func validateCustomerCreate(p params) error {
 func validateCustomerUpdate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:       []string{"email", "name", "test_clock", "coupon", "promotion_code"},
-		AllowedRegex:  []*regexp.Regexp{discountParamRE},
+		AllowedRegex:  []*regexp.Regexp{discountParamRE, customerInvoiceSettingsRE},
 		AllowMetadata: true,
 	})
 }
@@ -456,12 +460,13 @@ func validatePriceCreate(p params) error {
 			"interval",
 			"recurring[interval_count]",
 			"active",
+			"transfer_lookup_key",
 		},
 		Required:    []string{"currency", "unit_amount"},
 		RequiredAny: [][]string{{"product", "product_id"}},
 		Int64Params: []string{"unit_amount", "recurring[interval_count]"},
 		NonNegative: []string{"unit_amount"},
-		BoolParams:  []string{"active"},
+		BoolParams:  []string{"active", "transfer_lookup_key"},
 		EnumParams: map[string][]string{
 			"recurring[interval]": {"day", "week", "month", "year"},
 			"recurring_interval":  {"day", "week", "month", "year"},
@@ -934,6 +939,7 @@ func validateSubscriptionCreate(p params) error {
 			"days_until_due",
 			"cancel_at",
 			"billing_cycle_anchor",
+			"proration_behavior",
 			"outcome",
 			"test_clock",
 			"coupon",
@@ -946,7 +952,8 @@ func validateSubscriptionCreate(p params) error {
 		BoolParams:   []string{"automatic_tax[enabled]"},
 		Positive:     []string{"days_until_due"},
 		EnumParams: map[string][]string{
-			"collection_method": {"charge_automatically", "send_invoice"},
+			"collection_method":  {"charge_automatically", "send_invoice"},
+			"proration_behavior": {"none", "create_prorations", "always_invoice"},
 		},
 		AllowMetadata: true,
 	}); err != nil {
@@ -983,6 +990,7 @@ func validateSubscriptionUpdate(p params) error {
 			"payment_behavior",
 			"billing_cycle_anchor",
 			"trial_end",
+			"cancel_at",
 			"coupon",
 			"promotion_code",
 			// Emptyable clear form: default_tax_rates="" (single empty string).
@@ -990,7 +998,7 @@ func validateSubscriptionUpdate(p params) error {
 		},
 		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE, discountParamRE, defaultTaxRatesParamRE},
 		BoolParams:   []string{"cancel_at_period_end"},
-		Int64Params:  []string{"pause_collection[resumes_at]", "proration_date"},
+		Int64Params:  []string{"pause_collection[resumes_at]", "proration_date", "cancel_at"},
 		EnumParams: map[string][]string{
 			"pause_collection[behavior]": {"void", "keep_as_draft", "mark_uncollectible"},
 			"proration_behavior":         {"none", "create_prorations", "always_invoice"},
@@ -1042,6 +1050,15 @@ func validateSubscriptionResume(p params) error {
 			"billing_cycle_anchor": {"now", "unchanged"},
 			"proration_behavior":   {"none", "create_prorations", "always_invoice"},
 		},
+	})
+}
+
+// validateSubscriptionCancel gates DELETE /v1/subscriptions/{id} bodies:
+// Stripe's SubscriptionCancelParams carry cancellation_details (and expand).
+func validateSubscriptionCancel(p params) error {
+	return p.validate(paramSpec{
+		AllowedRegex:  []*regexp.Regexp{cancellationDetailsRE},
+		AllowMetadata: true,
 	})
 }
 
@@ -1146,8 +1163,10 @@ func validateInvoiceCreate(p params) error {
 		Allowed: []string{
 			"id",
 			"customer",
+			"subscription",
 			"currency",
 			"collection_method",
+			"days_until_due",
 			"default_payment_method",
 			"description",
 			"auto_advance",
@@ -1155,6 +1174,7 @@ func validateInvoiceCreate(p params) error {
 		},
 		AllowedRegex: []*regexp.Regexp{invoicePaymentSettingsRE},
 		Required:     []string{"customer"},
+		Int64Params:  []string{"days_until_due"},
 		BoolParams:   []string{"auto_advance"},
 		EnumParams: map[string][]string{
 			"collection_method":              {"charge_automatically", "send_invoice"},
@@ -1170,18 +1190,32 @@ func validateInvoiceItemCreate(p params) error {
 			"id",
 			"customer",
 			"invoice",
+			"subscription",
 			"amount",
 			"currency",
 			"description",
+			"unit_amount",
+			"quantity",
 		},
-		Required:      []string{"customer", "invoice", "amount", "currency"},
-		Int64Params:   []string{"amount"},
+		AllowedRegex: []*regexp.Regexp{invoiceItemPricingRE},
+		Required:     []string{"customer"},
+		RequiredAny: [][]string{
+			{"amount", "pricing[price]", "pricing[price_id]", "price", "price_id"},
+		},
+		Int64Params:   []string{"amount", "unit_amount", "quantity"},
+		Positive:      []string{"quantity"},
 		AllowMetadata: true,
 	}); err != nil {
 		return err
 	}
-	if p.int64("amount") == 0 {
-		return invalidParam("amount", "Must be non-zero.")
+	// Amount-based items need a currency; price-based items inherit the price's.
+	if p.has("amount") && !p.has("currency") {
+		return missingParam("currency")
+	}
+	if p.has("amount") {
+		if p.int64("amount") == 0 {
+			return invalidParam("amount", "Must be non-zero.")
+		}
 	}
 	return nil
 }
@@ -1191,6 +1225,12 @@ func validateInvoiceFinalize(p params) error {
 		Allowed:    []string{"auto_advance"},
 		BoolParams: []string{"auto_advance"},
 	})
+}
+
+// Stripe's void / mark_uncollectible accept no request params (expand only,
+// which the shared validator already allows).
+func validateInvoiceTerminalAction(p params) error {
+	return p.validate(paramSpec{})
 }
 
 func validateInvoiceSend(p params) error {
@@ -1281,9 +1321,9 @@ func validateRefundUpdate(p params) error {
 
 func validateCreditNoteCreate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:     []string{"id", "invoice", "customer", "amount", "currency", "reason", "status"},
+		Allowed:     []string{"id", "invoice", "customer", "amount", "out_of_band_amount", "memo", "currency", "reason", "status"},
 		Required:    []string{"invoice", "amount"},
-		Int64Params: []string{"amount"},
+		Int64Params: []string{"amount", "out_of_band_amount"},
 		Positive:    []string{"amount"},
 		EnumParams: map[string][]string{
 			"status": {"issued", "void"},

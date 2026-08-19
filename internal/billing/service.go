@@ -77,11 +77,13 @@ type Repository interface {
 	GetPrice(context.Context, string) (Price, error)
 	ListPrices(context.Context) ([]Price, error)
 	UpdatePrice(context.Context, string, Price) (Price, error)
+	ClearPriceLookupKey(context.Context, string) error
 
 	CreateCheckoutSession(context.Context, CheckoutSession) (CheckoutSession, error)
 	GetCheckoutSession(context.Context, string) (CheckoutSession, error)
 	ListCheckoutSessions(context.Context) ([]CheckoutSession, error)
 	UpdateCheckoutSessionDiscounts(context.Context, string, []Discount) (CheckoutSession, error)
+	ExpireCheckoutSession(context.Context, string, time.Time) (CheckoutSession, error)
 	RecordCheckoutCompletion(context.Context, CheckoutCompletion) (CheckoutSession, error)
 
 	GetSubscription(context.Context, string) (Subscription, error)
@@ -94,6 +96,7 @@ type Repository interface {
 	ListInvoicesFiltered(context.Context, InvoiceFilter) ([]Invoice, error)
 	UpdateInvoice(context.Context, Invoice, []TimelineEntry) (Invoice, error)
 	CreateInvoiceItem(context.Context, InvoiceItem, Invoice, []TimelineEntry) (InvoiceItem, Invoice, error)
+	AttachInvoiceItem(context.Context, InvoiceItem, Invoice, []TimelineEntry) (InvoiceItem, Invoice, error)
 	ListInvoiceItemsFiltered(context.Context, InvoiceItemFilter) ([]InvoiceItem, error)
 	FinalizeInvoice(context.Context, Invoice, PaymentIntent, []TimelineEntry) (Invoice, PaymentIntent, error)
 	UpdateInvoicePayment(context.Context, Subscription, Invoice, PaymentIntent, []TimelineEntry) (Subscription, Invoice, PaymentIntent, error)
@@ -236,6 +239,29 @@ func (s *Service) ListPrices(ctx context.Context) ([]Price, error) {
 
 func (s *Service) UpdatePrice(ctx context.Context, id string, in Price) (Price, error) {
 	return s.repo.UpdatePrice(ctx, id, in)
+}
+
+// TransferLookupKey implements Stripe's transfer_lookup_key price-create
+// contract: the new price takes ownership of the lookup key and every other
+// price that held it loses it.
+func (s *Service) TransferLookupKey(ctx context.Context, keepPriceID string, lookupKey string) error {
+	lookupKey = strings.TrimSpace(lookupKey)
+	if lookupKey == "" {
+		return nil
+	}
+	prices, err := s.repo.ListPrices(ctx)
+	if err != nil {
+		return err
+	}
+	for _, price := range prices {
+		if price.ID == keepPriceID || price.LookupKey != lookupKey {
+			continue
+		}
+		if err := s.repo.ClearPriceLookupKey(ctx, price.ID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) CreateAccount(ctx context.Context, in Account) (Account, error) {
@@ -425,6 +451,20 @@ func (s *Service) CompleteCheckoutWithOptions(ctx context.Context, sessionID str
 	return s.completeCheckout(ctx, sessionID, outcome, opts)
 }
 
+// ExpireCheckoutSession immediately expires an open session (Stripe
+// POST /v1/checkout/sessions/{id}/expire). Completed or already expired
+// sessions are not found, matching Stripe's resource_missing behavior.
+func (s *Service) ExpireCheckoutSession(ctx context.Context, sessionID string) (CheckoutSession, error) {
+	session, err := s.repo.GetCheckoutSession(ctx, sessionID)
+	if err != nil {
+		return CheckoutSession{}, err
+	}
+	if session.Status != "open" {
+		return CheckoutSession{}, ErrNotFound
+	}
+	return s.repo.ExpireCheckoutSession(ctx, sessionID, s.now())
+}
+
 func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcome string, opts CheckoutCompletionOptions) (CheckoutSession, error) {
 	session, err := s.repo.GetCheckoutSession(ctx, sessionID)
 	if err != nil {
@@ -472,7 +512,12 @@ func (s *Service) completeCheckout(ctx context.Context, sessionID string, outcom
 		return s.completePaymentCheckout(ctx, session, outcomeSpec, opts, currency, subtotal, discountedTotal, discountAmount, now)
 	}
 
-	periodEnd := now.AddDate(0, 1, 0)
+	// Period follows the first line item's price interval (day/week/month/year ×
+	// count); a missing price falls back to one month inside nextPeriodEnd.
+	periodEnd, err := s.nextPeriodEnd(ctx, session.LineItems, now)
+	if err != nil {
+		return CheckoutSession{}, err
+	}
 	paid := outcomeSpec.Paid
 	trialing := paid && session.TrialPeriodDays > 0
 	if trialing {
@@ -832,9 +877,156 @@ func (s *Service) ListInvoices(ctx context.Context) ([]Invoice, error) {
 	return s.repo.ListInvoices(ctx)
 }
 
+// SweepPendingInvoiceItems attaches the customer's pending (invoice-less) invoice
+// items to the given invoice, mirroring Stripe's default
+// pending_invoice_items_behavior=include on invoice creation. Callers that pass
+// exclude skip the sweep before reaching here.
+func (s *Service) SweepPendingInvoiceItems(ctx context.Context, invoiceID string) (Invoice, error) {
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if invoice.Status != "draft" {
+		return invoice, nil
+	}
+	pending, err := s.repo.ListInvoiceItemsFiltered(ctx, InvoiceItemFilter{CustomerID: invoice.CustomerID, PendingOnly: true})
+	if err != nil {
+		return Invoice{}, err
+	}
+	now := s.now()
+	for _, item := range pending {
+		invoice.Subtotal += item.Amount
+		invoice.Total += item.Amount
+		if invoice.Total < 0 {
+			invoice.Total = 0
+		}
+		invoice.AmountDue = invoice.Total - invoice.AmountPaid
+		if invoice.AmountDue < 0 {
+			invoice.AmountDue = 0
+		}
+		_, updated, err := s.repo.AttachInvoiceItem(ctx, item, invoice, []TimelineEntry{billingTimelineEntry(
+			"invoiceitem_attached_"+item.ID,
+			"invoiceitem.attached",
+			"Pending invoice item attached",
+			ObjectInvoiceItem,
+			item.ID,
+			item.CustomerID,
+			"",
+			item.SubscriptionID,
+			invoice.ID,
+			"",
+			map[string]string{"source": "invoice.sweep", "status": invoice.Status},
+			now,
+		)})
+		if err != nil {
+			return Invoice{}, err
+		}
+		invoice = updated
+	}
+	return invoice, nil
+}
+
+// VoidInvoice voids a finalized (open) invoice. Stripe requires open status;
+// draft invoices must be finalized first and terminal states cannot be voided.
+func (s *Service) VoidInvoice(ctx context.Context, invoiceID string) (Invoice, error) {
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if invoice.Status != "open" {
+		return Invoice{}, fmt.Errorf("%w: only open invoices can be voided, current status: %s", ErrInvalidInput, invoice.Status)
+	}
+	now := s.now()
+	invoice.Status = "void"
+	invoice.AmountDue = 0
+	invoice.NextPaymentAttempt = nil
+	invoice.Metadata = copyMap(invoice.Metadata)
+	invoice.Metadata["billtap_voided_at"] = now.Format(time.RFC3339Nano)
+	return s.repo.UpdateInvoice(ctx, invoice, []TimelineEntry{billingTimelineEntry(
+		"invoice_voided_"+invoice.ID+"_"+now.Format(time.RFC3339Nano),
+		"invoice.voided",
+		"Invoice voided",
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoice.void", "status": invoice.Status},
+		now,
+	)})
+}
+
+// MarkInvoiceUncollectible gives up collection on an open invoice while keeping
+// the billing record (SDS §4.0.3.8 out-of-band settlement semantics).
+func (s *Service) MarkInvoiceUncollectible(ctx context.Context, invoiceID string) (Invoice, error) {
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if invoice.Status != "open" {
+		return Invoice{}, fmt.Errorf("%w: only open invoices can be marked uncollectible, current status: %s", ErrInvalidInput, invoice.Status)
+	}
+	now := s.now()
+	invoice.Status = "uncollectible"
+	invoice.AmountDue = 0
+	invoice.NextPaymentAttempt = nil
+	invoice.Metadata = copyMap(invoice.Metadata)
+	invoice.Metadata["billtap_marked_uncollectible_at"] = now.Format(time.RFC3339Nano)
+	return s.repo.UpdateInvoice(ctx, invoice, []TimelineEntry{billingTimelineEntry(
+		"invoice_marked_uncollectible_"+invoice.ID+"_"+now.Format(time.RFC3339Nano),
+		"invoice.marked_uncollectible",
+		"Invoice marked uncollectible",
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoice.mark_uncollectible", "status": invoice.Status},
+		now,
+	)})
+}
+
 func (s *Service) CreateInvoiceItem(ctx context.Context, in InvoiceItem) (InvoiceItem, Invoice, error) {
+	// Pending item: no invoice yet; it attaches to the next invoice that sweeps
+	// pending items (Stripe pending invoice items semantics).
 	if strings.TrimSpace(in.InvoiceID) == "" {
-		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
+		if strings.TrimSpace(in.CustomerID) == "" {
+			return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: customer is required", ErrInvalidInput)
+		}
+		if in.Amount == 0 {
+			return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: amount is required", ErrInvalidInput)
+		}
+		if _, err := s.repo.GetCustomer(ctx, in.CustomerID); err != nil {
+			return InvoiceItem{}, Invoice{}, err
+		}
+		now := s.now()
+		if strings.TrimSpace(in.ID) == "" {
+			in.ID = id("ii")
+		}
+		in.Object = ObjectInvoiceItem
+		in.Currency = strings.ToLower(firstNonEmpty(strings.TrimSpace(in.Currency), "usd"))
+		in.Metadata = copyMap(in.Metadata)
+		if in.CreatedAt.IsZero() {
+			in.CreatedAt = now
+		}
+		return s.repo.CreateInvoiceItem(ctx, in, Invoice{}, []TimelineEntry{billingTimelineEntry(
+			"invoiceitem_created_"+in.ID,
+			"invoiceitem.created",
+			"Pending invoice item created",
+			ObjectInvoiceItem,
+			in.ID,
+			in.CustomerID,
+			"",
+			in.SubscriptionID,
+			"",
+			"",
+			map[string]string{"source": "invoiceitem.create", "status": "pending"},
+			in.CreatedAt,
+		)})
 	}
 	if in.Amount == 0 {
 		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: amount is required", ErrInvalidInput)
@@ -2211,6 +2403,9 @@ type SubscriptionProrationRequest struct {
 	DefaultTaxRates    []AppliedTaxRate // optional override; empty uses subscription metadata
 	Metadata           map[string]string
 	CancelAtPeriodEnd  *bool
+	// TrialEnd set to a non-zero time ends the trial immediately (Stripe
+	// trial_end=now on update): trialing subscriptions become active.
+	TrialEnd time.Time
 }
 
 // SubscriptionProrationResult is the outcome of a proration-aware subscription update.
@@ -2302,6 +2497,12 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 		}
 	}
 	updated.Metadata["stripe_compat_updated_at"] = at.Format(time.RFC3339Nano)
+	if !req.TrialEnd.IsZero() {
+		updated.Metadata["trial_end"] = req.TrialEnd.Format(time.RFC3339Nano)
+		if updated.Status == "trialing" {
+			updated.Status = "active"
+		}
+	}
 
 	rates := req.DefaultTaxRates
 	if len(rates) == 0 {
@@ -2309,8 +2510,17 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 	}
 	automaticTax, taxPercent := AutomaticTaxFromMetadata(updated.Metadata)
 
-	// none: items + metadata only, no invoice, period unchanged.
+	// none: items + metadata only, no invoice; anchor=now still resets the cycle
+	// (Stripe applies billing_cycle_anchor independent of proration_behavior).
 	if behavior == "none" {
+		if anchor == "now" {
+			periodEnd, err := s.nextPeriodEnd(ctx, req.NewItems, at)
+			if err != nil {
+				return SubscriptionProrationResult{}, err
+			}
+			updated.CurrentPeriodStart = at
+			updated.CurrentPeriodEnd = periodEnd
+		}
 		saved, err := s.persistSubscription(ctx, updated, []TimelineEntry{portalTimeline(
 			"stripe_compat_update_"+updated.ID+"_"+at.Format(time.RFC3339Nano),
 			"customer.subscription.updated",
@@ -2327,8 +2537,18 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 
 	remaining, periodSeconds, periodOK := ProrationFactor(sub.CurrentPeriodStart, sub.CurrentPeriodEnd, at)
 
-	// create_prorations: accumulate pending delta, no invoice.
+	// create_prorations: accumulate pending delta, no invoice. anchor=now resets
+	// the cycle so the proration window starts from the new anchor (Stripe keeps
+	// anchor handling independent of the proration policy).
 	if behavior == "create_prorations" {
+		if anchor == "now" {
+			periodEnd, err := s.nextPeriodEnd(ctx, req.NewItems, at)
+			if err != nil {
+				return SubscriptionProrationResult{}, err
+			}
+			updated.CurrentPeriodStart = at
+			updated.CurrentPeriodEnd = periodEnd
+		}
 		delta := int64(0)
 		if periodOK {
 			delta = ProrateDelta(newDiscounted-oldDiscounted, remaining, periodSeconds)

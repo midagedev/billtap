@@ -286,10 +286,23 @@ func (h *Handler) stripeDiscount(discount billing.Discount, customerID string, s
 		}
 		h.local.mu.Unlock()
 	}
+	source := map[string]any{
+		"type":   "coupon",
+		"coupon": coupon,
+	}
+	if discount.PromotionCodeID != "" {
+		source["type"] = "promotion_code"
+		source["promotion_code"] = map[string]any{
+			"id":     discount.PromotionCodeID,
+			"object": "promotion_code",
+			"coupon": coupon,
+		}
+	}
 	return map[string]any{
 		"id":             discount.ID,
 		"object":         "discount",
 		"coupon":         coupon,
+		"source":         source,
 		"customer":       emptyToNil(customerID),
 		"promotion_code": emptyToNil(discount.PromotionCodeID),
 		"subscription":   emptyToNil(subscriptionID),
