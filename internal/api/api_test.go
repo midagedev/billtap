@@ -6924,3 +6924,39 @@ func decodeResponse[T any](t *testing.T, rec *httptest.ResponseRecorder) T {
 func stringsReader(value string) *bytes.Reader {
 	return bytes.NewReader([]byte(value))
 }
+
+// lookup_keys 는 Stripe 의 OR 매칭 필터다. 무시하면 호출자가 특정 key 로 조회한 뒤
+// firstOrNull 을 하는 순간 다른 테넌트 상품을 집는다 — 실측으로 한 테넌트의 플랜 목록이
+// 다른 테넌트 상품으로 채워져 업그레이드 화면이 비었다.
+func TestFilterPricesLookupKeys(t *testing.T) {
+	prices := []billing.Price{
+		{ID: "price_a", LookupKey: "tenant_a_premium_yearly", Active: true},
+		{ID: "price_b", LookupKey: "tenant_b_standard_yearly", Active: true},
+		{ID: "price_c", LookupKey: "tenant_a_standard_monthly", Active: true},
+	}
+
+	for _, tc := range []struct {
+		name  string
+		query string
+		want  []string
+	}{
+		{"필터 없으면 전부", "", []string{"price_a", "price_b", "price_c"}},
+		{"배열 표기", "?lookup_keys[]=tenant_a_premium_yearly", []string{"price_a"}},
+		{"평문 표기", "?lookup_keys=tenant_a_premium_yearly", []string{"price_a"}},
+		{"복수는 OR", "?lookup_keys[]=tenant_a_premium_yearly&lookup_keys[]=tenant_a_standard_monthly", []string{"price_a", "price_c"}},
+		{"없는 key 는 빈 목록", "?lookup_keys[]=nope", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodGet, "/v1/prices"+tc.query, nil)
+			got := filterPrices(prices, r)
+			if len(got) != len(tc.want) {
+				t.Fatalf("건수 %d, 기대 %d (%v)", len(got), len(tc.want), got)
+			}
+			for i, id := range tc.want {
+				if got[i].ID != id {
+					t.Fatalf("[%d] %s, 기대 %s", i, got[i].ID, id)
+				}
+			}
+		})
+	}
+}
