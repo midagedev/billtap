@@ -163,3 +163,47 @@ func TestUpdateInvoicePaymentRejectsStaleOpenAttempt(t *testing.T) {
 		t.Fatalf("current invoice = %#v, want paid invoice preserved", current)
 	}
 }
+
+// A timeline id is a deterministic seed for a billing event, so the same event can be recorded
+// twice — a repeated clock advance replays the activation for the same subscription and period.
+// That must be a no-op. Before this guard it raised a UNIQUE constraint error that surfaced as a
+// 500 and wedged the fixture: the clock had already moved, so every later advance collided again.
+func TestRecordTimelineIsIdempotentForRepeatedEventIDs(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer store.Close()
+
+	entry := billing.TimelineEntry{
+		ID:         "tl_clock_trial_activate_sub_1_2030-01-15T00:00:00Z",
+		Object:     billing.ObjectTimelineEntry,
+		Action:     "customer.subscription.updated",
+		Message:    "Trial subscription activated",
+		ObjectType: billing.ObjectSubscription,
+		ObjectID:   "sub_1",
+		CreatedAt:  time.Date(2030, 1, 15, 0, 0, 0, 0, time.UTC),
+	}
+
+	if err := store.RecordTimeline(ctx, entry); err != nil {
+		t.Fatalf("first RecordTimeline returned error: %v", err)
+	}
+	if err := store.RecordTimeline(ctx, entry); err != nil {
+		t.Fatalf("repeated RecordTimeline returned error: %v", err)
+	}
+
+	entries, err := store.Timeline(ctx, billing.TimelineFilter{})
+	if err != nil {
+		t.Fatalf("Timeline returned error: %v", err)
+	}
+	matching := 0
+	for _, got := range entries {
+		if got.ID == entry.ID {
+			matching++
+		}
+	}
+	if matching != 1 {
+		t.Fatalf("timeline holds %d copies of %s, want exactly 1", matching, entry.ID)
+	}
+}
