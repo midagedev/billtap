@@ -1758,9 +1758,18 @@ func timelineCreate(seed, action, message, objectType, objectID, customerID, che
 	}
 }
 
+// Timeline ids are deterministic seeds: the same billing event always derives the same id
+// (for example a trial activation is keyed by subscription and period end). Re-recording one is
+// therefore a no-op, not an error — the event is already in the ledger.
+//
+// Without this guard a repeated clock advance fails with a UNIQUE constraint error surfaced as a
+// 500, and the failure is not recoverable: the clock has already moved, so every later advance
+// retries the same event and collides again, wedging the fixture permanently. Test fixtures that
+// reset subscriptions but keep the ledger hit this on their second run.
 func (s *SQLiteStore) insertTimeline(ctx context.Context, tx *sql.Tx, e billing.TimelineEntry) error {
 	query := `INSERT INTO timeline_entries (id, action, message, object_type, object_id, customer_id, checkout_session_id, subscription_id, invoice_id, payment_intent_id, data, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(id) DO NOTHING`
 	args := []any{e.ID, e.Action, e.Message, e.ObjectType, e.ObjectID, e.CustomerID, e.CheckoutSessionID, e.SubscriptionID, e.InvoiceID, e.PaymentIntentID, encodeMap(e.Data), encodeTime(e.CreatedAt)}
 	if tx != nil {
 		_, err := tx.ExecContext(ctx, query, args...)
