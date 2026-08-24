@@ -807,9 +807,9 @@ func (s *SQLiteStore) CreateInvoiceItem(ctx context.Context, item billing.Invoic
 		return billing.InvoiceItem{}, billing.Invoice{}, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO invoice_items (id, customer_id, invoice_id, amount, currency, description, metadata, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.CustomerID, item.InvoiceID, item.Amount, item.Currency, item.Description, encodeMap(item.Metadata), encodeTime(item.CreatedAt)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO invoice_items (id, customer_id, invoice_id, amount, currency, description, metadata, created_at, price_id, product_id, quantity)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.CustomerID, item.InvoiceID, item.Amount, item.Currency, item.Description, encodeMap(item.Metadata), encodeTime(item.CreatedAt), item.PriceID, item.ProductID, item.Quantity); err != nil {
 		return billing.InvoiceItem{}, billing.Invoice{}, err
 	}
 	if err := updateInvoiceTx(ctx, tx, invoice); err != nil {
@@ -835,7 +835,7 @@ func (s *SQLiteStore) CreateInvoiceItem(ctx context.Context, item billing.Invoic
 }
 
 func (s *SQLiteStore) GetInvoiceItem(ctx context.Context, id string) (billing.InvoiceItem, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, description, metadata, created_at FROM invoice_items WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, description, metadata, created_at, price_id, product_id, quantity FROM invoice_items WHERE id = ?`, id)
 	item, err := scanInvoiceItem(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.InvoiceItem{}, billing.ErrNotFound
@@ -854,7 +854,7 @@ func (s *SQLiteStore) ListInvoiceItemsFiltered(ctx context.Context, filter billi
 		clauses = append(clauses, "invoice_id = ?")
 		args = append(args, filter.InvoiceID)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, description, metadata, created_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, description, metadata, created_at, price_id, product_id, quantity
 		FROM invoice_items WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at ASC, id ASC`, args...)
 	if err != nil {
 		return nil, err
@@ -1654,7 +1654,7 @@ func scanInvoice(row scanner) (billing.Invoice, error) {
 func scanInvoiceItem(row scanner) (billing.InvoiceItem, error) {
 	var item billing.InvoiceItem
 	var metadataRaw, createdAt string
-	if err := row.Scan(&item.ID, &item.CustomerID, &item.InvoiceID, &item.Amount, &item.Currency, &item.Description, &metadataRaw, &createdAt); err != nil {
+	if err := row.Scan(&item.ID, &item.CustomerID, &item.InvoiceID, &item.Amount, &item.Currency, &item.Description, &metadataRaw, &createdAt, &item.PriceID, &item.ProductID, &item.Quantity); err != nil {
 		return item, err
 	}
 	item.Object = billing.ObjectInvoiceItem

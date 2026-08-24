@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- `POST /v1/invoiceitems` now accepts `pricing[price]` and `quantity` as an
+  alternative to `amount` (`amount` cannot be sent with `pricing` or
+  `quantity`). The line amount is the price's `unit_amount` times `quantity`
+  (default 1), currency comes from the price, a missing price is
+  `resource_missing`, and the create response includes `quantity` plus a
+  `pricing` object (`type=price_details`) when a price id was used.
 - Asynchronous webhook deliveries are now waitable. They ran on a detached
   context with no lifecycle handle, so they could still be writing delivery
   records after a caller tore down its storage — which surfaced as intermittent

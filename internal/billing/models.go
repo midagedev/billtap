@@ -194,6 +194,9 @@ type InvoiceItem struct {
 	Amount      int64             `json:"amount"`
 	Currency    string            `json:"currency"`
 	Description string            `json:"description,omitempty"`
+	PriceID     string            `json:"price,omitempty"`
+	ProductID   string            `json:"product,omitempty"`
+	Quantity    int64             `json:"quantity,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	CreatedAt   time.Time         `json:"created_at"`
 }

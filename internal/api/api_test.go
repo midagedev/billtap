@@ -5155,6 +5155,173 @@ func TestInvoiceBackedOneTimePaymentFlow(t *testing.T) {
 	}
 }
 
+func TestInvoiceItemPricingCreate(t *testing.T) {
+	handler := newTestHandler(t)
+
+	type invoiceResponse struct {
+		ID        string `json:"id"`
+		Status    string `json:"status"`
+		AmountDue int64  `json:"amount_due"`
+	}
+	type invoiceItemResponse struct {
+		ID       string `json:"id"`
+		Amount   int64  `json:"amount"`
+		Currency string `json:"currency"`
+		Quantity int64  `json:"quantity"`
+		Pricing  *struct {
+			Type         string `json:"type"`
+			PriceDetails struct {
+				Price   string `json:"price"`
+				Product string `json:"product"`
+			} `json:"price_details"`
+			UnitAmountDecimal string `json:"unit_amount_decimal"`
+		} `json:"pricing"`
+	}
+
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"invoice-item-price@example.test"},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{
+		"name": {"Usage"},
+	})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"250"},
+	})
+
+	createDraft := func(t *testing.T) invoiceResponse {
+		t.Helper()
+		return postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":                       {customer.ID},
+			"currency":                       {"usd"},
+			"collection_method":              {"charge_automatically"},
+			"auto_advance":                   {"false"},
+			"pending_invoice_items_behavior": {"exclude"},
+		})
+	}
+
+	t.Run("pricing and quantity set invoice amount", func(t *testing.T) {
+		invoice := createDraft(t)
+		item := postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer":       {customer.ID},
+			"invoice":        {invoice.ID},
+			"pricing[price]": {price.ID},
+			"quantity":       {"4"},
+			"description":    {"Usage"},
+		})
+		if item.Amount != 1000 || item.Currency != "usd" || item.Quantity != 4 {
+			t.Fatalf("item = %#v, want amount 1000 currency usd quantity 4", item)
+		}
+		if item.Pricing == nil || item.Pricing.Type != "price_details" || item.Pricing.PriceDetails.Price != price.ID || item.Pricing.PriceDetails.Product != product.ID || item.Pricing.UnitAmountDecimal != "250" {
+			t.Fatalf("item pricing = %#v, want price_details for %s/%s unit 250", item.Pricing, price.ID, product.ID)
+		}
+		finalized := postForm[invoiceResponse](t, handler, "/v1/invoices/"+invoice.ID+"/finalize", nil)
+		if finalized.Status != "open" || finalized.AmountDue != 1000 {
+			t.Fatalf("finalized = %#v, want open amount_due 1000", finalized)
+		}
+
+		// Read-back: pricing/quantity must survive persistence, not just the create response.
+		listed := getJSON[struct {
+			Data []invoiceItemResponse `json:"data"`
+		}](t, handler, "/v1/invoiceitems?invoice="+invoice.ID)
+		if len(listed.Data) != 1 || listed.Data[0].Quantity != 4 || listed.Data[0].Pricing == nil || listed.Data[0].Pricing.PriceDetails.Price != price.ID {
+			t.Fatalf("listed = %#v, want persisted quantity 4 and pricing for %s", listed.Data, price.ID)
+		}
+	})
+
+	t.Run("quantity defaults to 1", func(t *testing.T) {
+		invoice := createDraft(t)
+		item := postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer":       {customer.ID},
+			"invoice":        {invoice.ID},
+			"pricing[price]": {price.ID},
+		})
+		if item.Amount != 250 || item.Quantity != 1 {
+			t.Fatalf("item = %#v, want amount 250 quantity 1", item)
+		}
+		if item.Pricing == nil || item.Pricing.UnitAmountDecimal != "250" {
+			t.Fatalf("item pricing = %#v, want unit_amount_decimal 250", item.Pricing)
+		}
+		finalized := postForm[invoiceResponse](t, handler, "/v1/invoices/"+invoice.ID+"/finalize", nil)
+		if finalized.AmountDue != 250 {
+			t.Fatalf("finalized = %#v, want amount_due 250", finalized)
+		}
+	})
+
+	t.Run("amount and quantity together", func(t *testing.T) {
+		invoice := createDraft(t)
+		status, body := postFormStatus(t, handler, "/v1/invoiceitems", url.Values{
+			"customer":    {customer.ID},
+			"invoice":     {invoice.ID},
+			"amount":      {"100"},
+			"currency":    {"usd"},
+			"quantity":    {"2"},
+			"description": {"Usage"},
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d body = %s, want 400", status, body)
+		}
+		errBody := decodeErrorBody(t, body)
+		if errBody.Error.Code != "parameter_invalid" || !strings.Contains(errBody.Error.Message, "You may only specify one of these parameters: amount, quantity") {
+			t.Fatalf("error = %#v, want exclusive amount, quantity", errBody.Error)
+		}
+	})
+
+	t.Run("amount and pricing together", func(t *testing.T) {
+		invoice := createDraft(t)
+		status, body := postFormStatus(t, handler, "/v1/invoiceitems", url.Values{
+			"customer":       {customer.ID},
+			"invoice":        {invoice.ID},
+			"amount":         {"100"},
+			"currency":       {"usd"},
+			"pricing[price]": {price.ID},
+		})
+		if status != http.StatusBadRequest {
+			t.Fatalf("status = %d body = %s, want 400", status, body)
+		}
+		errBody := decodeErrorBody(t, body)
+		if errBody.Error.Code != "parameter_invalid" || !strings.Contains(errBody.Error.Message, "You may only specify one of these parameters: amount, pricing") {
+			t.Fatalf("error = %#v, want exclusive amount, pricing", errBody.Error)
+		}
+	})
+
+	t.Run("missing price", func(t *testing.T) {
+		invoice := createDraft(t)
+		status, body := postFormStatus(t, handler, "/v1/invoiceitems", url.Values{
+			"customer":       {customer.ID},
+			"invoice":        {invoice.ID},
+			"pricing[price]": {"price_missing"},
+			"quantity":       {"2"},
+		})
+		errBody := decodeErrorBody(t, body)
+		if status != http.StatusNotFound {
+			t.Fatalf("status = %d body = %s, want 404", status, body)
+		}
+		if errBody.Error.Code != "resource_missing" {
+			t.Fatalf("error = %#v, want resource_missing", errBody.Error)
+		}
+	})
+
+	t.Run("amount path unchanged", func(t *testing.T) {
+		invoice := createDraft(t)
+		item := postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer":    {customer.ID},
+			"invoice":     {invoice.ID},
+			"amount":      {"100"},
+			"currency":    {"usd"},
+			"description": {"One-time usage"},
+		})
+		if item.Amount != 100 || item.Currency != "usd" || item.Quantity != 1 || item.Pricing != nil {
+			t.Fatalf("item = %#v, want amount-path item quantity 1 without pricing", item)
+		}
+		finalized := postForm[invoiceResponse](t, handler, "/v1/invoices/"+invoice.ID+"/finalize", nil)
+		if finalized.AmountDue != 100 {
+			t.Fatalf("finalized = %#v, want amount_due 100", finalized)
+		}
+	})
+}
+
 func TestInvoiceEmailSendEvidence(t *testing.T) {
 	handler := newTestHandler(t)
 
