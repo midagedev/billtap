@@ -11,6 +11,8 @@ import (
 	"github.com/hckim/billtap/internal/billing"
 )
 
+const invoiceItemColumns = `id, customer_id, invoice_id, amount, currency, description, metadata, created_at, price_id, product_id, quantity, subscription_id`
+
 var _ billing.Repository = (*SQLiteStore)(nil)
 
 func (s *SQLiteStore) CreateCustomer(ctx context.Context, c billing.Customer) (billing.Customer, error) {
@@ -807,13 +809,15 @@ func (s *SQLiteStore) CreateInvoiceItem(ctx context.Context, item billing.Invoic
 		return billing.InvoiceItem{}, billing.Invoice{}, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO invoice_items (id, customer_id, invoice_id, amount, currency, description, metadata, created_at, price_id, product_id, quantity)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.CustomerID, item.InvoiceID, item.Amount, item.Currency, item.Description, encodeMap(item.Metadata), encodeTime(item.CreatedAt), item.PriceID, item.ProductID, item.Quantity); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO invoice_items (`+invoiceItemColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.CustomerID, encodeOptionalString(item.InvoiceID), item.Amount, item.Currency, item.Description, encodeMap(item.Metadata), encodeTime(item.CreatedAt), item.PriceID, item.ProductID, item.Quantity, item.SubscriptionID); err != nil {
 		return billing.InvoiceItem{}, billing.Invoice{}, err
 	}
-	if err := updateInvoiceTx(ctx, tx, invoice); err != nil {
-		return billing.InvoiceItem{}, billing.Invoice{}, err
+	if invoice.ID != "" {
+		if err := updateInvoiceTx(ctx, tx, invoice); err != nil {
+			return billing.InvoiceItem{}, billing.Invoice{}, err
+		}
 	}
 	for _, entry := range timeline {
 		if err := s.insertTimeline(ctx, tx, entry); err != nil {
@@ -827,6 +831,9 @@ func (s *SQLiteStore) CreateInvoiceItem(ctx context.Context, item billing.Invoic
 	if err != nil {
 		return billing.InvoiceItem{}, billing.Invoice{}, err
 	}
+	if invoice.ID == "" {
+		return createdItem, billing.Invoice{}, nil
+	}
 	updatedInvoice, err := s.GetInvoice(ctx, invoice.ID)
 	if err != nil {
 		return billing.InvoiceItem{}, billing.Invoice{}, err
@@ -834,8 +841,39 @@ func (s *SQLiteStore) CreateInvoiceItem(ctx context.Context, item billing.Invoic
 	return createdItem, updatedInvoice, nil
 }
 
+func (s *SQLiteStore) AttachInvoiceItems(ctx context.Context, invoice billing.Invoice, itemIDs []string, timeline []billing.TimelineEntry) (billing.Invoice, error) {
+	if invoice.ID == "" {
+		return billing.Invoice{}, billing.ErrInvalidInput
+	}
+	if len(itemIDs) == 0 {
+		return s.GetInvoice(ctx, invoice.ID)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.Invoice{}, err
+	}
+	defer tx.Rollback()
+	for _, id := range itemIDs {
+		if _, err := tx.ExecContext(ctx, `UPDATE invoice_items SET invoice_id = ? WHERE id = ? AND (invoice_id IS NULL OR invoice_id = '')`, invoice.ID, id); err != nil {
+			return billing.Invoice{}, err
+		}
+	}
+	if err := updateInvoiceTx(ctx, tx, invoice); err != nil {
+		return billing.Invoice{}, err
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.Invoice{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.Invoice{}, err
+	}
+	return s.GetInvoice(ctx, invoice.ID)
+}
+
 func (s *SQLiteStore) GetInvoiceItem(ctx context.Context, id string) (billing.InvoiceItem, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, description, metadata, created_at, price_id, product_id, quantity FROM invoice_items WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT `+invoiceItemColumns+` FROM invoice_items WHERE id = ?`, id)
 	item, err := scanInvoiceItem(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.InvoiceItem{}, billing.ErrNotFound
@@ -850,11 +888,13 @@ func (s *SQLiteStore) ListInvoiceItemsFiltered(ctx context.Context, filter billi
 		clauses = append(clauses, "customer_id = ?")
 		args = append(args, filter.CustomerID)
 	}
-	if filter.InvoiceID != "" {
+	if filter.Pending {
+		clauses = append(clauses, "(invoice_id IS NULL OR invoice_id = '')")
+	} else if filter.InvoiceID != "" {
 		clauses = append(clauses, "invoice_id = ?")
 		args = append(args, filter.InvoiceID)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, customer_id, invoice_id, amount, currency, description, metadata, created_at, price_id, product_id, quantity
+	rows, err := s.db.QueryContext(ctx, `SELECT `+invoiceItemColumns+`
 		FROM invoice_items WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at ASC, id ASC`, args...)
 	if err != nil {
 		return nil, err
@@ -1653,11 +1693,13 @@ func scanInvoice(row scanner) (billing.Invoice, error) {
 
 func scanInvoiceItem(row scanner) (billing.InvoiceItem, error) {
 	var item billing.InvoiceItem
+	var invoiceID sql.NullString
 	var metadataRaw, createdAt string
-	if err := row.Scan(&item.ID, &item.CustomerID, &item.InvoiceID, &item.Amount, &item.Currency, &item.Description, &metadataRaw, &createdAt, &item.PriceID, &item.ProductID, &item.Quantity); err != nil {
+	if err := row.Scan(&item.ID, &item.CustomerID, &invoiceID, &item.Amount, &item.Currency, &item.Description, &metadataRaw, &createdAt, &item.PriceID, &item.ProductID, &item.Quantity, &item.SubscriptionID); err != nil {
 		return item, err
 	}
 	item.Object = billing.ObjectInvoiceItem
+	item.InvoiceID = invoiceID.String
 	item.Metadata = decodeMap(metadataRaw)
 	item.CreatedAt = decodeTime(createdAt)
 	return item, nil

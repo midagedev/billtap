@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- `POST /v1/invoiceitems` can omit `invoice`. The item is stored as a pending
+  customer item (`invoice` is null) and `subscription` is accepted and echoed.
+- `POST /v1/invoices` `pending_invoice_items_behavior=include` attaches that
+  customer's pending items of the same currency and adds them to
+  `subtotal`/`total` once at create. `exclude` (and omit) leaves them
+  unattached.
+- `POST /v1/invoices` accepts `subscription` (stored and echoed) and
+  `days_until_due` (response `due_date` is created plus that many days).
+- Invoice responses populate `lines.data` from the invoice's items using the
+  same serialization as `GET /v1/invoices/{id}/lines`, including Wave 0
+  `pricing` and `quantity`.
+- Paid invoice responses set `post_payment_credit_notes_amount` to the sum of
+  issued (non-void) credit notes' `credit_amount` for that invoice.
 - Invoice preview accepts `subscription_details[trial_end]` (`now` or a unix
   timestamp). For a `trialing` subscription, `trial_end=now` (or a timestamp
   that is not in the future) previews the first paid cycle instead of a

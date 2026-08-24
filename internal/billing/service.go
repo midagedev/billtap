@@ -94,6 +94,7 @@ type Repository interface {
 	ListInvoicesFiltered(context.Context, InvoiceFilter) ([]Invoice, error)
 	UpdateInvoice(context.Context, Invoice, []TimelineEntry) (Invoice, error)
 	CreateInvoiceItem(context.Context, InvoiceItem, Invoice, []TimelineEntry) (InvoiceItem, Invoice, error)
+	AttachInvoiceItems(context.Context, Invoice, []string, []TimelineEntry) (Invoice, error)
 	ListInvoiceItemsFiltered(context.Context, InvoiceItemFilter) ([]InvoiceItem, error)
 	FinalizeInvoice(context.Context, Invoice, PaymentIntent, []TimelineEntry) (Invoice, PaymentIntent, error)
 	UpdateInvoicePayment(context.Context, Subscription, Invoice, PaymentIntent, []TimelineEntry) (Subscription, Invoice, PaymentIntent, error)
@@ -799,6 +800,15 @@ func (s *Service) CreateInvoice(ctx context.Context, in Invoice) (Invoice, error
 	in.Object = ObjectInvoice
 	in.CustomerID = customer.ID
 	in.SubscriptionID = strings.TrimSpace(in.SubscriptionID)
+	if in.SubscriptionID != "" {
+		sub, err := s.repo.GetSubscription(ctx, in.SubscriptionID)
+		if err != nil {
+			return Invoice{}, err
+		}
+		if sub.CustomerID != customer.ID {
+			return Invoice{}, fmt.Errorf("%w: subscription customer must match invoice customer", ErrInvalidInput)
+		}
+	}
 	in.Status = firstNonEmpty(strings.ToLower(strings.TrimSpace(in.Status)), "draft")
 	in.Currency = strings.ToLower(firstNonEmpty(strings.TrimSpace(in.Currency), "usd"))
 	in.Metadata = copyMap(in.Metadata)
@@ -812,7 +822,7 @@ func (s *Service) CreateInvoice(ctx context.Context, in Invoice) (Invoice, error
 	if in.CreatedAt.IsZero() {
 		in.CreatedAt = now
 	}
-	return s.repo.CreateInvoice(ctx, in, []TimelineEntry{billingTimelineEntry(
+	created, err := s.repo.CreateInvoice(ctx, in, []TimelineEntry{billingTimelineEntry(
 		"invoice_created_"+in.ID,
 		"invoice.created",
 		"Invoice created",
@@ -826,6 +836,10 @@ func (s *Service) CreateInvoice(ctx context.Context, in Invoice) (Invoice, error
 		map[string]string{"source": "invoice.create", "status": in.Status},
 		in.CreatedAt,
 	)})
+	if err != nil {
+		return Invoice{}, err
+	}
+	return s.attachPendingInvoiceItems(ctx, created)
 }
 
 func (s *Service) ListInvoices(ctx context.Context) ([]Invoice, error) {
@@ -833,22 +847,37 @@ func (s *Service) ListInvoices(ctx context.Context) ([]Invoice, error) {
 }
 
 func (s *Service) CreateInvoiceItem(ctx context.Context, in InvoiceItem) (InvoiceItem, Invoice, error) {
-	if strings.TrimSpace(in.InvoiceID) == "" {
-		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
-	}
 	if in.Amount == 0 {
 		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: amount is required", ErrInvalidInput)
 	}
-	invoice, err := s.repo.GetInvoice(ctx, in.InvoiceID)
-	if err != nil {
-		return InvoiceItem{}, Invoice{}, err
+	in.InvoiceID = strings.TrimSpace(in.InvoiceID)
+	in.SubscriptionID = strings.TrimSpace(in.SubscriptionID)
+	var invoice Invoice
+	if in.InvoiceID != "" {
+		var err error
+		invoice, err = s.repo.GetInvoice(ctx, in.InvoiceID)
+		if err != nil {
+			return InvoiceItem{}, Invoice{}, err
+		}
 	}
 	customerID := firstNonEmpty(strings.TrimSpace(in.CustomerID), invoice.CustomerID)
-	if customerID != invoice.CustomerID {
+	if customerID == "" {
+		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: customer is required", ErrInvalidInput)
+	}
+	if invoice.ID != "" && customerID != invoice.CustomerID {
 		return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: customer must match invoice customer", ErrInvalidInput)
 	}
 	if _, err := s.repo.GetCustomer(ctx, customerID); err != nil {
 		return InvoiceItem{}, Invoice{}, err
+	}
+	if in.SubscriptionID != "" {
+		sub, err := s.repo.GetSubscription(ctx, in.SubscriptionID)
+		if err != nil {
+			return InvoiceItem{}, Invoice{}, err
+		}
+		if sub.CustomerID != customerID {
+			return InvoiceItem{}, Invoice{}, fmt.Errorf("%w: subscription customer must match invoice item customer", ErrInvalidInput)
+		}
 	}
 	now := s.now()
 	if strings.TrimSpace(in.ID) == "" {
@@ -861,16 +890,9 @@ func (s *Service) CreateInvoiceItem(ctx context.Context, in InvoiceItem) (Invoic
 	if in.CreatedAt.IsZero() {
 		in.CreatedAt = now
 	}
-	invoice.Subtotal += in.Amount
-	invoice.Total += in.Amount
-	if invoice.Total < 0 {
-		invoice.Total = 0
+	if invoice.ID != "" {
+		addInvoiceItemAmount(&invoice, in.Amount, in.Currency)
 	}
-	invoice.AmountDue = invoice.Total - invoice.AmountPaid
-	if invoice.AmountDue < 0 {
-		invoice.AmountDue = 0
-	}
-	invoice.Currency = firstNonEmpty(invoice.Currency, in.Currency)
 	createdItem, updatedInvoice, err := s.repo.CreateInvoiceItem(ctx, in, invoice, []TimelineEntry{billingTimelineEntry(
 		"invoiceitem_created_"+in.ID,
 		"invoiceitem.created",
@@ -879,13 +901,64 @@ func (s *Service) CreateInvoiceItem(ctx context.Context, in InvoiceItem) (Invoic
 		in.ID,
 		in.CustomerID,
 		"",
-		invoice.SubscriptionID,
+		firstNonEmpty(in.SubscriptionID, invoice.SubscriptionID),
 		invoice.ID,
 		invoice.PaymentIntentID,
 		map[string]string{"source": "invoiceitem.create", "amount": strconv.FormatInt(in.Amount, 10), "currency": in.Currency},
 		in.CreatedAt,
 	)})
 	return createdItem, updatedInvoice, err
+}
+
+func (s *Service) attachPendingInvoiceItems(ctx context.Context, invoice Invoice) (Invoice, error) {
+	if !strings.EqualFold(strings.TrimSpace(invoice.Metadata["pending_invoice_items_behavior"]), "include") {
+		return invoice, nil
+	}
+	pending, err := s.repo.ListInvoiceItemsFiltered(ctx, InvoiceItemFilter{CustomerID: invoice.CustomerID, Pending: true})
+	if err != nil {
+		return Invoice{}, err
+	}
+	itemIDs := make([]string, 0, len(pending))
+	for _, item := range pending {
+		if item.Currency != "" && item.Currency != invoice.Currency {
+			continue
+		}
+		itemIDs = append(itemIDs, item.ID)
+		addInvoiceItemAmount(&invoice, item.Amount, item.Currency)
+	}
+	if len(itemIDs) == 0 {
+		return invoice, nil
+	}
+	return s.repo.AttachInvoiceItems(ctx, invoice, itemIDs, []TimelineEntry{billingTimelineEntry(
+		"invoice_pending_items_"+invoice.ID,
+		"invoice.pending_invoice_items_attached",
+		"Pending invoice items attached",
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoice.create", "pending_invoice_items_behavior": "include", "count": strconv.Itoa(len(itemIDs))},
+		invoice.CreatedAt,
+	)})
+}
+
+func addInvoiceItemAmount(invoice *Invoice, amount int64, currency string) {
+	if invoice == nil {
+		return
+	}
+	invoice.Subtotal += amount
+	invoice.Total += amount
+	if invoice.Total < 0 {
+		invoice.Total = 0
+	}
+	invoice.AmountDue = invoice.Total - invoice.AmountPaid
+	if invoice.AmountDue < 0 {
+		invoice.AmountDue = 0
+	}
+	invoice.Currency = firstNonEmpty(invoice.Currency, currency)
 }
 
 func (s *Service) ListInvoiceItems(ctx context.Context, filter InvoiceItemFilter) ([]InvoiceItem, error) {
