@@ -288,16 +288,29 @@ type Refund struct {
 }
 
 type CreditNote struct {
-	ID         string            `json:"id"`
-	Object     string            `json:"object"`
-	InvoiceID  string            `json:"invoice"`
-	CustomerID string            `json:"customer,omitempty"`
-	Amount     int64             `json:"amount"`
-	Currency   string            `json:"currency"`
-	Reason     string            `json:"reason,omitempty"`
-	Status     string            `json:"status"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
-	CreatedAt  time.Time         `json:"created_at"`
+	ID              string            `json:"id"`
+	Object          string            `json:"object"`
+	InvoiceID       string            `json:"invoice"`
+	CustomerID      string            `json:"customer,omitempty"`
+	Amount          int64             `json:"amount"`
+	Currency        string            `json:"currency"`
+	Reason          string            `json:"reason,omitempty"`
+	Status          string            `json:"status"`
+	Memo            string            `json:"memo,omitempty"`
+	OutOfBandAmount int64             `json:"out_of_band_amount,omitempty"`
+	RefundAmount    int64             `json:"refund_amount,omitempty"`
+	Metadata        map[string]string `json:"metadata,omitempty"`
+	CreatedAt       time.Time         `json:"created_at"`
+}
+
+// CreditAmount is the portion of Amount not allocated to out-of-band settlement
+// or a linked refund. It is derived, not stored.
+func (n CreditNote) CreditAmount() int64 {
+	credit := n.Amount - n.OutOfBandAmount - n.RefundAmount
+	if credit < 0 {
+		return 0
+	}
+	return credit
 }
 
 type Account struct {

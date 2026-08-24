@@ -1289,9 +1289,6 @@ func (s *Service) AdvanceTestClock(ctx context.Context, clockID string, frozenTi
 }
 
 func (s *Service) CreateRefund(ctx context.Context, in Refund) (Refund, error) {
-	if in.Amount <= 0 {
-		return Refund{}, fmt.Errorf("%w: amount must be at least 1", ErrInvalidInput)
-	}
 	now := s.now()
 	if strings.TrimSpace(in.ID) == "" {
 		in.ID = id("re")
@@ -1302,6 +1299,7 @@ func (s *Service) CreateRefund(ctx context.Context, in Refund) (Refund, error) {
 	in.ChargeID = strings.TrimSpace(in.ChargeID)
 	in.PaymentIntentID = strings.TrimSpace(in.PaymentIntentID)
 	in.InvoiceID = strings.TrimSpace(in.InvoiceID)
+	charged := int64(0)
 	if in.PaymentIntentID != "" {
 		intent, err := s.repo.GetPaymentIntent(ctx, in.PaymentIntentID)
 		if err != nil {
@@ -1310,6 +1308,9 @@ func (s *Service) CreateRefund(ctx context.Context, in Refund) (Refund, error) {
 		in.CustomerID = firstNonEmpty(in.CustomerID, intent.CustomerID)
 		in.InvoiceID = firstNonEmpty(in.InvoiceID, intent.InvoiceID)
 		in.Currency = firstNonEmpty(in.Currency, intent.Currency)
+		if intent.Status == "succeeded" {
+			charged = intent.Amount
+		}
 	}
 	if in.InvoiceID != "" {
 		invoice, err := s.repo.GetInvoice(ctx, in.InvoiceID)
@@ -1321,12 +1322,35 @@ func (s *Service) CreateRefund(ctx context.Context, in Refund) (Refund, error) {
 		if in.PaymentIntentID == "" {
 			in.PaymentIntentID = invoice.PaymentIntentID
 		}
+		if invoice.AmountPaid > 0 {
+			charged = invoice.AmountPaid
+		}
 	}
 	if in.ChargeID == "" && in.PaymentIntentID != "" {
 		in.ChargeID = "ch_" + sanitizeID(in.PaymentIntentID)
 	}
 	if in.ChargeID == "" {
 		return Refund{}, fmt.Errorf("%w: charge or payment_intent is required", ErrInvalidInput)
+	}
+	if charged > 0 {
+		already, err := s.refundedAmount(ctx, in)
+		if err != nil {
+			return Refund{}, err
+		}
+		remaining := charged - already
+		if remaining < 0 {
+			remaining = 0
+		}
+		if in.Amount <= 0 {
+			if remaining <= 0 {
+				return Refund{}, fmt.Errorf("%w: amount must be at least 1", ErrInvalidInput)
+			}
+			in.Amount = remaining
+		} else if in.Amount > remaining {
+			return Refund{}, fmt.Errorf("%w: amount must be less than or equal to the unrefunded amount", ErrInvalidInput)
+		}
+	} else if in.Amount <= 0 {
+		return Refund{}, fmt.Errorf("%w: amount must be at least 1", ErrInvalidInput)
 	}
 	if in.CreatedAt.IsZero() {
 		in.CreatedAt = now
@@ -1345,6 +1369,33 @@ func (s *Service) CreateRefund(ctx context.Context, in Refund) (Refund, error) {
 		map[string]string{"source": "refund.create", "charge": in.ChargeID, "status": in.Status, "reason": in.Reason},
 		in.CreatedAt,
 	)})
+}
+
+func (s *Service) refundedAmount(ctx context.Context, in Refund) (int64, error) {
+	filter := RefundFilter{}
+	switch {
+	case in.InvoiceID != "":
+		filter.InvoiceID = in.InvoiceID
+	case in.PaymentIntentID != "":
+		filter.PaymentIntentID = in.PaymentIntentID
+	case in.ChargeID != "":
+		filter.ChargeID = in.ChargeID
+	default:
+		return 0, nil
+	}
+	existing, err := s.repo.ListRefundsFiltered(ctx, filter)
+	if err != nil {
+		return 0, err
+	}
+	var total int64
+	for _, refund := range existing {
+		switch strings.ToLower(strings.TrimSpace(refund.Status)) {
+		case "canceled", "failed":
+			continue
+		}
+		total += refund.Amount
+	}
+	return total, nil
 }
 
 func (s *Service) GetRefund(ctx context.Context, refundID string) (Refund, error) {
@@ -1392,6 +1443,15 @@ func (s *Service) CreateCreditNote(ctx context.Context, in CreditNote) (CreditNo
 	if strings.TrimSpace(in.InvoiceID) == "" {
 		return CreditNote{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
 	}
+	if in.OutOfBandAmount < 0 {
+		return CreditNote{}, fmt.Errorf("%w: out_of_band_amount must be at least 0", ErrInvalidInput)
+	}
+	if in.RefundAmount < 0 {
+		return CreditNote{}, fmt.Errorf("%w: refund_amount must be at least 0", ErrInvalidInput)
+	}
+	if in.Amount <= 0 {
+		in.Amount = in.OutOfBandAmount + in.RefundAmount
+	}
 	if in.Amount <= 0 {
 		return CreditNote{}, fmt.Errorf("%w: amount must be at least 1", ErrInvalidInput)
 	}
@@ -1407,6 +1467,9 @@ func (s *Service) CreateCreditNote(ctx context.Context, in CreditNote) (CreditNo
 	in.Status = firstNonEmpty(strings.TrimSpace(in.Status), "issued")
 	in.CustomerID = firstNonEmpty(in.CustomerID, invoice.CustomerID)
 	in.Currency = strings.ToLower(firstNonEmpty(strings.TrimSpace(in.Currency), invoice.Currency, "usd"))
+	in.Memo = strings.TrimSpace(in.Memo)
+	// out_of_band_amount is external settlement: it is stored and echoed but
+	// must not credit customer cash balance (that balance lives outside this service).
 	if in.CreatedAt.IsZero() {
 		in.CreatedAt = now
 	}
@@ -2211,6 +2274,9 @@ type SubscriptionProrationRequest struct {
 	DefaultTaxRates    []AppliedTaxRate // optional override; empty uses subscription metadata
 	Metadata           map[string]string
 	CancelAtPeriodEnd  *bool
+	// EndTrial bills the first paid cycle for a trialing subscription
+	// (trial_end=now or a unix timestamp that is not in the future).
+	EndTrial bool
 }
 
 // SubscriptionProrationResult is the outcome of a proration-aware subscription update.
@@ -2302,6 +2368,19 @@ func (s *Service) UpdateSubscriptionItemsWithProration(ctx context.Context, req 
 		}
 	}
 	updated.Metadata["stripe_compat_updated_at"] = at.Format(time.RFC3339Nano)
+
+	if req.EndTrial && strings.EqualFold(sub.Status, "trialing") {
+		// Trial invoices were $0, so unused trial time is not a paid credit.
+		oldTotal = 0
+		oldDiscounted = 0
+		updated.Status = "active"
+		updated.Metadata["trial_end"] = at.Format(time.RFC3339Nano)
+		if strings.TrimSpace(updated.Metadata["trial_start"]) == "" && !sub.CurrentPeriodStart.IsZero() {
+			updated.Metadata["trial_start"] = sub.CurrentPeriodStart.Format(time.RFC3339Nano)
+		}
+		behavior = "always_invoice"
+		anchor = "now"
+	}
 
 	rates := req.DefaultTaxRates
 	if len(rates) == 0 {

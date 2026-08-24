@@ -6650,6 +6650,270 @@ func TestInvoicePreviewProrationAndUpcoming(t *testing.T) {
 	}
 }
 
+func TestInvoicePreviewTrialEndNowMatchesConfirm(t *testing.T) {
+	handler := newTestHandler(t)
+	customer, lite, _, taxRateID := setupProrationPlans(t, handler)
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                                {customer.ID},
+		"line_items[0][price]":                    {lite.ID},
+		"subscription_data[trial_period_days]":    {"14"},
+		"subscription_data[default_tax_rates][0]": {taxRateID},
+	})
+	completion := postJSON[struct {
+		Subscription billing.Subscription `json:"subscription"`
+	}](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+	if completion.Subscription.ID == "" || completion.Subscription.Status != "trialing" {
+		t.Fatalf("subscription = %#v, want trialing", completion.Subscription)
+	}
+	subID := completion.Subscription.ID
+	createInvoice := completion.Subscription.LatestInvoiceID
+
+	endAt := time.Now().UTC().Unix()
+	endAtRaw := strconv.FormatInt(endAt, 10)
+	preview := postForm[upcomingPreviewFields](t, handler, "/v1/invoices/create_preview", url.Values{
+		"customer":                        {customer.ID},
+		"subscription":                    {subID},
+		"subscription_details[trial_end]": {endAtRaw},
+	})
+	if preview.Object != "invoice" || preview.Subtotal != 4900 || taxVal(preview) != 490 || preview.Total != 5390 || preview.AmountDue != 5390 {
+		t.Fatalf("trial_end preview = %#v, want first-cycle 4900/490/5390", preview)
+	}
+	if preview.Total <= 0 {
+		t.Fatalf("trial_end preview total = %d, want non-zero first charge", preview.Total)
+	}
+	assertInvoiceInvariant(t, preview)
+
+	updated := postForm[prorationSubResponse](t, handler, "/v1/subscriptions/"+subID, url.Values{
+		"trial_end": {endAtRaw},
+	})
+	if updated.LatestInvoice == "" || updated.LatestInvoice == createInvoice {
+		t.Fatalf("latest_invoice = %q, want new first-cycle invoice (create was %q)", updated.LatestInvoice, createInvoice)
+	}
+	gotSub := getJSON[struct {
+		Status   string `json:"status"`
+		TrialEnd int64  `json:"trial_end"`
+	}](t, handler, "/v1/subscriptions/"+subID)
+	if gotSub.Status != "active" {
+		t.Fatalf("status = %q, want active", gotSub.Status)
+	}
+	if gotSub.TrialEnd != endAt {
+		t.Fatalf("trial_end = %d, want %d", gotSub.TrialEnd, endAt)
+	}
+
+	invoice := getJSON[prorationInvoiceResponse](t, handler, "/v1/invoices/"+updated.LatestInvoice)
+	if invoice.Subtotal != preview.Subtotal || invoice.Total != preview.Total || invoice.Tax != taxVal(preview) || invoice.AmountPaid != preview.AmountDue {
+		t.Fatalf("confirm invoice=%#v preview subtotal/tax/total/due=%d/%d/%d/%d, want match",
+			invoice, preview.Subtotal, taxVal(preview), preview.Total, preview.AmountDue)
+	}
+	t.Logf("preview↔confirm cents: subtotal=%d tax=%d total=%d preview_amount_due=%d confirm_amount_paid=%d",
+		preview.Subtotal, taxVal(preview), preview.Total, preview.AmountDue, invoice.AmountPaid)
+}
+
+func TestInvoicePreviewTrialEndNowAccepted(t *testing.T) {
+	handler := newTestHandler(t)
+	customer, lite, _, _ := setupProrationPlans(t, handler)
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                             {customer.ID},
+		"line_items[0][price]":                 {lite.ID},
+		"subscription_data[trial_period_days]": {"14"},
+	})
+	completion := postJSON[struct {
+		Subscription billing.Subscription `json:"subscription"`
+	}](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+
+	status, body := postFormStatus(t, handler, "/v1/invoices/create_preview", url.Values{
+		"subscription":                    {completion.Subscription.ID},
+		"subscription_details[trial_end]": {"now"},
+	})
+	if status != http.StatusOK {
+		t.Fatalf("status=%d body=%s, want 200 (trial_end=now allowed)", status, body)
+	}
+	preview := postForm[upcomingPreviewFields](t, handler, "/v1/invoices/create_preview", url.Values{
+		"subscription":                    {completion.Subscription.ID},
+		"subscription_details[trial_end]": {"now"},
+	})
+	if preview.Total != 4900 || preview.AmountDue != 4900 {
+		t.Fatalf("trial_end=now preview = %#v, want 4900 first-cycle total", preview)
+	}
+}
+
+func TestSubscriptionUpdateFutureTrialEndUpdatesTimestamp(t *testing.T) {
+	handler := newTestHandler(t)
+	customer, lite, _, _ := setupProrationPlans(t, handler)
+	trialEnd := time.Date(2030, 2, 15, 0, 0, 0, 0, time.UTC)
+	future := time.Date(2030, 3, 1, 0, 0, 0, 0, time.UTC)
+	applied := postJSON[fixtures.ApplyResult](t, handler, "/api/fixtures/apply", map[string]any{
+		"name": "future-trial-end",
+		"subscriptions": []map[string]any{{
+			"id":                   "sub_future_trial",
+			"customer":             customer.ID,
+			"price":                lite.ID,
+			"status":               "trialing",
+			"current_period_start": "2030-01-15T00:00:00Z",
+			"current_period_end":   trialEnd.Format(time.RFC3339),
+			"trial_start":          "2030-01-15T00:00:00Z",
+			"trial_end":            trialEnd.Format(time.RFC3339),
+		}},
+	})
+	if len(applied.Subscriptions) != 1 {
+		t.Fatalf("fixture = %#v", applied)
+	}
+	updated := postForm[struct {
+		Status           string `json:"status"`
+		TrialEnd         int64  `json:"trial_end"`
+		CurrentPeriodEnd int64  `json:"current_period_end"`
+		LatestInvoice    string `json:"latest_invoice"`
+	}](t, handler, "/v1/subscriptions/sub_future_trial", url.Values{
+		"trial_end": {strconv.FormatInt(future.Unix(), 10)},
+	})
+	if updated.Status != "trialing" {
+		t.Fatalf("status = %q, want still trialing", updated.Status)
+	}
+	if updated.TrialEnd != future.Unix() || updated.CurrentPeriodEnd != future.Unix() {
+		t.Fatalf("trial/period end = %d/%d, want %d", updated.TrialEnd, updated.CurrentPeriodEnd, future.Unix())
+	}
+}
+
+func TestRefundOmitsAmountRefundsRemaining(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"refund-full@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Refund Full"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"30000"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	completion := postJSON[struct {
+		Invoice billing.Invoice `json:"invoice"`
+	}](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+
+	partial := postForm[struct {
+		Amount int64 `json:"amount"`
+	}](t, handler, "/v1/refunds", url.Values{
+		"invoice": {completion.Invoice.ID},
+		"amount":  {"10000"},
+	})
+	if partial.Amount != 10000 {
+		t.Fatalf("partial refund = %#v, want 10000", partial)
+	}
+	full := postForm[struct {
+		Amount int64 `json:"amount"`
+	}](t, handler, "/v1/refunds", url.Values{
+		"invoice": {completion.Invoice.ID},
+	})
+	if full.Amount != 20000 {
+		t.Fatalf("omitted-amount refund = %#v, want remaining 20000", full)
+	}
+
+	status, body := postFormStatus(t, handler, "/v1/refunds", url.Values{
+		"invoice": {completion.Invoice.ID},
+		"amount":  {"1"},
+	})
+	if status != http.StatusBadRequest {
+		t.Fatalf("status=%d body=%s, want 400 over-refund", status, body)
+	}
+	errBody := decodeErrorBody(t, body)
+	if errBody.Error.Param != "amount" || errBody.Error.Code != "parameter_invalid" {
+		t.Fatalf("error=%#v, want amount parameter_invalid", errBody.Error)
+	}
+}
+
+func TestCreditNoteOutOfBandMemoRefundAmount(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{"email": {"credit-oob@example.test"}})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Credit OOB"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":     {product.ID},
+		"currency":    {"usd"},
+		"unit_amount": {"30000"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":             {customer.ID},
+		"line_items[0][price]": {price.ID},
+	})
+	completion := postJSON[struct {
+		Invoice billing.Invoice `json:"invoice"`
+	}](t, handler, "/api/checkout/sessions/"+session.ID+"/complete", map[string]string{"outcome": "payment_succeeded"})
+
+	_ = postForm[map[string]any](t, handler, "/v1/test_helpers/customers/"+customer.ID+"/fund_cash_balance", url.Values{
+		"amount":   {"1000"},
+		"currency": {"usd"},
+	})
+	before := getJSON[struct {
+		Available map[string]int64 `json:"available"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/cash_balance")
+	if before.Available["usd"] != 1000 {
+		t.Fatalf("cash balance before = %#v, want 1000", before.Available)
+	}
+
+	created := postForm[struct {
+		ID              string `json:"id"`
+		Amount          int64  `json:"amount"`
+		Memo            string `json:"memo"`
+		OutOfBandAmount int64  `json:"out_of_band_amount"`
+		RefundAmount    int64  `json:"refund_amount"`
+		CreditAmount    int64  `json:"credit_amount"`
+		Status          string `json:"status"`
+	}](t, handler, "/v1/credit_notes", url.Values{
+		"invoice":            {completion.Invoice.ID},
+		"amount":             {"8000"},
+		"memo":               {"settled outside the processor"},
+		"out_of_band_amount": {"5000"},
+		"refund_amount":      {"3000"},
+	})
+	if created.ID == "" || created.Status != "issued" {
+		t.Fatalf("credit note = %#v, want issued", created)
+	}
+	if created.Amount != 8000 || created.OutOfBandAmount != 5000 || created.RefundAmount != 3000 || created.CreditAmount != 0 || created.Memo != "settled outside the processor" {
+		t.Fatalf("credit note allocation = %#v, want amount=8000 oob=5000 refund=3000 credit=0", created)
+	}
+
+	got := getJSON[struct {
+		Amount          int64  `json:"amount"`
+		Memo            string `json:"memo"`
+		OutOfBandAmount int64  `json:"out_of_band_amount"`
+		RefundAmount    int64  `json:"refund_amount"`
+		CreditAmount    int64  `json:"credit_amount"`
+	}](t, handler, "/v1/credit_notes/"+created.ID)
+	if got.Amount != 8000 || got.OutOfBandAmount != 5000 || got.RefundAmount != 3000 || got.CreditAmount != 0 || got.Memo != "settled outside the processor" {
+		t.Fatalf("retrieved credit note = %#v, want persisted allocation", got)
+	}
+
+	listed := getJSON[struct {
+		Data []struct {
+			Amount          int64 `json:"amount"`
+			OutOfBandAmount int64 `json:"out_of_band_amount"`
+		} `json:"data"`
+	}](t, handler, "/v1/credit_notes?invoice="+completion.Invoice.ID)
+	if len(listed.Data) != 1 || listed.Data[0].Amount != 8000 || listed.Data[0].OutOfBandAmount != 5000 {
+		t.Fatalf("invoice credit notes = %#v, want oob included in listed amount", listed.Data)
+	}
+
+	after := getJSON[struct {
+		Available map[string]int64 `json:"available"`
+	}](t, handler, "/v1/customers/"+customer.ID+"/cash_balance")
+	if after.Available["usd"] != 1000 {
+		t.Fatalf("cash balance after out_of_band credit note = %#v, want unchanged 1000", after.Available)
+	}
+
+	oobOnly := postForm[struct {
+		Amount          int64 `json:"amount"`
+		OutOfBandAmount int64 `json:"out_of_band_amount"`
+		CreditAmount    int64 `json:"credit_amount"`
+	}](t, handler, "/v1/credit_notes", url.Values{
+		"invoice":            {completion.Invoice.ID},
+		"out_of_band_amount": {"2000"},
+		"memo":               {"amount omitted; oob is the total"},
+	})
+	if oobOnly.Amount != 2000 || oobOnly.OutOfBandAmount != 2000 || oobOnly.CreditAmount != 0 {
+		t.Fatalf("oob-only credit note = %#v, want amount=2000 from out_of_band_amount", oobOnly)
+	}
+}
+
 func TestCustomerDefaultInvoiceOutcomeFailsRenewal(t *testing.T) {
 	handler := newTestHandler(t)
 	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Renewal Team"}})
