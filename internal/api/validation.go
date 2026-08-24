@@ -1239,9 +1239,11 @@ func validateInvoicePreview(p params) error {
 			"subscription_details[proration_behavior]",
 			"subscription_details[proration_date]",
 			"subscription_details[billing_cycle_anchor]",
+			"subscription_details[trial_end]",
 			"subscriptionDetails[prorationBehavior]",
 			"subscriptionDetails[prorationDate]",
 			"subscriptionDetails[billingCycleAnchor]",
+			"subscriptionDetails[trialEnd]",
 			"preview_mode",
 			"coupon",
 			"promotion_code",
@@ -1257,7 +1259,12 @@ func validateInvoicePreview(p params) error {
 	}); err != nil {
 		return err
 	}
-	for _, key := range []string{"subscription_details[billing_cycle_anchor]", "subscriptionDetails[billingCycleAnchor]"} {
+	for _, key := range []string{
+		"subscription_details[billing_cycle_anchor]",
+		"subscriptionDetails[billingCycleAnchor]",
+		"subscription_details[trial_end]",
+		"subscriptionDetails[trialEnd]",
+	} {
 		if err := p.validateUnixTimestampOrNow(key); err != nil {
 			return err
 		}
@@ -1288,9 +1295,6 @@ func validateRefundCreate(p params) error {
 	}); err != nil {
 		return err
 	}
-	if !p.has("amount") {
-		return missingParam("amount")
-	}
 	return nil
 }
 
@@ -1308,16 +1312,34 @@ func validateRefundUpdate(p params) error {
 }
 
 func validateCreditNoteCreate(p params) error {
-	return p.validate(paramSpec{
-		Allowed:     []string{"id", "invoice", "customer", "amount", "currency", "reason", "status"},
-		Required:    []string{"invoice", "amount"},
-		Int64Params: []string{"amount"},
-		Positive:    []string{"amount"},
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"id",
+			"invoice",
+			"customer",
+			"amount",
+			"currency",
+			"reason",
+			"status",
+			"memo",
+			"out_of_band_amount",
+			"refund_amount",
+		},
+		Required:      []string{"invoice"},
+		Int64Params:   []string{"amount", "out_of_band_amount", "refund_amount"},
+		Positive:      []string{"amount"},
+		NonNegative:   []string{"out_of_band_amount", "refund_amount"},
+		AllowMetadata: true,
 		EnumParams: map[string][]string{
 			"status": {"issued", "void"},
 		},
-		AllowMetadata: true,
-	})
+	}); err != nil {
+		return err
+	}
+	if !p.has("amount") && !p.has("out_of_band_amount") && !p.has("refund_amount") {
+		return missingParam("amount")
+	}
+	return nil
 }
 
 func validatePaymentIntentConfirm(p params) error {

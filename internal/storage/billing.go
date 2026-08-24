@@ -1325,9 +1325,9 @@ func (s *SQLiteStore) CreateCreditNote(ctx context.Context, note billing.CreditN
 		return billing.CreditNote{}, err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `INSERT INTO credit_notes (id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		note.ID, note.InvoiceID, note.CustomerID, note.Amount, note.Currency, note.Reason, note.Status, encodeMap(note.Metadata), encodeTime(note.CreatedAt)); err != nil {
+	if _, err := tx.ExecContext(ctx, `INSERT INTO credit_notes (id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at, memo, out_of_band_amount, refund_amount)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		note.ID, note.InvoiceID, note.CustomerID, note.Amount, note.Currency, note.Reason, note.Status, encodeMap(note.Metadata), encodeTime(note.CreatedAt), note.Memo, note.OutOfBandAmount, note.RefundAmount); err != nil {
 		return billing.CreditNote{}, err
 	}
 	for _, entry := range timeline {
@@ -1342,7 +1342,7 @@ func (s *SQLiteStore) CreateCreditNote(ctx context.Context, note billing.CreditN
 }
 
 func (s *SQLiteStore) GetCreditNote(ctx context.Context, id string) (billing.CreditNote, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at FROM credit_notes WHERE id = ?`, id)
+	row := s.db.QueryRowContext(ctx, `SELECT id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at, memo, out_of_band_amount, refund_amount FROM credit_notes WHERE id = ?`, id)
 	note, err := scanCreditNote(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return billing.CreditNote{}, billing.ErrNotFound
@@ -1361,7 +1361,7 @@ func (s *SQLiteStore) ListCreditNotesFiltered(ctx context.Context, filter billin
 		clauses = append(clauses, "customer_id = ?")
 		args = append(args, filter.CustomerID)
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at
+	rows, err := s.db.QueryContext(ctx, `SELECT id, invoice_id, customer_id, amount, currency, reason, status, metadata, created_at, memo, out_of_band_amount, refund_amount
 		FROM credit_notes WHERE `+strings.Join(clauses, " AND ")+` ORDER BY created_at DESC, id DESC`, args...)
 	if err != nil {
 		return nil, err
@@ -1385,9 +1385,9 @@ func (s *SQLiteStore) UpdateCreditNote(ctx context.Context, note billing.CreditN
 	}
 	defer tx.Rollback()
 	result, err := tx.ExecContext(ctx, `UPDATE credit_notes
-		SET invoice_id = ?, customer_id = ?, amount = ?, currency = ?, reason = ?, status = ?, metadata = ?
+		SET invoice_id = ?, customer_id = ?, amount = ?, currency = ?, reason = ?, status = ?, metadata = ?, memo = ?, out_of_band_amount = ?, refund_amount = ?
 		WHERE id = ?`,
-		note.InvoiceID, note.CustomerID, note.Amount, note.Currency, note.Reason, note.Status, encodeMap(note.Metadata), note.ID)
+		note.InvoiceID, note.CustomerID, note.Amount, note.Currency, note.Reason, note.Status, encodeMap(note.Metadata), note.Memo, note.OutOfBandAmount, note.RefundAmount, note.ID)
 	if err != nil {
 		return billing.CreditNote{}, err
 	}
@@ -1719,7 +1719,7 @@ func scanRefund(row scanner) (billing.Refund, error) {
 func scanCreditNote(row scanner) (billing.CreditNote, error) {
 	var note billing.CreditNote
 	var metadata, createdAt string
-	if err := row.Scan(&note.ID, &note.InvoiceID, &note.CustomerID, &note.Amount, &note.Currency, &note.Reason, &note.Status, &metadata, &createdAt); err != nil {
+	if err := row.Scan(&note.ID, &note.InvoiceID, &note.CustomerID, &note.Amount, &note.Currency, &note.Reason, &note.Status, &metadata, &createdAt, &note.Memo, &note.OutOfBandAmount, &note.RefundAmount); err != nil {
 		return note, err
 	}
 	note.Object = billing.ObjectCreditNote

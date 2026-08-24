@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Invoice preview accepts `subscription_details[trial_end]` (`now` or a unix
+  timestamp). For a `trialing` subscription, `trial_end=now` (or a timestamp
+  that is not in the future) previews the first paid cycle instead of a
+  zero-amount remaining-trial window. `POST /v1/subscriptions/{id}` with the
+  same `trial_end` moves the subscription to `active` and invoices that same
+  first-cycle amount so preview and confirm agree.
+- `POST /v1/refunds` treats a missing `amount` as a full refund of the
+  remaining refundable balance on the invoice or payment intent. Requested
+  amounts still cannot exceed that remaining balance.
+- `POST /v1/credit_notes` accepts `memo`, `out_of_band_amount`, and
+  `refund_amount`, persists them, and echoes them (plus derived
+  `credit_amount`) on create and retrieve. `out_of_band_amount` is external
+  settlement and does not change customer cash balance.
 - `POST /v1/invoiceitems` now accepts `pricing[price]` and `quantity` as an
   alternative to `amount` (`amount` cannot be sent with `pricing` or
   `quantity`). The line amount is the price's `unit_amount` times `quantity`

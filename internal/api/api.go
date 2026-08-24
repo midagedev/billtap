@@ -2124,13 +2124,15 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		replaceItems := hasSubscriptionItemPatch(p)
 		var items []billing.LineItem
 		var current billing.Subscription
-		if replaceItems {
+		if replaceItems || p.has("trial_end") {
 			current, err = h.billing.GetSubscription(r.Context(), id)
 			if err != nil {
 				writeResult(w, nil, err)
 				return
 			}
-			items = subscriptionItemsFromParams(p, current)
+			if replaceItems {
+				items = subscriptionItemsFromParams(p, current)
+			}
 		}
 		metadata := subscriptionUpdateMetadata(p)
 		discounts, err := h.discountsFromParams(p)
@@ -2182,28 +2184,49 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		now := time.Now().UTC()
+		trialEndAt, hasTrialEnd := unixTimestampOrNow(p.string("trial_end"), now)
+		endTrialNow := hasTrialEnd && strings.EqualFold(current.Status, "trialing") && !trialEndAt.After(now)
+		if hasTrialEnd {
+			if metadata == nil {
+				metadata = map[string]string{}
+			}
+			metadata["trial_end"] = trialEndAt.Format(time.RFC3339Nano)
+		}
 		prorationBehavior := p.string("proration_behavior")
 		if prorationBehavior == "" {
 			prorationBehavior = "none"
 		}
+		if endTrialNow && len(items) == 0 {
+			items = append([]billing.LineItem{}, current.Items...)
+		}
 		// Item change with create_prorations / always_invoice bills (or defers) proration.
-		if replaceItems && (prorationBehavior == "always_invoice" || prorationBehavior == "create_prorations") {
-			prorationDate := time.Now().UTC()
-			if raw := p.string("proration_date"); raw != "" {
+		// Ending a trial immediately always invoices the first paid cycle.
+		billNow := endTrialNow || (replaceItems && (prorationBehavior == "always_invoice" || prorationBehavior == "create_prorations"))
+		if billNow {
+			prorationDate := now
+			if endTrialNow {
+				prorationDate = trialEndAt
+			} else if raw := p.string("proration_date"); raw != "" {
 				if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
 					prorationDate = time.Unix(seconds, 0).UTC()
 				}
+			}
+			anchor := p.string("billing_cycle_anchor")
+			if endTrialNow && anchor == "" {
+				anchor = "now"
 			}
 			result, err := h.billing.UpdateSubscriptionItemsWithProration(r.Context(), billing.SubscriptionProrationRequest{
 				SubscriptionID:     id,
 				NewItems:           items,
 				ProrationBehavior:  prorationBehavior,
 				ProrationDate:      prorationDate,
-				BillingCycleAnchor: p.string("billing_cycle_anchor"),
+				BillingCycleAnchor: anchor,
 				PaymentBehavior:    p.string("payment_behavior"),
 				DefaultTaxRates:    defaultTaxRates,
 				Metadata:           metadata,
 				CancelAtPeriodEnd:  p.boolPtr("cancel_at_period_end"),
+				EndTrial:           endTrialNow,
 			})
 			if err != nil {
 				writeResult(w, nil, err)
@@ -2220,12 +2243,16 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 			writeResult(w, h.stripeSubscription(r, result.Subscription), nil)
 			return
 		}
-		subscription, err := h.billing.PatchSubscription(r.Context(), id, billing.SubscriptionPatch{
+		patch := billing.SubscriptionPatch{
 			Items:             items,
 			ReplaceItems:      replaceItems,
 			Metadata:          metadata,
 			CancelAtPeriodEnd: p.boolPtr("cancel_at_period_end"),
-		})
+		}
+		if hasTrialEnd && strings.EqualFold(current.Status, "trialing") && trialEndAt.After(now) {
+			patch.CurrentPeriodEnd = &trialEndAt
+		}
+		subscription, err := h.billing.PatchSubscription(r.Context(), id, patch)
 		if err == nil {
 			h.emitSubscriptionWebhook(r, "customer.subscription.updated", subscription, webhooks.SourceAPI)
 			if len(discounts) > 0 {
@@ -2491,8 +2518,15 @@ func (h *Handler) invoicePreview(ctx context.Context, path string, p params) (ma
 		}
 	}
 	// No item override + subscription → next-period upcoming invoice (Stripe-compatible).
-	// Override detection shares invoicePreviewHasItemOverrides with the items loader path.
-	if subscription.ID != "" && !invoicePreviewHasItemOverrides(p) {
+	// Ending a trial immediately also uses that path (full first paid cycle, including
+	// item overrides) so preview amounts match confirm.
+	endingTrialNow := false
+	if subscription.ID != "" && strings.EqualFold(subscription.Status, "trialing") {
+		if trialEnd, ok := invoicePreviewTrialEnd(p, now); ok && !trialEnd.After(now) {
+			endingTrialNow = true
+		}
+	}
+	if subscription.ID != "" && (!invoicePreviewHasItemOverrides(p) || endingTrialNow) {
 		return h.invoicePreviewNextPeriod(ctx, path, p, subscription, customerID, now)
 	}
 	items := invoicePreviewLineItems(p)
@@ -2756,6 +2790,9 @@ func invoicePreviewHasItemOverrides(p params) bool {
 // invoice when no subscription_details items are overridden.
 func (h *Handler) invoicePreviewNextPeriod(ctx context.Context, path string, p params, subscription billing.Subscription, customerID string, now time.Time) (map[string]any, error) {
 	items := append([]billing.LineItem{}, subscription.Items...)
+	if overrides := invoicePreviewLineItems(p); len(overrides) > 0 {
+		items = overrides
+	}
 	behavior := invoicePreviewProrationBehavior(p)
 	createdAt := invoicePreviewProrationDate(p, now)
 	billingCycleAnchor := invoicePreviewBillingCycleAnchor(p, createdAt)
@@ -2764,7 +2801,11 @@ func (h *Handler) invoicePreviewNextPeriod(ctx context.Context, path string, p p
 	// Next period starts at current_period_end. For trialing, first charge is at trial_end.
 	periodStart := subscription.CurrentPeriodEnd
 	if strings.EqualFold(subscription.Status, "trialing") {
-		if trialEnd := subscriptionTrialEndTime(subscription); !trialEnd.IsZero() {
+		trialEnd := subscriptionTrialEndTime(subscription)
+		if override, ok := invoicePreviewTrialEnd(p, now); ok {
+			trialEnd = override
+		}
+		if !trialEnd.IsZero() {
 			periodStart = trialEnd
 		}
 	}
@@ -3130,6 +3171,25 @@ func invoicePreviewBillingCycleAnchor(p params, fallback time.Time) time.Time {
 	return time.Unix(seconds, 0).UTC()
 }
 
+func invoicePreviewTrialEnd(p params, now time.Time) (time.Time, bool) {
+	return unixTimestampOrNow(p.first("subscription_details[trial_end]", "subscriptionDetails[trialEnd]"), now)
+}
+
+func unixTimestampOrNow(raw string, now time.Time) (time.Time, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, false
+	}
+	if raw == "now" {
+		return now, true
+	}
+	seconds, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.Unix(seconds, 0).UTC(), true
+}
+
 func invoicePreviewLineItems(p params) []billing.LineItem {
 	var out []billing.LineItem
 	for i := 0; i < 100; i++ {
@@ -3465,13 +3525,17 @@ func (h *Handler) handleRefunds(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		amount := int64(0)
+		if p.has("amount") {
+			amount = p.int64("amount")
+		}
 		refund, err := h.billing.CreateRefund(r.Context(), billing.Refund{
 			ID:              p.string("id"),
 			ChargeID:        p.string("charge"),
 			PaymentIntentID: p.string("payment_intent"),
 			InvoiceID:       p.string("invoice"),
 			CustomerID:      p.string("customer"),
-			Amount:          p.int64("amount"),
+			Amount:          amount,
 			Currency:        p.string("currency"),
 			Reason:          p.string("reason"),
 			Status:          p.string("status"),
@@ -3558,14 +3622,17 @@ func (h *Handler) handleCreditNotes(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		note, err := h.billing.CreateCreditNote(r.Context(), billing.CreditNote{
-			ID:         p.string("id"),
-			InvoiceID:  p.string("invoice"),
-			CustomerID: p.string("customer"),
-			Amount:     p.int64("amount"),
-			Currency:   p.string("currency"),
-			Reason:     p.string("reason"),
-			Status:     p.string("status"),
-			Metadata:   p.metadata(),
+			ID:              p.string("id"),
+			InvoiceID:       p.string("invoice"),
+			CustomerID:      p.string("customer"),
+			Amount:          p.int64("amount"),
+			Currency:        p.string("currency"),
+			Reason:          p.string("reason"),
+			Status:          p.string("status"),
+			Memo:            p.string("memo"),
+			OutOfBandAmount: p.int64("out_of_band_amount"),
+			RefundAmount:    p.int64("refund_amount"),
+			Metadata:        p.metadata(),
 		})
 		if err == nil {
 			h.emitGenericWebhook(r, "credit_note.created", note.ID, stripeCreditNote(note), webhooks.SourceAPI)
@@ -7695,18 +7762,22 @@ func stripeChargeFromRefund(refund billing.Refund) map[string]any {
 
 func stripeCreditNote(note billing.CreditNote) map[string]any {
 	return map[string]any{
-		"id":       note.ID,
-		"object":   billing.ObjectCreditNote,
-		"invoice":  note.InvoiceID,
-		"customer": emptyToNil(note.CustomerID),
-		"amount":   note.Amount,
-		"currency": note.Currency,
-		"reason":   emptyToNil(note.Reason),
-		"status":   note.Status,
-		"metadata": nonNilMap(note.Metadata),
-		"created":  unix(note.CreatedAt),
-		"livemode": false,
-		"lines":    stripeList("/v1/credit_notes/"+note.ID+"/lines", []map[string]any{}),
+		"id":                 note.ID,
+		"object":             billing.ObjectCreditNote,
+		"invoice":            note.InvoiceID,
+		"customer":           emptyToNil(note.CustomerID),
+		"amount":             note.Amount,
+		"currency":           note.Currency,
+		"reason":             emptyToNil(note.Reason),
+		"status":             note.Status,
+		"memo":               emptyToNil(note.Memo),
+		"out_of_band_amount": note.OutOfBandAmount,
+		"refund_amount":      note.RefundAmount,
+		"credit_amount":      note.CreditAmount(),
+		"metadata":           nonNilMap(note.Metadata),
+		"created":            unix(note.CreatedAt),
+		"livemode":           false,
+		"lines":              stripeList("/v1/credit_notes/"+note.ID+"/lines", []map[string]any{}),
 	}
 }
 
@@ -8240,7 +8311,6 @@ func subscriptionUpdateMetadata(p params) map[string]string {
 		{param: "proration_date", key: "proration_date"},
 		{param: "payment_behavior", key: "payment_behavior"},
 		{param: "billing_cycle_anchor", key: "billing_cycle_anchor"},
-		{param: "trial_end", key: "trial_end"},
 	} {
 		if value := p.string(item.param); value != "" {
 			if metadata == nil {
