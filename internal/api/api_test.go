@@ -5322,6 +5322,312 @@ func TestInvoiceItemPricingCreate(t *testing.T) {
 	})
 }
 
+func TestPendingInvoiceItemsAndInvoiceReadShape(t *testing.T) {
+	type invoiceLine struct {
+		ID           string  `json:"id"`
+		Amount       int64   `json:"amount"`
+		Quantity     int64   `json:"quantity"`
+		Invoice      *string `json:"invoice"`
+		Subscription *string `json:"subscription"`
+		Pricing      *struct {
+			Type         string `json:"type"`
+			PriceDetails struct {
+				Price   string `json:"price"`
+				Product string `json:"product"`
+			} `json:"price_details"`
+			UnitAmountDecimal string `json:"unit_amount_decimal"`
+		} `json:"pricing"`
+	}
+	type invoiceResponse struct {
+		ID                           string  `json:"id"`
+		Status                       string  `json:"status"`
+		Customer                     string  `json:"customer"`
+		Subscription                 *string `json:"subscription"`
+		Created                      int64   `json:"created"`
+		DueDate                      *int64  `json:"due_date"`
+		Subtotal                     int64   `json:"subtotal"`
+		Total                        int64   `json:"total"`
+		AmountDue                    int64   `json:"amount_due"`
+		PostPaymentCreditNotesAmount int64   `json:"post_payment_credit_notes_amount"`
+		Lines                        struct {
+			Data []invoiceLine `json:"data"`
+		} `json:"lines"`
+	}
+	type invoiceItemResponse struct {
+		ID           string  `json:"id"`
+		Amount       int64   `json:"amount"`
+		Invoice      *string `json:"invoice"`
+		Subscription *string `json:"subscription"`
+		Quantity     int64   `json:"quantity"`
+		Pricing      *struct {
+			Type         string `json:"type"`
+			PriceDetails struct {
+				Price   string `json:"price"`
+				Product string `json:"product"`
+			} `json:"price_details"`
+		} `json:"pricing"`
+	}
+
+	t.Run("include attaches pending items and sums totals", func(t *testing.T) {
+		handler := newTestHandler(t)
+		customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+			"email": {"pending-include@example.test"},
+		})
+		product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Pending Include"}})
+		price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+			"product":             {product.ID},
+			"currency":            {"usd"},
+			"unit_amount":         {"100"},
+			"recurring[interval]": {"month"},
+		})
+		subscription := postForm[struct {
+			ID string `json:"id"`
+		}](t, handler, "/v1/subscriptions", url.Values{
+			"customer":        {customer.ID},
+			"items[0][price]": {price.ID},
+		})
+		first := postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer":    {customer.ID},
+			"amount":      {"100"},
+			"currency":    {"usd"},
+			"description": {"pending a"},
+		})
+		if first.ID == "" || first.Invoice != nil {
+			t.Fatalf("pending item = %#v, want invoice null", first)
+		}
+		second := postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer":     {customer.ID},
+			"subscription": {subscription.ID},
+			"amount":       {"250"},
+			"currency":     {"usd"},
+			"description":  {"pending b"},
+		})
+		if second.Invoice != nil || second.Subscription == nil || *second.Subscription != subscription.ID {
+			t.Fatalf("pending subscription item = %#v, want subscription echoed and invoice null", second)
+		}
+
+		invoice := postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":                       {customer.ID},
+			"currency":                       {"usd"},
+			"pending_invoice_items_behavior": {"include"},
+		})
+		if invoice.Subtotal != 350 || invoice.Total != 350 || invoice.AmountDue != 350 {
+			t.Fatalf("include invoice totals = %#v, want 350", invoice)
+		}
+		if len(invoice.Lines.Data) != 2 {
+			t.Fatalf("include lines = %#v, want 2 attached items", invoice.Lines.Data)
+		}
+		gotIDs := map[string]bool{}
+		for _, line := range invoice.Lines.Data {
+			gotIDs[line.ID] = true
+			if line.Invoice == nil || *line.Invoice != invoice.ID {
+				t.Fatalf("attached line = %#v, want invoice %s", line, invoice.ID)
+			}
+		}
+		if !gotIDs[first.ID] || !gotIDs[second.ID] {
+			t.Fatalf("include lines ids = %#v, want %s and %s", invoice.Lines.Data, first.ID, second.ID)
+		}
+
+		listed := getJSON[struct {
+			Data []invoiceItemResponse `json:"data"`
+		}](t, handler, "/v1/invoiceitems?invoice="+invoice.ID)
+		if len(listed.Data) != 2 {
+			t.Fatalf("listed attached items = %#v, want 2", listed.Data)
+		}
+		subLines := getJSON[struct {
+			Data []invoiceLine `json:"data"`
+		}](t, handler, "/v1/invoices/"+invoice.ID+"/lines")
+		if len(subLines.Data) != 2 {
+			t.Fatalf("subresource lines = %#v, want same 2 items as invoice.lines", subLines.Data)
+		}
+	})
+
+	t.Run("exclude leaves pending items unattached", func(t *testing.T) {
+		handler := newTestHandler(t)
+		customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+			"email": {"pending-exclude@example.test"},
+		})
+		postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer": {customer.ID},
+			"amount":   {"100"},
+			"currency": {"usd"},
+		})
+		postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer": {customer.ID},
+			"amount":   {"200"},
+			"currency": {"usd"},
+		})
+		invoice := postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":                       {customer.ID},
+			"currency":                       {"usd"},
+			"pending_invoice_items_behavior": {"exclude"},
+		})
+		if invoice.Subtotal != 0 || invoice.Total != 0 || invoice.AmountDue != 0 || len(invoice.Lines.Data) != 0 {
+			t.Fatalf("exclude invoice = %#v, want zero totals and empty lines", invoice)
+		}
+		listed := getJSON[struct {
+			Data []invoiceItemResponse `json:"data"`
+		}](t, handler, "/v1/invoiceitems?customer="+customer.ID)
+		if len(listed.Data) != 2 {
+			t.Fatalf("listed items = %#v, want both still pending", listed.Data)
+		}
+		for _, item := range listed.Data {
+			if item.Invoice != nil {
+				t.Fatalf("exclude left item attached = %#v", item)
+			}
+		}
+	})
+
+	t.Run("subscription is stored and echoed", func(t *testing.T) {
+		handler := newTestHandler(t)
+		customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+			"email": {"invoice-sub@example.test"},
+		})
+		product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Invoice Sub"}})
+		price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+			"product":             {product.ID},
+			"currency":            {"usd"},
+			"unit_amount":         {"500"},
+			"recurring[interval]": {"month"},
+		})
+		subscription := postForm[struct {
+			ID string `json:"id"`
+		}](t, handler, "/v1/subscriptions", url.Values{
+			"customer":        {customer.ID},
+			"items[0][price]": {price.ID},
+		})
+		created := postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":                       {customer.ID},
+			"currency":                       {"usd"},
+			"subscription":                   {subscription.ID},
+			"pending_invoice_items_behavior": {"exclude"},
+		})
+		if created.Subscription == nil || *created.Subscription != subscription.ID {
+			t.Fatalf("created invoice subscription = %#v, want %s", created.Subscription, subscription.ID)
+		}
+		got := getJSON[invoiceResponse](t, handler, "/v1/invoices/"+created.ID)
+		if got.Subscription == nil || *got.Subscription != subscription.ID {
+			t.Fatalf("retrieved invoice subscription = %#v, want %s", got.Subscription, subscription.ID)
+		}
+	})
+
+	t.Run("days_until_due sets due_date", func(t *testing.T) {
+		handler := newTestHandler(t)
+		customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+			"email": {"invoice-due@example.test"},
+		})
+		created := postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":                       {customer.ID},
+			"currency":                       {"usd"},
+			"collection_method":              {"send_invoice"},
+			"days_until_due":                 {"7"},
+			"pending_invoice_items_behavior": {"exclude"},
+		})
+		wantDue := created.Created + 7*24*60*60
+		if created.DueDate == nil || *created.DueDate != wantDue {
+			t.Fatalf("created due_date = %#v created = %d, want %d", created.DueDate, created.Created, wantDue)
+		}
+		got := getJSON[invoiceResponse](t, handler, "/v1/invoices/"+created.ID)
+		if got.DueDate == nil || *got.DueDate != wantDue {
+			t.Fatalf("retrieved due_date = %#v, want %d", got.DueDate, wantDue)
+		}
+	})
+
+	t.Run("lines.data includes pricing and quantity", func(t *testing.T) {
+		handler := newTestHandler(t)
+		customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+			"email": {"invoice-lines@example.test"},
+		})
+		product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Lines"}})
+		price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+			"product":     {product.ID},
+			"currency":    {"usd"},
+			"unit_amount": {"250"},
+		})
+		invoice := postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":                       {customer.ID},
+			"currency":                       {"usd"},
+			"pending_invoice_items_behavior": {"exclude"},
+		})
+		item := postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer":       {customer.ID},
+			"invoice":        {invoice.ID},
+			"pricing[price]": {price.ID},
+			"quantity":       {"3"},
+		})
+		got := getJSON[invoiceResponse](t, handler, "/v1/invoices/"+invoice.ID)
+		if len(got.Lines.Data) != 1 {
+			t.Fatalf("lines = %#v, want 1", got.Lines.Data)
+		}
+		line := got.Lines.Data[0]
+		if line.ID != item.ID || line.Amount != 750 || line.Quantity != 3 {
+			t.Fatalf("line = %#v, want item %s amount 750 quantity 3", line, item.ID)
+		}
+		if line.Pricing == nil || line.Pricing.Type != "price_details" || line.Pricing.PriceDetails.Price != price.ID || line.Pricing.PriceDetails.Product != product.ID {
+			t.Fatalf("line pricing = %#v, want price_details for %s/%s", line.Pricing, price.ID, product.ID)
+		}
+		sub := getJSON[struct {
+			Data []invoiceLine `json:"data"`
+		}](t, handler, "/v1/invoices/"+invoice.ID+"/lines")
+		if len(sub.Data) != 1 || sub.Data[0].Quantity != 3 || sub.Data[0].Pricing == nil || sub.Data[0].Pricing.PriceDetails.Price != price.ID {
+			t.Fatalf("subresource lines = %#v, want same pricing/quantity as invoice.lines", sub.Data)
+		}
+	})
+
+	t.Run("post_payment_credit_notes_amount after credit note", func(t *testing.T) {
+		handler := newTestHandler(t)
+		customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+			"email": {"invoice-credit@example.test"},
+		})
+		invoice := postForm[invoiceResponse](t, handler, "/v1/invoices", url.Values{
+			"customer":                       {customer.ID},
+			"currency":                       {"usd"},
+			"pending_invoice_items_behavior": {"exclude"},
+		})
+		postForm[invoiceItemResponse](t, handler, "/v1/invoiceitems", url.Values{
+			"customer": {customer.ID},
+			"invoice":  {invoice.ID},
+			"amount":   {"10000"},
+			"currency": {"usd"},
+		})
+		_ = postForm[invoiceResponse](t, handler, "/v1/invoices/"+invoice.ID+"/finalize", nil)
+		paid := postForm[invoiceResponse](t, handler, "/v1/invoices/"+invoice.ID+"/pay", nil)
+		if paid.Status != "paid" {
+			t.Fatalf("paid = %#v, want paid", paid)
+		}
+		if paid.PostPaymentCreditNotesAmount != 0 {
+			t.Fatalf("paid post_payment_credit_notes_amount = %d, want 0 before credit notes", paid.PostPaymentCreditNotesAmount)
+		}
+		note := postForm[struct {
+			ID           string `json:"id"`
+			CreditAmount int64  `json:"credit_amount"`
+		}](t, handler, "/v1/credit_notes", url.Values{
+			"invoice": {invoice.ID},
+			"amount":  {"2500"},
+		})
+		if note.CreditAmount != 2500 {
+			t.Fatalf("credit note = %#v, want credit_amount 2500", note)
+		}
+		got := getJSON[invoiceResponse](t, handler, "/v1/invoices/"+invoice.ID)
+		if got.PostPaymentCreditNotesAmount != 2500 {
+			t.Fatalf("post_payment_credit_notes_amount = %d, want 2500", got.PostPaymentCreditNotesAmount)
+		}
+		oob := postForm[struct {
+			CreditAmount int64 `json:"credit_amount"`
+		}](t, handler, "/v1/credit_notes", url.Values{
+			"invoice":            {invoice.ID},
+			"out_of_band_amount": {"1000"},
+		})
+		if oob.CreditAmount != 0 {
+			t.Fatalf("oob credit note = %#v, want credit_amount 0", oob)
+		}
+		afterOOB := getJSON[invoiceResponse](t, handler, "/v1/invoices/"+invoice.ID)
+		if afterOOB.PostPaymentCreditNotesAmount != 2500 {
+			t.Fatalf("post_payment after oob = %d, want 2500 (credit_amount only)", afterOOB.PostPaymentCreditNotesAmount)
+		}
+	})
+}
+
 func TestInvoiceEmailSendEvidence(t *testing.T) {
 	handler := newTestHandler(t)
 

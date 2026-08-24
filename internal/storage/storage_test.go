@@ -22,8 +22,8 @@ func TestSQLiteMigrationsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersions returned error: %v", err)
 	}
-	if len(versions) != 21 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 || versions[4] != 5 || versions[5] != 6 || versions[6] != 7 || versions[7] != 8 || versions[8] != 9 || versions[9] != 10 || versions[10] != 11 || versions[11] != 12 || versions[12] != 13 || versions[13] != 14 || versions[14] != 15 || versions[15] != 16 || versions[16] != 17 || versions[17] != 18 || versions[18] != 19 || versions[19] != 20 || versions[20] != 21 {
-		t.Fatalf("versions = %#v, want [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21]", versions)
+	if len(versions) != 22 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 || versions[4] != 5 || versions[5] != 6 || versions[6] != 7 || versions[7] != 8 || versions[8] != 9 || versions[9] != 10 || versions[10] != 11 || versions[11] != 12 || versions[12] != 13 || versions[13] != 14 || versions[14] != 15 || versions[15] != 16 || versions[16] != 17 || versions[17] != 18 || versions[18] != 19 || versions[19] != 20 || versions[20] != 21 || versions[21] != 22 {
+		t.Fatalf("versions = %#v, want [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]", versions)
 	}
 }
 
@@ -41,6 +41,50 @@ func TestMemoryStoreWorksInTests(t *testing.T) {
 	}
 	if err := store.Ping(ctx); err == nil {
 		t.Fatal("Ping after Close succeeded, want error")
+	}
+}
+
+func TestPendingInvoiceItemAllowsNullInvoiceID(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer store.Close()
+
+	service := billing.NewService(store)
+	customer, err := service.CreateCustomer(ctx, billing.Customer{ID: "cus_pending", Email: "pending@example.test"})
+	if err != nil {
+		t.Fatalf("CreateCustomer: %v", err)
+	}
+	item, invoice, err := service.CreateInvoiceItem(ctx, billing.InvoiceItem{
+		CustomerID:  customer.ID,
+		Amount:      500,
+		Currency:    "usd",
+		Description: "pending usage",
+	})
+	if err != nil {
+		t.Fatalf("CreateInvoiceItem pending: %v", err)
+	}
+	if invoice.ID != "" {
+		t.Fatalf("pending create returned invoice %#v, want none", invoice)
+	}
+	if item.InvoiceID != "" {
+		t.Fatalf("pending item invoice_id = %q, want empty", item.InvoiceID)
+	}
+	pending, err := service.ListInvoiceItems(ctx, billing.InvoiceItemFilter{CustomerID: customer.ID, Pending: true})
+	if err != nil {
+		t.Fatalf("ListInvoiceItems pending: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID != item.ID {
+		t.Fatalf("pending list = %#v, want the created item", pending)
+	}
+
+	_, err = store.db.ExecContext(ctx, `INSERT INTO invoice_items (`+invoiceItemColumns+`)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		"ii_missing_invoice", customer.ID, "in_missing", int64(100), "usd", "", "{}", time.Now().UTC().Format(time.RFC3339Nano), "", "", int64(0), "")
+	if err == nil {
+		t.Fatal("insert with unknown invoice_id succeeded, want foreign key error")
 	}
 }
 

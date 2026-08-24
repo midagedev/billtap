@@ -3236,11 +3236,12 @@ func (h *Handler) handleInvoices(w http.ResponseWriter, r *http.Request) {
 		}
 		metadata := invoiceMetadataFromParams(p)
 		invoice, err := h.billing.CreateInvoice(r.Context(), billing.Invoice{
-			ID:         p.string("id"),
-			CustomerID: p.string("customer"),
-			Currency:   p.stringDefault("currency", "usd"),
-			Status:     "draft",
-			Metadata:   metadata,
+			ID:             p.string("id"),
+			CustomerID:     p.string("customer"),
+			Currency:       p.stringDefault("currency", "usd"),
+			Status:         "draft",
+			SubscriptionID: p.string("subscription"),
+			Metadata:       metadata,
 		})
 		if err == nil {
 			h.emitGenericWebhook(r, "invoice.created", invoice.ID, h.stripeInvoice(r.Context(), invoice), webhooks.SourceAPI)
@@ -3307,13 +3308,14 @@ func (h *Handler) handleInvoiceItems(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		item := billing.InvoiceItem{
-			ID:          p.string("id"),
-			CustomerID:  p.string("customer"),
-			InvoiceID:   p.string("invoice"),
-			Amount:      p.int64("amount"),
-			Currency:    p.string("currency"),
-			Description: p.string("description"),
-			Metadata:    p.metadata(),
+			ID:             p.string("id"),
+			CustomerID:     p.string("customer"),
+			InvoiceID:      p.string("invoice"),
+			SubscriptionID: p.string("subscription"),
+			Amount:         p.int64("amount"),
+			Currency:       p.string("currency"),
+			Description:    p.string("description"),
+			Metadata:       p.metadata(),
 		}
 		if p.has("pricing[price]") {
 			price, err := h.billing.GetPrice(r.Context(), p.string("pricing[price]"))
@@ -3338,11 +3340,7 @@ func (h *Handler) handleInvoiceItems(w http.ResponseWriter, r *http.Request) {
 			CustomerID: r.URL.Query().Get("customer"),
 			InvoiceID:  r.URL.Query().Get("invoice"),
 		})
-		data := make([]map[string]any, 0, len(items))
-		for _, item := range items {
-			data = append(data, stripeInvoiceItem(item))
-		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeList(r.URL.Path, stripeInvoiceItemMaps(items)), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -3396,7 +3394,7 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 		}
 		result, err := h.billing.FinalizeInvoice(r.Context(), id)
 		if err == nil {
-			h.emitGenericWebhook(r, "invoice.finalized", result.Invoice.ID, h.stripeInvoiceWithPaymentIntent(result.Invoice, result.PaymentIntent), webhooks.SourceAPI)
+			h.emitGenericWebhook(r, "invoice.finalized", result.Invoice.ID, h.stripeInvoiceWithPaymentIntent(r.Context(), result.Invoice, result.PaymentIntent), webhooks.SourceAPI)
 			if result.PaymentIntent.ID != "" {
 				h.emitPaymentIntentWebhook(r, "payment_intent.created", result.PaymentIntent)
 			}
@@ -3408,7 +3406,7 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		writeResult(w, h.stripeInvoiceWithPaymentIntent(result.Invoice, result.PaymentIntent), err)
+		writeResult(w, h.stripeInvoiceWithPaymentIntent(r.Context(), result.Invoice, result.PaymentIntent), err)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "send" {
@@ -3459,7 +3457,7 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 		if err == nil {
 			h.emitInvoicePaymentWebhooks(r, result, webhooks.SourceAPI)
 		}
-		writeResult(w, h.stripeInvoiceWithPaymentIntent(result.Invoice, result.PaymentIntent), err)
+		writeResult(w, h.stripeInvoiceWithPaymentIntent(r.Context(), result.Invoice, result.PaymentIntent), err)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "lines" {
@@ -3468,11 +3466,7 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		items, err := h.billing.ListInvoiceItems(r.Context(), billing.InvoiceItemFilter{InvoiceID: id})
-		data := make([]map[string]any, 0, len(items))
-		for _, item := range items {
-			data = append(data, stripeInvoiceItem(item))
-		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeList(r.URL.Path, stripeInvoiceItemMaps(items)), err)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "payments" {
@@ -5994,6 +5988,7 @@ func invoiceMetadataFromParams(p params) map[string]string {
 		{param: "collection_method", key: "collection_method"},
 		{param: "auto_advance", key: "auto_advance"},
 		{param: "pending_invoice_items_behavior", key: "pending_invoice_items_behavior"},
+		{param: "days_until_due", key: "days_until_due"},
 		{param: "payment_settings[payment_method_types][]", key: "payment_method_types"},
 		{param: "payment_settings[payment_method_types][0]", key: "payment_method_types"},
 	} {
@@ -7254,15 +7249,49 @@ func (h *Handler) stripeInvoice(ctx context.Context, invoice billing.Invoice) ma
 			intent = &pi
 		}
 	}
-	return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, intent, h.stripeTaxRateObjects(invoice.DefaultTaxRates))
+	return h.enrichStripeInvoice(ctx, invoice, stripeInvoiceWithPaymentIntentAndTaxRates(invoice, intent, h.stripeTaxRateObjects(invoice.DefaultTaxRates)))
 }
 
-func (h *Handler) stripeInvoiceWithPaymentIntent(invoice billing.Invoice, intent billing.PaymentIntent) map[string]any {
+func (h *Handler) stripeInvoiceWithPaymentIntent(ctx context.Context, invoice billing.Invoice, intent billing.PaymentIntent) map[string]any {
 	taxRates := h.stripeTaxRateObjects(invoice.DefaultTaxRates)
+	var payload map[string]any
 	if intent.ID == "" {
-		return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, nil, taxRates)
+		payload = stripeInvoiceWithPaymentIntentAndTaxRates(invoice, nil, taxRates)
+	} else {
+		payload = stripeInvoiceWithPaymentIntentAndTaxRates(invoice, &intent, taxRates)
 	}
-	return stripeInvoiceWithPaymentIntentAndTaxRates(invoice, &intent, taxRates)
+	return h.enrichStripeInvoice(ctx, invoice, payload)
+}
+
+func (h *Handler) enrichStripeInvoice(ctx context.Context, invoice billing.Invoice, payload map[string]any) map[string]any {
+	if invoice.ID == "" {
+		return payload
+	}
+	items, err := h.billing.ListInvoiceItems(ctx, billing.InvoiceItemFilter{InvoiceID: invoice.ID})
+	if err != nil {
+		items = nil
+	}
+	payload["lines"] = stripeInvoiceLines(invoice.ID, items)
+	payload["post_payment_credit_notes_amount"] = h.invoicePostPaymentCreditNotesAmount(ctx, invoice)
+	return payload
+}
+
+func (h *Handler) invoicePostPaymentCreditNotesAmount(ctx context.Context, invoice billing.Invoice) int64 {
+	if invoice.Status != "paid" && invoice.AmountPaid <= 0 {
+		return 0
+	}
+	notes, err := h.billing.ListCreditNotes(ctx, billing.CreditNoteFilter{InvoiceID: invoice.ID})
+	if err != nil {
+		return 0
+	}
+	var sum int64
+	for _, note := range notes {
+		if note.Status == "void" {
+			continue
+		}
+		sum += note.CreditAmount()
+	}
+	return sum
 }
 
 func (h *Handler) stripeInvoicePayments(ctx context.Context, invoice billing.Invoice, intent *billing.PaymentIntent) []map[string]any {
@@ -7423,7 +7452,7 @@ func stripeInvoiceWithPaymentIntentAndTaxRates(invoice billing.Invoice, intent *
 		"default_payment_method":           emptyToNil(invoice.Metadata[billing.MetadataDefaultPaymentMethod]),
 		"default_source":                   nil,
 		"default_tax_rates":                defaultTaxRates,
-		"due_date":                         nil,
+		"due_date":                         invoiceDueDate(invoice),
 		"ending_balance":                   0,
 		"footer":                           nil,
 		"from_invoice":                     nil,
@@ -7461,17 +7490,18 @@ func stripeInvoiceItem(item billing.InvoiceItem) map[string]any {
 		quantity = 1
 	}
 	out := map[string]any{
-		"id":          item.ID,
-		"object":      billing.ObjectInvoiceItem,
-		"customer":    item.CustomerID,
-		"invoice":     item.InvoiceID,
-		"amount":      item.Amount,
-		"currency":    item.Currency,
-		"description": emptyToNil(item.Description),
-		"metadata":    nonNilMap(item.Metadata),
-		"quantity":    quantity,
-		"created":     unix(item.CreatedAt),
-		"livemode":    false,
+		"id":           item.ID,
+		"object":       billing.ObjectInvoiceItem,
+		"customer":     item.CustomerID,
+		"invoice":      emptyToNil(item.InvoiceID),
+		"subscription": emptyToNil(item.SubscriptionID),
+		"amount":       item.Amount,
+		"currency":     item.Currency,
+		"description":  emptyToNil(item.Description),
+		"metadata":     nonNilMap(item.Metadata),
+		"quantity":     quantity,
+		"created":      unix(item.CreatedAt),
+		"livemode":     false,
 	}
 	if item.PriceID != "" {
 		unitAmount := item.Amount
@@ -7488,6 +7518,30 @@ func stripeInvoiceItem(item billing.InvoiceItem) map[string]any {
 		}
 	}
 	return out
+}
+
+func stripeInvoiceItemMaps(items []billing.InvoiceItem) []map[string]any {
+	data := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		data = append(data, stripeInvoiceItem(item))
+	}
+	return data
+}
+
+func stripeInvoiceLines(invoiceID string, items []billing.InvoiceItem) map[string]any {
+	return stripeList("/v1/invoices/"+invoiceID+"/lines", stripeInvoiceItemMaps(items))
+}
+
+func invoiceDueDate(invoice billing.Invoice) any {
+	raw := strings.TrimSpace(invoice.Metadata["days_until_due"])
+	if raw == "" {
+		return nil
+	}
+	days, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || days <= 0 {
+		return nil
+	}
+	return unix(invoice.CreatedAt.Add(time.Duration(days) * 24 * time.Hour))
 }
 
 func stripeInvoicePaymentRecords(invoice billing.Invoice, intent *billing.PaymentIntent) []map[string]any {

@@ -187,18 +187,19 @@ type Invoice struct {
 }
 
 type InvoiceItem struct {
-	ID          string            `json:"id"`
-	Object      string            `json:"object"`
-	CustomerID  string            `json:"customer"`
-	InvoiceID   string            `json:"invoice"`
-	Amount      int64             `json:"amount"`
-	Currency    string            `json:"currency"`
-	Description string            `json:"description,omitempty"`
-	PriceID     string            `json:"price,omitempty"`
-	ProductID   string            `json:"product,omitempty"`
-	Quantity    int64             `json:"quantity,omitempty"`
-	Metadata    map[string]string `json:"metadata,omitempty"`
-	CreatedAt   time.Time         `json:"created_at"`
+	ID             string            `json:"id"`
+	Object         string            `json:"object"`
+	CustomerID     string            `json:"customer"`
+	InvoiceID      string            `json:"invoice"`
+	SubscriptionID string            `json:"subscription,omitempty"`
+	Amount         int64             `json:"amount"`
+	Currency       string            `json:"currency"`
+	Description    string            `json:"description,omitempty"`
+	PriceID        string            `json:"price,omitempty"`
+	ProductID      string            `json:"product,omitempty"`
+	Quantity       int64             `json:"quantity,omitempty"`
+	Metadata       map[string]string `json:"metadata,omitempty"`
+	CreatedAt      time.Time         `json:"created_at"`
 }
 
 type InvoicePaymentOptions struct {
@@ -389,6 +390,8 @@ type InvoiceFilter struct {
 type InvoiceItemFilter struct {
 	CustomerID string
 	InvoiceID  string
+	// Pending selects items with no invoice (NULL or empty invoice_id).
+	Pending bool
 }
 
 type PaymentIntentFilter struct {
