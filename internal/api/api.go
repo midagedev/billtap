@@ -3246,7 +3246,7 @@ func (h *Handler) handleInvoiceItems(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
-		item, _, err := h.billing.CreateInvoiceItem(r.Context(), billing.InvoiceItem{
+		item := billing.InvoiceItem{
 			ID:          p.string("id"),
 			CustomerID:  p.string("customer"),
 			InvoiceID:   p.string("invoice"),
@@ -3254,8 +3254,25 @@ func (h *Handler) handleInvoiceItems(w http.ResponseWriter, r *http.Request) {
 			Currency:    p.string("currency"),
 			Description: p.string("description"),
 			Metadata:    p.metadata(),
-		})
-		writeResult(w, stripeInvoiceItem(item), err)
+		}
+		if p.has("pricing[price]") {
+			price, err := h.billing.GetPrice(r.Context(), p.string("pricing[price]"))
+			if err := validatePriceExists(price, err); err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			quantity := int64(1)
+			if p.has("quantity") {
+				quantity = p.int64("quantity")
+			}
+			item.PriceID = price.ID
+			item.ProductID = price.ProductID
+			item.Quantity = quantity
+			item.Amount = price.UnitAmount * quantity
+			item.Currency = price.Currency
+		}
+		created, _, err := h.billing.CreateInvoiceItem(r.Context(), item)
+		writeResult(w, stripeInvoiceItem(created), err)
 	case http.MethodGet:
 		items, err := h.billing.ListInvoiceItems(r.Context(), billing.InvoiceItemFilter{
 			CustomerID: r.URL.Query().Get("customer"),
@@ -7372,7 +7389,11 @@ func stripeInvoiceWithPaymentIntentAndTaxRates(invoice billing.Invoice, intent *
 }
 
 func stripeInvoiceItem(item billing.InvoiceItem) map[string]any {
-	return map[string]any{
+	quantity := item.Quantity
+	if quantity == 0 {
+		quantity = 1
+	}
+	out := map[string]any{
 		"id":          item.ID,
 		"object":      billing.ObjectInvoiceItem,
 		"customer":    item.CustomerID,
@@ -7381,9 +7402,25 @@ func stripeInvoiceItem(item billing.InvoiceItem) map[string]any {
 		"currency":    item.Currency,
 		"description": emptyToNil(item.Description),
 		"metadata":    nonNilMap(item.Metadata),
+		"quantity":    quantity,
 		"created":     unix(item.CreatedAt),
 		"livemode":    false,
 	}
+	if item.PriceID != "" {
+		unitAmount := item.Amount
+		if quantity != 0 {
+			unitAmount = item.Amount / quantity
+		}
+		out["pricing"] = map[string]any{
+			"type": "price_details",
+			"price_details": map[string]any{
+				"price":   item.PriceID,
+				"product": item.ProductID,
+			},
+			"unit_amount_decimal": strconv.FormatInt(unitAmount, 10),
+		}
+	}
+	return out
 }
 
 func stripeInvoicePaymentRecords(invoice billing.Invoice, intent *billing.PaymentIntent) []map[string]any {

@@ -193,6 +193,14 @@ func invalidParam(param string, reason string) *validationError {
 	}
 }
 
+func exclusiveParams(param string, names ...string) *validationError {
+	return &validationError{
+		Param:   param,
+		Code:    stripeCodeParamInvalid,
+		Message: "You may only specify one of these parameters: " + strings.Join(names, ", "),
+	}
+}
+
 type paramSpec struct {
 	Allowed       []string
 	AllowedRegex  []*regexp.Regexp
@@ -1173,15 +1181,35 @@ func validateInvoiceItemCreate(p params) error {
 			"amount",
 			"currency",
 			"description",
+			"pricing[price]",
+			"quantity",
 		},
-		Required:      []string{"customer", "invoice", "amount", "currency"},
-		Int64Params:   []string{"amount"},
+		Required:      []string{"customer", "invoice"},
+		Int64Params:   []string{"amount", "quantity"},
+		NonNegative:   []string{"quantity"},
 		AllowMetadata: true,
 	}); err != nil {
 		return err
 	}
-	if p.int64("amount") == 0 {
-		return invalidParam("amount", "Must be non-zero.")
+	hasAmount := p.has("amount")
+	hasPricing := p.has("pricing[price]")
+	hasQuantity := p.has("quantity")
+	if hasAmount && hasQuantity {
+		return exclusiveParams("quantity", "amount", "quantity")
+	}
+	if hasAmount && hasPricing {
+		return exclusiveParams("pricing", "amount", "pricing")
+	}
+	if !hasAmount && !hasPricing {
+		return missingParam("amount")
+	}
+	if hasAmount {
+		if !p.has("currency") {
+			return missingParam("currency")
+		}
+		if p.int64("amount") == 0 {
+			return invalidParam("amount", "Must be non-zero.")
+		}
 	}
 	return nil
 }
