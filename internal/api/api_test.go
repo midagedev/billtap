@@ -585,7 +585,6 @@ func TestCheckoutCompletionDoesNotWaitForSlowWebhookDelivery(t *testing.T) {
 		status int
 		body   string
 	}, 1)
-	start := time.Now()
 	go func() {
 		req := httptest.NewRequest(http.MethodPost, "/api/checkout/sessions/"+session.ID+"/complete", strings.NewReader(`{"outcome":"payment_succeeded"}`))
 		req.Header.Set("Content-Type", "application/json")
@@ -602,10 +601,10 @@ func TestCheckoutCompletionDoesNotWaitForSlowWebhookDelivery(t *testing.T) {
 		if result.status != http.StatusOK {
 			t.Fatalf("checkout completion status = %d body = %s", result.status, result.body)
 		}
-		if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
-			t.Fatalf("checkout completion took %s, want response before slow webhook delivery completes", elapsed)
-		}
-	case <-time.After(150 * time.Millisecond):
+	// The receiver blocks until releaseWebhook closes at test end, so any
+	// response at all proves the handler did not wait on delivery. A generous
+	// timeout avoids wall-clock flakes on loaded runners.
+	case <-time.After(5 * time.Second):
 		t.Fatal("checkout completion waited for slow webhook delivery")
 	}
 
@@ -641,7 +640,6 @@ func TestDirectPaymentIntentWebhooksDoNotWaitForSlowDelivery(t *testing.T) {
 		status int
 		body   string
 	}, 1)
-	start := time.Now()
 	go func() {
 		form := url.Values{
 			"customer":       {customer.ID},
@@ -665,10 +663,9 @@ func TestDirectPaymentIntentWebhooksDoNotWaitForSlowDelivery(t *testing.T) {
 		if result.status != http.StatusOK {
 			t.Fatalf("payment intent create status = %d body = %s", result.status, result.body)
 		}
-		if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
-			t.Fatalf("payment intent create took %s, want response before slow webhook delivery completes", elapsed)
-		}
-	case <-time.After(150 * time.Millisecond):
+	// See TestCheckoutCompletionDoesNotWaitForSlowWebhookDelivery: a response
+	// at all proves the handler did not wait; the timeout only bounds a hang.
+	case <-time.After(5 * time.Second):
 		t.Fatal("payment intent create waited for slow webhook delivery")
 	}
 
