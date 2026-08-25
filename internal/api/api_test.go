@@ -7694,3 +7694,466 @@ func TestFilterPricesLookupKeys(t *testing.T) {
 		})
 	}
 }
+
+func TestInvoiceVoidAndMarkUncollectible(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"invoice-lifecycle@example.test"},
+	})
+	openInvoice := func(t *testing.T) string {
+		t.Helper()
+		invoice := postForm[struct {
+			ID string `json:"id"`
+		}](t, handler, "/v1/invoices", url.Values{
+			"customer": {customer.ID},
+			"currency": {"usd"},
+		})
+		postForm[struct {
+			ID string `json:"id"`
+		}](t, handler, "/v1/invoiceitems", url.Values{
+			"customer": {customer.ID},
+			"invoice":  {invoice.ID},
+			"amount":   {"1200"},
+			"currency": {"usd"},
+		})
+		finalized := postForm[struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		}](t, handler, "/v1/invoices/"+invoice.ID+"/finalize", nil)
+		if finalized.Status != "open" {
+			t.Fatalf("finalized = %#v, want open", finalized)
+		}
+		return invoice.ID
+	}
+
+	voidID := openInvoice(t)
+	voided := postForm[struct {
+		ID                string `json:"id"`
+		Status            string `json:"status"`
+		StatusTransitions struct {
+			VoidedAt *int64 `json:"voided_at"`
+		} `json:"status_transitions"`
+	}](t, handler, "/v1/invoices/"+voidID+"/void", nil)
+	if voided.Status != "void" || voided.StatusTransitions.VoidedAt == nil {
+		t.Fatalf("voided = %#v, want status void with voided_at", voided)
+	}
+	events := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=invoice.voided")
+	if !eventObjectIDFound(events.Data, voidID) {
+		t.Fatalf("invoice.voided events = %#v, want object %s", events.Data, voidID)
+	}
+	voidDraft := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/invoices", url.Values{
+		"customer": {customer.ID},
+		"currency": {"usd"},
+	})
+	status, body := postFormStatus(t, handler, "/v1/invoices/"+voidDraft.ID+"/void", nil)
+	errBody := decodeErrorBody(t, body)
+	if status != http.StatusBadRequest || errBody.Error.Type != "invalid_request_error" || !strings.Contains(errBody.Error.Message, "status must be open") {
+		t.Fatalf("void draft status=%d body=%s, want 400 status must be open", status, body)
+	}
+
+	uncollectibleID := openInvoice(t)
+	uncollectible := postForm[struct {
+		ID                string `json:"id"`
+		Status            string `json:"status"`
+		StatusTransitions struct {
+			MarkedUncollectibleAt *int64 `json:"marked_uncollectible_at"`
+		} `json:"status_transitions"`
+	}](t, handler, "/v1/invoices/"+uncollectibleID+"/mark_uncollectible", nil)
+	if uncollectible.Status != "uncollectible" || uncollectible.StatusTransitions.MarkedUncollectibleAt == nil {
+		t.Fatalf("uncollectible = %#v, want uncollectible with timestamp", uncollectible)
+	}
+	markedEvents := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=invoice.marked_uncollectible")
+	if !eventObjectIDFound(markedEvents.Data, uncollectibleID) {
+		t.Fatalf("invoice.marked_uncollectible events = %#v, want object %s", markedEvents.Data, uncollectibleID)
+	}
+}
+
+func TestCheckoutSessionExpire(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"expire@example.test"},
+	})
+	session := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                               {customer.ID},
+		"mode":                                   {"payment"},
+		"line_items[0][price_data][currency]":    {"usd"},
+		"line_items[0][price_data][unit_amount]": {"500"},
+		"line_items[0][price_data][product_data][name]": {"Expire"},
+		"line_items[0][quantity]":                       {"1"},
+	})
+	if session.Status != "open" {
+		t.Fatalf("session = %#v, want open", session)
+	}
+	expired := postForm[struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}](t, handler, "/v1/checkout/sessions/"+session.ID+"/expire", nil)
+	if expired.Status != "expired" {
+		t.Fatalf("expired = %#v, want expired", expired)
+	}
+	got := getJSON[struct {
+		Status string `json:"status"`
+	}](t, handler, "/v1/checkout/sessions/"+session.ID)
+	if got.Status != "expired" {
+		t.Fatalf("GET after expire = %#v, want expired", got)
+	}
+	events := getJSON[struct {
+		Data []webhooks.Event `json:"data"`
+	}](t, handler, "/v1/events?type=checkout.session.expired")
+	if !eventObjectIDFound(events.Data, session.ID) {
+		t.Fatalf("checkout.session.expired events = %#v, want object %s", events.Data, session.ID)
+	}
+	status, body := postFormStatus(t, handler, "/v1/checkout/sessions/"+session.ID+"/expire", nil)
+	errBody := decodeErrorBody(t, body)
+	if status != http.StatusBadRequest || errBody.Error.Type != "invalid_request_error" || !strings.Contains(errBody.Error.Message, "status must be open") {
+		t.Fatalf("expire again status=%d body=%s, want 400 status must be open", status, body)
+	}
+
+	completed := postForm[billing.CheckoutSession](t, handler, "/v1/checkout/sessions", url.Values{
+		"customer":                               {customer.ID},
+		"mode":                                   {"payment"},
+		"line_items[0][price_data][currency]":    {"usd"},
+		"line_items[0][price_data][unit_amount]": {"700"},
+		"line_items[0][price_data][product_data][name]": {"Complete then expire"},
+		"line_items[0][quantity]":                       {"1"},
+	})
+	postJSON[map[string]json.RawMessage](t, handler, "/api/checkout/sessions/"+completed.ID+"/complete", map[string]string{
+		"outcome": "payment_succeeded",
+	})
+	status, body = postFormStatus(t, handler, "/v1/checkout/sessions/"+completed.ID+"/expire", nil)
+	errBody = decodeErrorBody(t, body)
+	if status != http.StatusBadRequest || !strings.Contains(errBody.Error.Message, "status must be open") {
+		t.Fatalf("expire completed status=%d body=%s, want 400", status, body)
+	}
+}
+
+func TestSubscriptionCreateProrationBehaviorAndPaymentSettings(t *testing.T) {
+	handler := newTestHandler(t)
+	customer, price := seedCustomerAndPrice(t, handler, "create-params@example.test", "Create Params")
+	created := postForm[struct {
+		ID       string            `json:"id"`
+		Status   string            `json:"status"`
+		Metadata map[string]string `json:"metadata"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":           {customer.ID},
+		"items[0][price]":    {price.ID},
+		"proration_behavior": {"create_prorations"},
+		"payment_settings[payment_method_types][0]":                                {"card"},
+		"payment_settings[payment_method_options][customer_balance][funding_type]": {"bank_transfer"},
+	})
+	if created.Status != "active" {
+		t.Fatalf("created = %#v, want active", created)
+	}
+	if created.Metadata["proration_behavior"] != "create_prorations" {
+		t.Fatalf("proration_behavior metadata = %#v, want create_prorations", created.Metadata)
+	}
+	if created.Metadata["payment_settings[payment_method_types][0]"] != "card" {
+		t.Fatalf("payment_settings metadata = %#v, want types card", created.Metadata)
+	}
+	if created.Metadata["payment_settings[payment_method_options][customer_balance][funding_type]"] != "bank_transfer" {
+		t.Fatalf("customer_balance metadata = %#v, want funding_type", created.Metadata)
+	}
+	status, body := postFormStatus(t, handler, "/v1/subscriptions", url.Values{
+		"customer":           {customer.ID},
+		"items[0][price]":    {price.ID},
+		"proration_behavior": {"bogus"},
+	})
+	errBody := decodeErrorBody(t, body)
+	if status != http.StatusBadRequest || errBody.Error.Code != "parameter_invalid" || errBody.Error.Param != "proration_behavior" {
+		t.Fatalf("unknown proration_behavior status=%d body=%s", status, body)
+	}
+}
+
+func TestSubscriptionCancelAtEcho(t *testing.T) {
+	handler := newTestHandler(t)
+	customer, price := seedCustomerAndPrice(t, handler, "cancel-at@example.test", "Cancel At")
+	subscription := postForm[struct {
+		ID     string `json:"id"`
+		Status string `json:"status"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {customer.ID},
+		"items[0][price]": {price.ID},
+	})
+	cancelAt := time.Now().UTC().Add(48 * time.Hour).Unix()
+	updated := postForm[struct {
+		ID                string `json:"id"`
+		Status            string `json:"status"`
+		CancelAt          *int64 `json:"cancel_at"`
+		CancelAtPeriodEnd bool   `json:"cancel_at_period_end"`
+	}](t, handler, "/v1/subscriptions/"+subscription.ID, url.Values{
+		"cancel_at": {strconv.FormatInt(cancelAt, 10)},
+	})
+	if updated.Status != "active" || updated.CancelAtPeriodEnd || updated.CancelAt == nil || *updated.CancelAt != cancelAt {
+		t.Fatalf("updated = %#v, want active cancel_at=%d", updated, cancelAt)
+	}
+}
+
+func TestCustomerDefaultPaymentMethodUpdateAndAttach(t *testing.T) {
+	handler := newTestHandler(t)
+	updated := postForm[struct {
+		ID              string `json:"id"`
+		InvoiceSettings struct {
+			DefaultPaymentMethod *string `json:"default_payment_method"`
+		} `json:"invoice_settings"`
+	}](t, handler, "/v1/customers", url.Values{
+		"email": {"default-pm@example.test"},
+	})
+	patched := postForm[struct {
+		InvoiceSettings struct {
+			DefaultPaymentMethod *string `json:"default_payment_method"`
+		} `json:"invoice_settings"`
+	}](t, handler, "/v1/customers/"+updated.ID, url.Values{
+		"invoice_settings[default_payment_method]": {"pm_card_visa"},
+	})
+	if patched.InvoiceSettings.DefaultPaymentMethod == nil || *patched.InvoiceSettings.DefaultPaymentMethod != "pm_card_visa" {
+		t.Fatalf("patched invoice_settings = %#v, want pm_card_visa", patched.InvoiceSettings)
+	}
+
+	empty := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"attach-default@example.test"},
+		"metadata[" + billing.MetadataPaymentMethodsFixture + "]": {billing.PaymentMethodsFixtureEmpty},
+	})
+	attached := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/payment_methods/pm_card_mastercard/attach", url.Values{
+		"customer": {empty.ID},
+	})
+	if attached.ID != "pm_card_mastercard" {
+		t.Fatalf("attached = %#v", attached)
+	}
+	afterAttach := getJSON[struct {
+		InvoiceSettings struct {
+			DefaultPaymentMethod *string `json:"default_payment_method"`
+		} `json:"invoice_settings"`
+	}](t, handler, "/v1/customers/"+empty.ID)
+	if afterAttach.InvoiceSettings.DefaultPaymentMethod == nil || *afterAttach.InvoiceSettings.DefaultPaymentMethod != "pm_card_mastercard" {
+		t.Fatalf("after attach default = %#v, want pm_card_mastercard", afterAttach.InvoiceSettings)
+	}
+	_ = postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/payment_methods/pm_card_visa/attach", url.Values{
+		"customer": {empty.ID},
+	})
+	afterSecond := getJSON[struct {
+		InvoiceSettings struct {
+			DefaultPaymentMethod *string `json:"default_payment_method"`
+		} `json:"invoice_settings"`
+	}](t, handler, "/v1/customers/"+empty.ID)
+	if afterSecond.InvoiceSettings.DefaultPaymentMethod == nil || *afterSecond.InvoiceSettings.DefaultPaymentMethod != "pm_card_mastercard" {
+		t.Fatalf("second attach overwrote default = %#v", afterSecond.InvoiceSettings)
+	}
+}
+
+func TestSubscriptionCurrentPeriodEndFilter(t *testing.T) {
+	handler := newTestHandler(t)
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {"Period Filter"}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"1000"},
+		"recurring[interval]": {"month"},
+	})
+	earlyClock := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/test_helpers/test_clocks", url.Values{
+		"frozen_time": {"1000000000"},
+	})
+	lateClock := postForm[struct {
+		ID string `json:"id"`
+	}](t, handler, "/v1/test_helpers/test_clocks", url.Values{
+		"frozen_time": {"2000000000"},
+	})
+	earlyCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":      {"early-period@example.test"},
+		"test_clock": {earlyClock.ID},
+	})
+	lateCustomer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email":      {"late-period@example.test"},
+		"test_clock": {lateClock.ID},
+	})
+	earlySub := postForm[struct {
+		ID               string `json:"id"`
+		CurrentPeriodEnd int64  `json:"current_period_end"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {earlyCustomer.ID},
+		"items[0][price]": {price.ID},
+		"test_clock":      {earlyClock.ID},
+	})
+	lateSub := postForm[struct {
+		ID               string `json:"id"`
+		CurrentPeriodEnd int64  `json:"current_period_end"`
+	}](t, handler, "/v1/subscriptions", url.Values{
+		"customer":        {lateCustomer.ID},
+		"items[0][price]": {price.ID},
+		"test_clock":      {lateClock.ID},
+	})
+	if lateSub.CurrentPeriodEnd <= earlySub.CurrentPeriodEnd {
+		t.Fatalf("period ends early=%d late=%d, want late > early", earlySub.CurrentPeriodEnd, lateSub.CurrentPeriodEnd)
+	}
+	mid := (earlySub.CurrentPeriodEnd + lateSub.CurrentPeriodEnd) / 2
+	gte := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/subscriptions?current_period_end[gte]="+strconv.FormatInt(mid, 10))
+	if !listIDsEqual(gte.Data, []string{lateSub.ID}) {
+		t.Fatalf("gte list = %#v, want %s", gte.Data, lateSub.ID)
+	}
+	lt := getJSON[struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/subscriptions?current_period_end[lt]="+strconv.FormatInt(mid, 10))
+	if !listIDsEqual(lt.Data, []string{earlySub.ID}) {
+		t.Fatalf("lt list = %#v, want %s", lt.Data, earlySub.ID)
+	}
+}
+
+func TestStripeListStartingAfterHasMore(t *testing.T) {
+	handler := newTestHandler(t)
+	for _, id := range []string{"cus_page_a", "cus_page_b", "cus_page_c"} {
+		postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+			"id":    {id},
+			"email": {id + "@example.test"},
+		})
+	}
+	first := getJSON[struct {
+		HasMore bool `json:"has_more"`
+		Data    []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/customers?limit=1")
+	if !first.HasMore || len(first.Data) != 1 || first.Data[0].ID != "cus_page_c" {
+		t.Fatalf("page 1 = %#v, want cus_page_c has_more=true", first)
+	}
+	second := getJSON[struct {
+		HasMore bool `json:"has_more"`
+		Data    []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/customers?limit=1&starting_after="+first.Data[0].ID)
+	if !second.HasMore || len(second.Data) != 1 || second.Data[0].ID != "cus_page_b" {
+		t.Fatalf("page 2 = %#v, want cus_page_b has_more=true", second)
+	}
+	third := getJSON[struct {
+		HasMore bool `json:"has_more"`
+		Data    []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/customers?limit=1&starting_after="+second.Data[0].ID)
+	if third.HasMore || len(third.Data) != 1 || third.Data[0].ID != "cus_page_a" {
+		t.Fatalf("page 3 = %#v, want cus_page_a has_more=false", third)
+	}
+
+	for _, id := range []string{"prod_page_a", "prod_page_b", "prod_page_c"} {
+		postForm[billing.Product](t, handler, "/v1/products", url.Values{
+			"id":   {id},
+			"name": {id},
+		})
+	}
+	products := getJSON[struct {
+		HasMore bool `json:"has_more"`
+		Data    []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/products?limit=1")
+	if !products.HasMore || len(products.Data) != 1 || products.Data[0].ID != "prod_page_c" {
+		t.Fatalf("product page 1 = %#v, want prod_page_c has_more=true", products)
+	}
+	productPage2 := getJSON[struct {
+		HasMore bool `json:"has_more"`
+		Data    []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}](t, handler, "/v1/products?limit=1&starting_after="+products.Data[0].ID)
+	if !productPage2.HasMore || len(productPage2.Data) != 1 || productPage2.Data[0].ID != "prod_page_b" {
+		t.Fatalf("product page 2 = %#v, want prod_page_b", productPage2)
+	}
+}
+
+func TestInvoicePaymentSettingsCustomerBalanceEcho(t *testing.T) {
+	handler := newTestHandler(t)
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {"customer-balance@example.test"},
+	})
+	invoice := postForm[struct {
+		ID              string `json:"id"`
+		PaymentSettings struct {
+			PaymentMethodOptions struct {
+				CustomerBalance map[string]any `json:"customer_balance"`
+			} `json:"payment_method_options"`
+		} `json:"payment_settings"`
+	}](t, handler, "/v1/invoices", url.Values{
+		"customer": {customer.ID},
+		"currency": {"usd"},
+		"payment_settings[payment_method_options][customer_balance][funding_type]":                              {"bank_transfer"},
+		"payment_settings[payment_method_options][customer_balance][bank_transfer][type]":                       {"us_bank_transfer"},
+		"payment_settings[payment_method_options][customer_balance][bank_transfer][requested_address_types][0]": {"aba"},
+	})
+	balance := invoice.PaymentSettings.PaymentMethodOptions.CustomerBalance
+	if fmt.Sprint(balance["funding_type"]) != "bank_transfer" {
+		t.Fatalf("create customer_balance = %#v, want funding_type=bank_transfer", balance)
+	}
+	bankTransfer, _ := balance["bank_transfer"].(map[string]any)
+	if bankTransfer == nil || fmt.Sprint(bankTransfer["type"]) != "us_bank_transfer" {
+		t.Fatalf("create bank_transfer = %#v, want type=us_bank_transfer", balance)
+	}
+	got := getJSON[struct {
+		PaymentSettings struct {
+			PaymentMethodOptions struct {
+				CustomerBalance map[string]any `json:"customer_balance"`
+			} `json:"payment_method_options"`
+		} `json:"payment_settings"`
+	}](t, handler, "/v1/invoices/"+invoice.ID)
+	if fmt.Sprint(got.PaymentSettings.PaymentMethodOptions.CustomerBalance["funding_type"]) != "bank_transfer" {
+		t.Fatalf("GET customer_balance = %#v, want stored tree", got.PaymentSettings.PaymentMethodOptions.CustomerBalance)
+	}
+}
+
+func seedCustomerAndPrice(t *testing.T, handler http.Handler, email string, productName string) (billing.Customer, billing.Price) {
+	t.Helper()
+	customer := postForm[billing.Customer](t, handler, "/v1/customers", url.Values{
+		"email": {email},
+	})
+	product := postForm[billing.Product](t, handler, "/v1/products", url.Values{"name": {productName}})
+	price := postForm[billing.Price](t, handler, "/v1/prices", url.Values{
+		"product":             {product.ID},
+		"currency":            {"usd"},
+		"unit_amount":         {"1500"},
+		"recurring[interval]": {"month"},
+	})
+	return customer, price
+}
+
+func eventObjectIDFound(events []webhooks.Event, objectID string) bool {
+	for _, event := range events {
+		var payload map[string]any
+		if err := json.Unmarshal(event.Data.Object, &payload); err != nil {
+			continue
+		}
+		if id, _ := payload["id"].(string); id == objectID {
+			return true
+		}
+	}
+	return false
+}
+
+func listIDsEqual(got []struct {
+	ID string `json:"id"`
+}, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i].ID != want[i] {
+			return false
+		}
+	}
+	return true
+}

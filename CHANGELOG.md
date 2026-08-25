@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- `POST /v1/invoices/{id}/void` moves an `open` invoice to `void`, records
+  `billtap_voided_at`, and emits `invoice.voided`. Other statuses return
+  `invalid_request_error` with `status must be open`.
+- `POST /v1/invoices/{id}/mark_uncollectible` moves an `open` invoice to
+  `uncollectible`, records `billtap_marked_uncollectible_at`, and emits
+  `invoice.marked_uncollectible`.
+- `POST /v1/checkout/sessions/{id}/expire` moves an `open` session to
+  `expired` and emits `checkout.session.expired`. Non-open sessions return
+  `invalid_request_error` with `status must be open`.
+- `POST /v1/subscriptions` accepts `proration_behavior`
+  (`none` / `create_prorations` / `always_invoice`) and nested
+  `payment_settings[...]` keys, storing the received values in metadata.
+- `POST /v1/subscriptions/{id}` accepts `cancel_at` as a unix timestamp,
+  stores it, and echoes `cancel_at` without changing status immediately.
+- `POST /v1/customers/{id}` accepts
+  `invoice_settings[default_payment_method]` and echoes it on
+  `invoice_settings.default_payment_method`. Attaching a payment method sets
+  that default when the customer has none.
+- `GET /v1/subscriptions` honors `current_period_end[gte]` and
+  `current_period_end[lt]` as unix seconds.
+- List endpoints honor `starting_after` and set `has_more` when a `limit`
+  truncates remaining items.
+- Invoice `payment_settings[payment_method_options][customer_balance][...]`
+  is stored and echoed on
+  `payment_settings.payment_method_options.customer_balance`.
 - `POST /v1/invoiceitems` can omit `invoice`. The item is stored as a pending
   customer item (`invoice` is null) and `subscription` is accepted and echoed.
 - `POST /v1/invoices` `pending_invoice_items_behavior=include` attaches that

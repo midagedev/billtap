@@ -413,7 +413,7 @@ func validateCustomerCreate(p params) error {
 
 func validateCustomerUpdate(p params) error {
 	return p.validate(paramSpec{
-		Allowed:       []string{"email", "name", "test_clock", "coupon", "promotion_code"},
+		Allowed:       []string{"email", "name", "test_clock", "coupon", "promotion_code", "invoice_settings[default_payment_method]"},
 		AllowedRegex:  []*regexp.Regexp{discountParamRE},
 		AllowMetadata: true,
 	})
@@ -947,14 +947,16 @@ func validateSubscriptionCreate(p params) error {
 			"coupon",
 			"promotion_code",
 			"automatic_tax[enabled]",
+			"proration_behavior",
 		},
-		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, discountParamRE, defaultTaxRatesParamRE},
+		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, discountParamRE, defaultTaxRatesParamRE, invoicePaymentSettingsRE},
 		RequiredAny:  [][]string{{"customer", "customer_id"}},
 		Int64Params:  []string{"days_until_due", "cancel_at", "billing_cycle_anchor"},
 		BoolParams:   []string{"automatic_tax[enabled]"},
 		Positive:     []string{"days_until_due"},
 		EnumParams: map[string][]string{
-			"collection_method": {"charge_automatically", "send_invoice"},
+			"collection_method":  {"charge_automatically", "send_invoice"},
+			"proration_behavior": {"none", "create_prorations", "always_invoice"},
 		},
 		AllowMetadata: true,
 	}); err != nil {
@@ -983,6 +985,7 @@ func validateSubscriptionUpdate(p params) error {
 	if err := p.validate(paramSpec{
 		Allowed: []string{
 			"cancel_at_period_end",
+			"cancel_at",
 			"pause_collection",
 			"pause_collection[behavior]",
 			"pause_collection[resumes_at]",
@@ -998,7 +1001,7 @@ func validateSubscriptionUpdate(p params) error {
 		},
 		AllowedRegex: []*regexp.Regexp{subscriptionItemRE, cancellationDetailsRE, discountParamRE, defaultTaxRatesParamRE},
 		BoolParams:   []string{"cancel_at_period_end"},
-		Int64Params:  []string{"pause_collection[resumes_at]", "proration_date"},
+		Int64Params:  []string{"pause_collection[resumes_at]", "proration_date", "cancel_at"},
 		EnumParams: map[string][]string{
 			"pause_collection[behavior]": {"void", "keep_as_draft", "mark_uncollectible"},
 			"proration_behavior":         {"none", "create_prorations", "always_invoice"},
@@ -1228,6 +1231,18 @@ func validateInvoiceFinalize(p params) error {
 
 func validateInvoiceSend(p params) error {
 	// Stripe InvoiceSendInvoiceParams only accepts expand (handled globally).
+	return p.validate(paramSpec{})
+}
+
+func validateInvoiceVoid(p params) error {
+	return p.validate(paramSpec{})
+}
+
+func validateInvoiceMarkUncollectible(p params) error {
+	return p.validate(paramSpec{})
+}
+
+func validateCheckoutSessionExpire(p params) error {
 	return p.validate(paramSpec{})
 }
 

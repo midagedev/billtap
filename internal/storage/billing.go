@@ -473,6 +473,34 @@ func (s *SQLiteStore) UpdateCheckoutSessionDiscounts(ctx context.Context, id str
 	return s.GetCheckoutSession(ctx, id)
 }
 
+func (s *SQLiteStore) UpdateCheckoutSession(ctx context.Context, cs billing.CheckoutSession, timeline []billing.TimelineEntry) (billing.CheckoutSession, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.CheckoutSession{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE checkout_sessions SET status = ?, metadata = ? WHERE id = ?`, cs.Status, encodeMap(cs.Metadata), cs.ID)
+	if err != nil {
+		return billing.CheckoutSession{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return billing.CheckoutSession{}, err
+	}
+	if changed == 0 {
+		return billing.CheckoutSession{}, billing.ErrNotFound
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.CheckoutSession{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.CheckoutSession{}, err
+	}
+	return s.GetCheckoutSession(ctx, cs.ID)
+}
+
 func (s *SQLiteStore) RecordCheckoutCompletion(ctx context.Context, c billing.CheckoutCompletion) (billing.CheckoutSession, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {

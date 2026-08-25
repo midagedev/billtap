@@ -207,7 +207,25 @@ func (h *Handler) methodNotAllowed(w http.ResponseWriter, r *http.Request, allow
 	methodNotAllowed(w, allow)
 }
 
+func implementedWithoutCompatClaim(method string, path string) bool {
+	if method != http.MethodPost {
+		return false
+	}
+	if strings.HasPrefix(path, "/v1/invoices/") && (strings.HasSuffix(path, "/void") || strings.HasSuffix(path, "/mark_uncollectible")) {
+		parts := strings.Split(strings.TrimPrefix(path, "/v1/invoices/"), "/")
+		return len(parts) == 2 && parts[0] != ""
+	}
+	if strings.HasPrefix(path, "/v1/checkout/sessions/") && strings.HasSuffix(path, "/expire") {
+		id := strings.TrimSuffix(strings.TrimPrefix(path, "/v1/checkout/sessions/"), "/expire")
+		return id != "" && !strings.Contains(id, "/")
+	}
+	return false
+}
+
 func (h *Handler) writeKnownUnsupportedRoute(w http.ResponseWriter, r *http.Request) bool {
+	if implementedWithoutCompatClaim(r.Method, r.URL.Path) {
+		return false
+	}
 	route, ok := h.knownRoutes.Lookup(r.Method, r.URL.Path)
 	if !ok {
 		return false
@@ -278,11 +296,8 @@ func (h *Handler) handleCustomers(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			data = append(data, stripeCustomer(customer))
-			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
-				break
-			}
 		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeListFromRequest(r, data), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -345,7 +360,7 @@ func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		metadata := p.metadata()
-		if metadata != nil || p.has("test_clock") || hasDiscountParams(p) {
+		if metadata != nil || p.has("test_clock") || hasDiscountParams(p) || p.has("invoice_settings[default_payment_method]") {
 			current, err := h.billing.GetCustomer(r.Context(), id)
 			if err != nil {
 				writeResult(w, nil, err)
@@ -362,6 +377,12 @@ func (h *Handler) handleCustomer(w http.ResponseWriter, r *http.Request) {
 				metadata = map[string]string{}
 			}
 			metadata["test_clock"] = p.string("test_clock")
+		}
+		if defaultPaymentMethod := p.string("invoice_settings[default_payment_method]"); defaultPaymentMethod != "" {
+			if metadata == nil {
+				metadata = map[string]string{}
+			}
+			metadata[billing.MetadataDefaultPaymentMethod] = defaultPaymentMethod
 		}
 		if discounts, err := h.discountsFromParams(p); err != nil {
 			writeResult(w, nil, err)
@@ -431,11 +452,8 @@ func (h *Handler) handleCustomerSubscriptions(w http.ResponseWriter, r *http.Req
 		data := make([]map[string]any, 0, len(filtered))
 		for _, item := range filtered {
 			data = append(data, h.stripeSubscription(r, item))
-			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
-				break
-			}
 		}
-		writeResult(w, stripeList(r.URL.Path, data), nil)
+		writeResult(w, stripeListFromRequest(r, data), nil)
 	case http.MethodPost:
 		subscription, err := h.createSubscriptionFromParamsWithCustomer(r, customerID)
 		writeResult(w, h.stripeSubscription(r, subscription), err)
@@ -496,7 +514,7 @@ func (h *Handler) handleProducts(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, stripeProduct(product), err)
 	case http.MethodGet:
 		products, err := h.billing.ListProducts(r.Context())
-		writeResult(w, stripeList(r.URL.Path, stripeProducts(products)), err)
+		writeResult(w, stripeListFromRequest(r, stripeProducts(products)), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -579,7 +597,7 @@ func (h *Handler) handlePrices(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, stripePrice(price), err)
 	case http.MethodGet:
 		prices, err := h.billing.ListPrices(r.Context())
-		writeResult(w, stripeList(r.URL.Path, stripePrices(filterPrices(prices, r))), err)
+		writeResult(w, stripeListFromRequest(r, stripePrices(filterPrices(prices, r))), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -676,7 +694,7 @@ func (h *Handler) handleAccounts(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, stripeAccount(account), err)
 	case http.MethodGet:
 		accounts, err := h.billing.ListAccounts(r.Context())
-		writeResult(w, stripeList(r.URL.Path, stripeAccounts(filterAccounts(accounts, r))), err)
+		writeResult(w, stripeListFromRequest(r, stripeAccounts(filterAccounts(accounts, r))), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -787,7 +805,12 @@ func (h *Handler) handleAccountCapabilities(w http.ResponseWriter, r *http.Reque
 		for capability, status := range account.Capabilities {
 			data = append(data, stripeCapability(account.ID, capability, status))
 		}
-		writeJSON(w, http.StatusOK, stripeList(r.URL.Path, data))
+		sort.Slice(data, func(i, j int) bool {
+			idI, _ := data[i]["id"].(string)
+			idJ, _ := data[j]["id"].(string)
+			return idI < idJ
+		})
+		writeJSON(w, http.StatusOK, stripeListFromRequest(r, data))
 		return
 	}
 	if len(parts) != 1 {
@@ -836,7 +859,7 @@ func (h *Handler) handleAccountExternalAccounts(w http.ResponseWriter, r *http.R
 		switch r.Method {
 		case http.MethodGet:
 			resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectBankAccount, AccountID: accountID})
-			writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+			writeResult(w, stripeListFromRequest(r, stripeConnectResources(resources)), err)
 		case http.MethodPost:
 			p, err := parseParams(r)
 			if err != nil {
@@ -940,7 +963,7 @@ func (h *Handler) handleAccountPeople(w http.ResponseWriter, r *http.Request, ac
 		switch r.Method {
 		case http.MethodGet:
 			resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectPerson, AccountID: accountID})
-			writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+			writeResult(w, stripeListFromRequest(r, stripeConnectResources(resources)), err)
 		case http.MethodPost:
 			p, err := parseParams(r)
 			if err != nil {
@@ -1142,7 +1165,7 @@ func (h *Handler) handleTransfers(w http.ResponseWriter, r *http.Request) {
 			Object:      billing.ObjectTransfer,
 			Destination: r.URL.Query().Get("destination"),
 		})
-		writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+		writeResult(w, stripeListFromRequest(r, stripeConnectResources(resources)), err)
 	case http.MethodPost:
 		p, err := parseParams(r)
 		if err != nil {
@@ -1226,7 +1249,7 @@ func (h *Handler) handleTransferReversals(w http.ResponseWriter, r *http.Request
 		switch r.Method {
 		case http.MethodGet:
 			resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectTransferReversal, ParentID: transferID})
-			writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+			writeResult(w, stripeListFromRequest(r, stripeConnectResources(resources)), err)
 		case http.MethodPost:
 			p, err := parseParams(r)
 			if err != nil {
@@ -1307,7 +1330,7 @@ func (h *Handler) handlePayouts(w http.ResponseWriter, r *http.Request) {
 			Object: billing.ObjectPayout,
 			Status: r.URL.Query().Get("status"),
 		})
-		writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+		writeResult(w, stripeListFromRequest(r, stripeConnectResources(resources)), err)
 	case http.MethodPost:
 		p, err := parseParams(r)
 		if err != nil {
@@ -1414,7 +1437,7 @@ func (h *Handler) handleApplicationFees(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectApplicationFee})
-	writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+	writeResult(w, stripeListFromRequest(r, stripeConnectResources(resources)), err)
 }
 
 func (h *Handler) handleApplicationFee(w http.ResponseWriter, r *http.Request) {
@@ -1450,7 +1473,7 @@ func (h *Handler) handleApplicationFeeRefunds(w http.ResponseWriter, r *http.Req
 		switch r.Method {
 		case http.MethodGet:
 			resources, err := h.billing.ListConnectResources(r.Context(), billing.ConnectResourceFilter{Object: billing.ObjectFeeRefund, ParentID: feeID})
-			writeResult(w, stripeList(r.URL.Path, stripeConnectResources(resources)), err)
+			writeResult(w, stripeListFromRequest(r, stripeConnectResources(resources)), err)
 		case http.MethodPost:
 			h.handleApplicationFeeRefundCreate(w, r, feeID)
 		default:
@@ -1645,7 +1668,7 @@ func (h *Handler) handleCheckoutSessions(w http.ResponseWriter, r *http.Request)
 			sessions[i].URL = h.absoluteURL(r, sessions[i].URL)
 			data = append(data, h.stripeCheckoutSession(r, sessions[i]))
 		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeListFromRequest(r, data), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -1656,6 +1679,11 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 	if strings.HasSuffix(rest, "/complete") {
 		id := strings.TrimSuffix(rest, "/complete")
 		h.completeCheckout(w, r, id)
+		return
+	}
+	if strings.HasSuffix(rest, "/expire") {
+		id := strings.TrimSuffix(rest, "/expire")
+		h.expireCheckoutSession(w, r, id)
 		return
 	}
 	if rest == "" || strings.Contains(rest, "/") {
@@ -1926,6 +1954,28 @@ func (h *Handler) completeCheckout(w http.ResponseWriter, r *http.Request, id st
 	writeJSON(w, http.StatusOK, result)
 }
 
+func (h *Handler) expireCheckoutSession(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateCheckoutSessionExpire(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	session, err := h.billing.ExpireCheckoutSession(r.Context(), id)
+	if err == nil {
+		session.URL = h.absoluteURL(r, session.URL)
+		h.emitGenericWebhook(r, "checkout.session.expired", session.ID, h.stripeCheckoutSession(r, session), webhooks.SourceAPI)
+	}
+	writeResult(w, h.stripeCheckoutSession(r, session), err)
+}
+
 func (h *Handler) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -1938,11 +1988,8 @@ func (h *Handler) handleSubscriptions(w http.ResponseWriter, r *http.Request) {
 		data := make([]map[string]any, 0, len(filtered))
 		for _, item := range filtered {
 			data = append(data, h.stripeSubscription(r, item))
-			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
-				break
-			}
 		}
-		writeResult(w, stripeList(r.URL.Path, data), nil)
+		writeResult(w, stripeListFromRequest(r, data), nil)
 	case http.MethodPost:
 		subscription, err := h.createSubscriptionFromParams(r)
 		writeResult(w, h.stripeSubscription(r, subscription), err)
@@ -2069,7 +2116,7 @@ func (h *Handler) createSubscriptionFromParamsWithCustomer(r *http.Request, defa
 		}
 		metadata["test_clock"] = testClockID
 	}
-	for _, key := range []string{"collection_method", "days_until_due", "cancel_at", "billing_cycle_anchor"} {
+	for _, key := range []string{"collection_method", "days_until_due", "cancel_at", "billing_cycle_anchor", "proration_behavior"} {
 		if value := p.string(key); value != "" {
 			if metadata == nil {
 				metadata = map[string]string{}
@@ -2077,6 +2124,7 @@ func (h *Handler) createSubscriptionFromParamsWithCustomer(r *http.Request, defa
 			metadata[key] = value
 		}
 	}
+	metadata = copyPaymentSettingsMetadata(metadata, p)
 	if metadata == nil {
 		return subscription, nil
 	}
@@ -3258,7 +3306,7 @@ func (h *Handler) handleInvoices(w http.ResponseWriter, r *http.Request) {
 		for _, item := range filtered {
 			data = append(data, h.stripeInvoice(r.Context(), item))
 		}
-		writeResult(w, stripeList(r.URL.Path, data), nil)
+		writeResult(w, stripeListFromRequest(r, data), nil)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -3340,7 +3388,7 @@ func (h *Handler) handleInvoiceItems(w http.ResponseWriter, r *http.Request) {
 			CustomerID: r.URL.Query().Get("customer"),
 			InvoiceID:  r.URL.Query().Get("invoice"),
 		})
-		writeResult(w, stripeList(r.URL.Path, stripeInvoiceItemMaps(items)), err)
+		writeResult(w, stripeListFromRequest(r, stripeInvoiceItemMaps(items)), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -3460,13 +3508,55 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, h.stripeInvoiceWithPaymentIntent(r.Context(), result.Invoice, result.PaymentIntent), err)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "void" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceVoid(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.VoidInvoice(r.Context(), id)
+		if err == nil {
+			h.emitGenericWebhook(r, "invoice.voided", invoice.ID, h.stripeInvoice(r.Context(), invoice), webhooks.SourceAPI)
+		}
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "mark_uncollectible" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceMarkUncollectible(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.MarkInvoiceUncollectible(r.Context(), id)
+		if err == nil {
+			h.emitGenericWebhook(r, "invoice.marked_uncollectible", invoice.ID, h.stripeInvoice(r.Context(), invoice), webhooks.SourceAPI)
+		}
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "lines" {
 		if r.Method != http.MethodGet {
 			h.methodNotAllowed(w, r, "GET")
 			return
 		}
 		items, err := h.billing.ListInvoiceItems(r.Context(), billing.InvoiceItemFilter{InvoiceID: id})
-		writeResult(w, stripeList(r.URL.Path, stripeInvoiceItemMaps(items)), err)
+		writeResult(w, stripeListFromRequest(r, stripeInvoiceItemMaps(items)), err)
 		return
 	}
 	if len(parts) == 2 && parts[1] == "payments" {
@@ -3480,7 +3570,7 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		payments := h.stripeInvoicePayments(r.Context(), invoice, nil)
-		writeResult(w, stripeList(r.URL.Path, payments), nil)
+		writeResult(w, stripeListFromRequest(r, payments), nil)
 		return
 	}
 	if len(parts) != 1 {
@@ -3508,7 +3598,7 @@ func (h *Handler) handleRefunds(w http.ResponseWriter, r *http.Request) {
 		for _, refund := range refunds {
 			data = append(data, stripeRefund(refund))
 		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeListFromRequest(r, data), err)
 	case http.MethodPost:
 		p, err := parseParams(r)
 		if err != nil {
@@ -3604,7 +3694,7 @@ func (h *Handler) handleCreditNotes(w http.ResponseWriter, r *http.Request) {
 		for _, note := range notes {
 			data = append(data, stripeCreditNote(note))
 		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeListFromRequest(r, data), err)
 	case http.MethodPost:
 		p, err := parseParams(r)
 		if err != nil {
@@ -3722,11 +3812,8 @@ func (h *Handler) handlePaymentIntents(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			data = append(data, stripePaymentIntent(item))
-			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
-				break
-			}
 		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeListFromRequest(r, data), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -3871,11 +3958,8 @@ func (h *Handler) handleSetupIntents(w http.ResponseWriter, r *http.Request) {
 				continue
 			}
 			data = append(data, stripeSetupIntent(item))
-			if limit := queryInt(r, "limit"); limit > 0 && len(data) >= limit {
-				break
-			}
 		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeListFromRequest(r, data), err)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
 	}
@@ -3945,7 +4029,7 @@ func (h *Handler) handleTestClocks(w http.ResponseWriter, r *http.Request) {
 		for _, clock := range clocks {
 			data = append(data, stripeTestClock(clock))
 		}
-		writeResult(w, stripeList(r.URL.Path, data), err)
+		writeResult(w, stripeListFromRequest(r, data), err)
 	case http.MethodPost:
 		p, err := parseParams(r)
 		if err != nil {
@@ -4212,7 +4296,7 @@ func (h *Handler) writeCustomerPaymentMethods(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if customerID == "" {
-		writeResult(w, stripeList(r.URL.Path, []map[string]any{}), nil)
+		writeResult(w, stripeListFromRequest(r, []map[string]any{}), nil)
 		return
 	}
 	customer, err := h.billing.GetCustomer(r.Context(), customerID)
@@ -4221,10 +4305,10 @@ func (h *Handler) writeCustomerPaymentMethods(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if paymentMethodType := strings.TrimSpace(r.URL.Query().Get("type")); paymentMethodType != "" && paymentMethodType != "card" {
-		writeResult(w, stripeList(r.URL.Path, []map[string]any{}), nil)
+		writeResult(w, stripeListFromRequest(r, []map[string]any{}), nil)
 		return
 	}
-	writeResult(w, stripeList(r.URL.Path, stripePaymentMethods(customer)), nil)
+	writeResult(w, stripeListFromRequest(r, stripePaymentMethods(customer)), nil)
 }
 
 func (h *Handler) attachPaymentMethod(ctx context.Context, customerID string, paymentMethodID string) (billing.Customer, error) {
@@ -4236,6 +4320,9 @@ func (h *Handler) attachPaymentMethod(ctx context.Context, customerID string, pa
 	ids := append(splitPaymentMethodIDs(metadata[billing.MetadataPaymentMethodIDs]), paymentMethodID)
 	metadata[billing.MetadataPaymentMethodIDs] = strings.Join(uniquePaymentMethodIDs(ids), ",")
 	metadata[billing.MetadataPaymentMethodsFixture] = billing.PaymentMethodsFixtureExplicit
+	if strings.TrimSpace(metadata[billing.MetadataDefaultPaymentMethod]) == "" {
+		metadata[billing.MetadataDefaultPaymentMethod] = paymentMethodID
+	}
 	return h.billing.UpdateCustomer(ctx, customer.ID, billing.Customer{Metadata: metadata})
 }
 
@@ -5999,6 +6086,19 @@ func invoiceMetadataFromParams(p params) map[string]string {
 			metadata[item.key] = value
 		}
 	}
+	return copyPaymentSettingsMetadata(metadata, p)
+}
+
+func copyPaymentSettingsMetadata(metadata map[string]string, p params) map[string]string {
+	for key, value := range p.values {
+		if !invoicePaymentSettingsRE.MatchString(key) || strings.TrimSpace(value) == "" {
+			continue
+		}
+		if metadata == nil {
+			metadata = map[string]string{}
+		}
+		metadata[key] = value
+	}
 	return metadata
 }
 
@@ -6405,6 +6505,43 @@ func stripeList(urlPath string, data any) map[string]any {
 		"has_more": false,
 		"data":     data,
 	}
+}
+
+func stripeListFromRequest(r *http.Request, data []map[string]any) map[string]any {
+	page, hasMore := pageStripeList(data, strings.TrimSpace(r.URL.Query().Get("starting_after")), queryInt(r, "limit"))
+	return map[string]any{
+		"object":   "list",
+		"url":      r.URL.Path,
+		"has_more": hasMore,
+		"data":     page,
+	}
+}
+
+func pageStripeList(data []map[string]any, startingAfter string, limit int) ([]map[string]any, bool) {
+	items := data
+	if startingAfter != "" {
+		idx := -1
+		for i, item := range items {
+			id, _ := item["id"].(string)
+			if id == startingAfter {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return []map[string]any{}, false
+		}
+		items = items[idx+1:]
+	}
+	if limit > 0 && len(items) > limit {
+		out := make([]map[string]any, limit)
+		copy(out, items[:limit])
+		return out, true
+	}
+	if items == nil {
+		return []map[string]any{}, false
+	}
+	return items, false
 }
 
 func stripeSearchResult(urlPath string, query string, data any) map[string]any {
@@ -7183,13 +7320,13 @@ func subscriptionPauseCollection(sub billing.Subscription) any {
 }
 
 func subscriptionCancelAt(sub billing.Subscription) any {
-	if !sub.CancelAtPeriodEnd {
-		return nil
-	}
 	if value := metadataUnix(sub.Metadata["cancel_at"]); value != nil {
 		return value
 	}
-	return unix(sub.CurrentPeriodEnd)
+	if sub.CancelAtPeriodEnd {
+		return unix(sub.CurrentPeriodEnd)
+	}
+	return nil
 }
 
 func subscriptionCancellationDetails(sub billing.Subscription) map[string]any {
@@ -7441,7 +7578,7 @@ func stripeInvoiceWithPaymentIntentAndTaxRates(invoice billing.Invoice, intent *
 		"effective_at":                     nil,
 		"period_start":                     created,
 		"period_end":                       created,
-		"status_transitions":               stripeInvoiceStatusTransitions(finalizedAt, paidAt),
+		"status_transitions":               stripeInvoiceStatusTransitions(finalizedAt, paidAt, optionalVoidedAt(invoice), optionalMarkedUncollectibleAt(invoice)),
 		"account_country":                  nil,
 		"account_name":                     nil,
 		"account_tax_ids":                  nil,
@@ -7600,12 +7737,20 @@ func stripeInvoiceParent(subscriptionID string) map[string]any {
 	}
 }
 
-func stripeInvoiceStatusTransitions(finalizedAt any, paidAt any) map[string]any {
+func stripeInvoiceStatusTransitions(finalizedAt any, paidAt any, extra ...any) map[string]any {
+	var voidedAt any
+	var uncollectibleAt any
+	if len(extra) > 0 {
+		voidedAt = extra[0]
+	}
+	if len(extra) > 1 {
+		uncollectibleAt = extra[1]
+	}
 	return map[string]any{
 		"finalized_at":            finalizedAt,
-		"marked_uncollectible_at": nil,
+		"marked_uncollectible_at": uncollectibleAt,
 		"paid_at":                 paidAt,
-		"voided_at":               nil,
+		"voided_at":               voidedAt,
 	}
 }
 
@@ -7654,8 +7799,10 @@ func stripeSubscriptionAutomaticTax(enabled bool) map[string]any {
 
 func stripeInvoicePaymentSettings(metadata ...map[string]string) map[string]any {
 	paymentMethodTypes := any(nil)
+	var meta map[string]string
 	if len(metadata) > 0 {
-		if value := strings.TrimSpace(metadata[0]["payment_method_types"]); value != "" {
+		meta = metadata[0]
+		if value := strings.TrimSpace(meta["payment_method_types"]); value != "" {
 			paymentMethodTypes = []string{value}
 		}
 	}
@@ -7665,13 +7812,67 @@ func stripeInvoicePaymentSettings(metadata ...map[string]string) map[string]any 
 			"acss_debit":       nil,
 			"bancontact":       nil,
 			"card":             nil,
-			"customer_balance": nil,
+			"customer_balance": paymentSettingsCustomerBalance(meta),
 			"konbini":          nil,
 			"sepa_debit":       nil,
 			"us_bank_account":  nil,
 		},
 		"payment_method_types": paymentMethodTypes,
 	}
+}
+
+func paymentSettingsCustomerBalance(meta map[string]string) any {
+	if len(meta) == 0 {
+		return nil
+	}
+	const prefix = "payment_settings[payment_method_options][customer_balance]"
+	root := map[string]any{}
+	found := false
+	for key, value := range meta {
+		if !strings.HasPrefix(key, prefix+"[") {
+			continue
+		}
+		found = true
+		mergeBracketValue(root, parseBracketPath(strings.TrimPrefix(key, prefix)), value)
+	}
+	if !found {
+		return nil
+	}
+	return root
+}
+
+func parseBracketPath(raw string) []string {
+	var parts []string
+	for {
+		start := strings.Index(raw, "[")
+		if start < 0 {
+			break
+		}
+		end := strings.Index(raw[start:], "]")
+		if end < 0 {
+			break
+		}
+		end += start
+		parts = append(parts, raw[start+1:end])
+		raw = raw[end+1:]
+	}
+	return parts
+}
+
+func mergeBracketValue(dst map[string]any, parts []string, value string) {
+	if len(parts) == 0 {
+		return
+	}
+	if len(parts) == 1 {
+		dst[parts[0]] = value
+		return
+	}
+	child, _ := dst[parts[0]].(map[string]any)
+	if child == nil {
+		child = map[string]any{}
+		dst[parts[0]] = child
+	}
+	mergeBracketValue(child, parts[1:], value)
 }
 
 func stripeInvoiceBillingReason(invoice billing.Invoice) string {
@@ -7921,6 +8122,9 @@ func filterSubscriptions(items []billing.Subscription, r *http.Request) []billin
 		if status != "" && status != "all" && item.Status != status {
 			continue
 		}
+		if !subscriptionPeriodEndMatches(item, query) {
+			continue
+		}
 		if !metadataMatches(item.Metadata, metadataFilters) {
 			continue
 		}
@@ -7941,12 +8145,26 @@ func filterSubscriptionsForCustomer(items []billing.Subscription, r *http.Reques
 		if status != "" && status != "all" && item.Status != status {
 			continue
 		}
+		if !subscriptionPeriodEndMatches(item, query) {
+			continue
+		}
 		if !metadataMatches(item.Metadata, metadataFilters) {
 			continue
 		}
 		out = append(out, item)
 	}
 	return out
+}
+
+func subscriptionPeriodEndMatches(item billing.Subscription, query url.Values) bool {
+	end := unix(item.CurrentPeriodEnd)
+	if gte := queryInt64Values(query, "current_period_end[gte]"); gte != 0 && end < gte {
+		return false
+	}
+	if lt := queryInt64Values(query, "current_period_end[lt]"); lt != 0 && end >= lt {
+		return false
+	}
+	return true
 }
 
 func queryMetadataFilters(query url.Values) map[string]string {
@@ -8365,6 +8583,7 @@ func subscriptionUpdateMetadata(p params) map[string]string {
 		{param: "proration_date", key: "proration_date"},
 		{param: "payment_behavior", key: "payment_behavior"},
 		{param: "billing_cycle_anchor", key: "billing_cycle_anchor"},
+		{param: "cancel_at", key: "cancel_at"},
 	} {
 		if value := p.string(item.param); value != "" {
 			if metadata == nil {
@@ -8466,6 +8685,14 @@ func optionalFinalizedAt(invoice billing.Invoice) any {
 		return value
 	}
 	return unix(invoice.CreatedAt)
+}
+
+func optionalVoidedAt(invoice billing.Invoice) any {
+	return metadataUnix(invoice.Metadata["billtap_voided_at"])
+}
+
+func optionalMarkedUncollectibleAt(invoice billing.Invoice) any {
+	return metadataUnix(invoice.Metadata["billtap_marked_uncollectible_at"])
 }
 
 func paymentIntentError(intent billing.PaymentIntent) any {
