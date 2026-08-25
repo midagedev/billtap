@@ -82,6 +82,7 @@ type Repository interface {
 	GetCheckoutSession(context.Context, string) (CheckoutSession, error)
 	ListCheckoutSessions(context.Context) ([]CheckoutSession, error)
 	UpdateCheckoutSessionDiscounts(context.Context, string, []Discount) (CheckoutSession, error)
+	UpdateCheckoutSession(context.Context, CheckoutSession, []TimelineEntry) (CheckoutSession, error)
 	RecordCheckoutCompletion(context.Context, CheckoutCompletion) (CheckoutSession, error)
 
 	GetSubscription(context.Context, string) (Subscription, error)
@@ -412,6 +413,41 @@ func (s *Service) ListCheckoutSessions(ctx context.Context) ([]CheckoutSession, 
 func (s *Service) UpdateCheckoutSessionDiscounts(ctx context.Context, id string, discounts []Discount) (CheckoutSession, error) {
 	discounts = normalizeDiscounts(discounts, s.now())
 	return s.repo.UpdateCheckoutSessionDiscounts(ctx, id, discounts)
+}
+
+// ExpireCheckoutSession moves an open Checkout Session to expired.
+func (s *Service) ExpireCheckoutSession(ctx context.Context, sessionID string) (CheckoutSession, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return CheckoutSession{}, fmt.Errorf("%w: session is required", ErrInvalidInput)
+	}
+	session, err := s.repo.GetCheckoutSession(ctx, sessionID)
+	if err != nil {
+		return CheckoutSession{}, err
+	}
+	if strings.ToLower(strings.TrimSpace(session.Status)) != "open" {
+		return CheckoutSession{}, fmt.Errorf("%w: status must be open", ErrInvalidInput)
+	}
+	at := s.now()
+	session.Status = "expired"
+	session.Metadata = copyMap(session.Metadata)
+	if session.Metadata == nil {
+		session.Metadata = map[string]string{}
+	}
+	session.Metadata["billtap_expired_at"] = at.Format(time.RFC3339Nano)
+	return s.repo.UpdateCheckoutSession(ctx, session, []TimelineEntry{billingTimelineEntry(
+		"checkout_session_expired_"+session.ID+"_"+at.Format(time.RFC3339Nano),
+		"checkout.session.expired",
+		"Checkout session expired",
+		ObjectCheckoutSession,
+		session.ID,
+		session.CustomerID,
+		session.ID,
+		session.SubscriptionID,
+		session.InvoiceID,
+		session.PaymentIntentID,
+		map[string]string{"source": "checkout.session.expire", "status": session.Status},
+		at,
+	)})
 }
 
 func (s *Service) CompleteCheckout(ctx context.Context, sessionID string, outcome string) (CheckoutSession, error) {
@@ -748,15 +784,23 @@ func (s *Service) PatchSubscription(ctx context.Context, subscriptionID string, 
 	if patch.CancelAtPeriodEnd != nil {
 		sub.Metadata = copyMap(sub.Metadata)
 		sub.CancelAtPeriodEnd = *patch.CancelAtPeriodEnd
+		_, patchCancelAt := patch.Metadata["cancel_at"]
+		if patch.Metadata == nil {
+			patchCancelAt = false
+		}
 		if *patch.CancelAtPeriodEnd {
 			if sub.CanceledAt == nil {
 				canceledAt := s.now()
 				sub.CanceledAt = &canceledAt
 			}
-			sub.Metadata["cancel_at"] = sub.CurrentPeriodEnd.Format(time.RFC3339Nano)
+			if !patchCancelAt {
+				sub.Metadata["cancel_at"] = sub.CurrentPeriodEnd.Format(time.RFC3339Nano)
+			}
 		} else {
 			sub.CanceledAt = nil
-			delete(sub.Metadata, "cancel_at")
+			if !patchCancelAt {
+				delete(sub.Metadata, "cancel_at")
+			}
 			delete(sub.Metadata, "cancellation_details_comment")
 			delete(sub.Metadata, "cancellation_details_feedback")
 			if sub.Status == "canceled" {
@@ -1070,6 +1114,48 @@ func (s *Service) SendInvoice(ctx context.Context, invoiceID string) (Invoice, e
 		invoice.ID,
 		invoice.PaymentIntentID,
 		map[string]string{"source": "invoice.send", "status": invoice.Status},
+		at,
+	)})
+}
+
+func (s *Service) VoidInvoice(ctx context.Context, invoiceID string) (Invoice, error) {
+	return s.transitionOpenInvoice(ctx, invoiceID, "void", "invoice.voided", "Invoice voided", "invoice.void", "billtap_voided_at")
+}
+
+func (s *Service) MarkInvoiceUncollectible(ctx context.Context, invoiceID string) (Invoice, error) {
+	return s.transitionOpenInvoice(ctx, invoiceID, "uncollectible", "invoice.marked_uncollectible", "Invoice marked uncollectible", "invoice.mark_uncollectible", "billtap_marked_uncollectible_at")
+}
+
+func (s *Service) transitionOpenInvoice(ctx context.Context, invoiceID string, status string, action string, message string, source string, timestampKey string) (Invoice, error) {
+	if strings.TrimSpace(invoiceID) == "" {
+		return Invoice{}, fmt.Errorf("%w: invoice is required", ErrInvalidInput)
+	}
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if strings.ToLower(strings.TrimSpace(invoice.Status)) != "open" {
+		return Invoice{}, fmt.Errorf("%w: status must be open", ErrInvalidInput)
+	}
+	at := s.now()
+	invoice.Status = status
+	invoice.Metadata = copyMap(invoice.Metadata)
+	if invoice.Metadata == nil {
+		invoice.Metadata = map[string]string{}
+	}
+	invoice.Metadata[timestampKey] = at.Format(time.RFC3339Nano)
+	return s.repo.UpdateInvoice(ctx, invoice, []TimelineEntry{billingTimelineEntry(
+		source+"_"+invoice.ID+"_"+at.Format(time.RFC3339Nano),
+		action,
+		message,
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": source, "status": invoice.Status},
 		at,
 	)})
 }
