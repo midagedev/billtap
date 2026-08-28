@@ -1,6 +1,8 @@
 package api
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,8 +14,29 @@ import (
 	"github.com/hckim/billtap/internal/webhooks"
 )
 
+// Evidence kinds. These are the persistence keys, so renaming one orphans the
+// rows already written under the old name.
+const (
+	kindCoupon        = "coupon"
+	kindPromotionCode = "promotion_code"
+	kindSchedule      = "schedule"
+	kindDispute       = "dispute"
+	kindTaxRate       = "tax_rate"
+	kindTaxID         = "tax_id"
+	kindCash          = "cash"
+)
+
+// LocalEvidenceRepository persists evidence objects in the run's own store, so a
+// run backed by a file keeps them across restarts and an in-memory run does not.
+type LocalEvidenceRepository interface {
+	SaveLocalEvidence(ctx context.Context, kind, id, data string) error
+	DeleteLocalEvidence(ctx context.Context, kind, id string) error
+	LoadLocalEvidence(ctx context.Context) (map[string]map[string]string, error)
+}
+
 type localEvidenceStore struct {
 	mu             sync.Mutex
+	repo           LocalEvidenceRepository
 	coupons        map[string]map[string]any
 	promotionCodes map[string]map[string]any
 	schedules      map[string]map[string]any
@@ -24,8 +47,11 @@ type localEvidenceStore struct {
 	taxIDs         map[string]map[string]any
 }
 
-func newLocalEvidenceStore() *localEvidenceStore {
-	return &localEvidenceStore{
+// newLocalEvidenceStore returns an evidence store. A nil repo keeps everything in
+// memory, which is what callers without a store (scorecard runs, unit tests) want.
+func newLocalEvidenceStore(repo LocalEvidenceRepository) *localEvidenceStore {
+	s := &localEvidenceStore{
+		repo:           repo,
 		coupons:        map[string]map[string]any{},
 		promotionCodes: map[string]map[string]any{},
 		schedules:      map[string]map[string]any{},
@@ -34,6 +60,115 @@ func newLocalEvidenceStore() *localEvidenceStore {
 		disputes:       map[string]map[string]any{},
 		taxRates:       map[string]map[string]any{},
 		taxIDs:         map[string]map[string]any{},
+	}
+	s.restore()
+	return s
+}
+
+func (s *localEvidenceStore) mapFor(kind string) map[string]map[string]any {
+	switch kind {
+	case kindCoupon:
+		return s.coupons
+	case kindPromotionCode:
+		return s.promotionCodes
+	case kindSchedule:
+		return s.schedules
+	case kindDispute:
+		return s.disputes
+	case kindTaxRate:
+		return s.taxRates
+	case kindTaxID:
+		return s.taxIDs
+	}
+	return nil
+}
+
+// saveLocked records obj and mirrors it to the repo. The caller holds mu.
+func (s *localEvidenceStore) saveLocked(kind, id string, obj map[string]any) error {
+	if m := s.mapFor(kind); m != nil {
+		m[id] = obj
+	}
+	if s.repo == nil {
+		return nil
+	}
+	data, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+	return s.repo.SaveLocalEvidence(context.Background(), kind, id, string(data))
+}
+
+func (s *localEvidenceStore) save(kind, id string, obj map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked(kind, id, obj)
+}
+
+func (s *localEvidenceStore) remove(kind, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m := s.mapFor(kind); m != nil {
+		delete(m, id)
+	}
+	if s.repo == nil {
+		return nil
+	}
+	return s.repo.DeleteLocalEvidence(context.Background(), kind, id)
+}
+
+// cashRecord is the persisted shape of one customer's cash balance and its ledger.
+type cashRecord struct {
+	Balance      int64            `json:"balance"`
+	Transactions []map[string]any `json:"transactions"`
+}
+
+// addCash moves the balance and appends the transaction as one unit — the two are
+// read together by GET /v1/customers/<id>/cash_balance, so a partial write would
+// show a balance no ledger explains.
+func (s *localEvidenceStore) addCash(customerID string, amount int64, tx map[string]any) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cashBalances[customerID] += amount
+	s.cashTxs[customerID] = append(s.cashTxs[customerID], tx)
+	if s.repo == nil {
+		return nil
+	}
+	data, err := json.Marshal(cashRecord{Balance: s.cashBalances[customerID], Transactions: s.cashTxs[customerID]})
+	if err != nil {
+		return err
+	}
+	return s.repo.SaveLocalEvidence(context.Background(), kindCash, customerID, string(data))
+}
+
+// restore reloads persisted evidence. A store that cannot be read is left empty
+// rather than failing the process — the run still serves, it just has no history.
+func (s *localEvidenceStore) restore() {
+	if s.repo == nil {
+		return
+	}
+	all, err := s.repo.LoadLocalEvidence(context.Background())
+	if err != nil {
+		return
+	}
+	for kind, rows := range all {
+		for id, raw := range rows {
+			if kind == kindCash {
+				var rec cashRecord
+				if json.Unmarshal([]byte(raw), &rec) == nil {
+					s.cashBalances[id] = rec.Balance
+					s.cashTxs[id] = rec.Transactions
+				}
+				continue
+			}
+			m := s.mapFor(kind)
+			if m == nil {
+				continue
+			}
+			var obj map[string]any
+			if json.Unmarshal([]byte(raw), &obj) == nil {
+				m[id] = obj
+			}
+		}
 	}
 }
 
@@ -89,9 +224,10 @@ func (h *Handler) handleCoupons(w http.ResponseWriter, r *http.Request) {
 		if products := p.appliesToProducts(); len(products) > 0 {
 			coupon["applies_to"] = map[string]any{"products": products}
 		}
-		h.local.mu.Lock()
-		h.local.coupons[id] = coupon
-		h.local.mu.Unlock()
+		if err := h.local.save(kindCoupon, id, coupon); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, cloneEvidence(coupon))
 	case http.MethodGet:
 		h.local.mu.Lock()
@@ -121,9 +257,10 @@ func (h *Handler) handleCoupon(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, cloneEvidence(coupon))
 	case http.MethodDelete:
 		deleted := map[string]any{"id": id, "object": "coupon", "deleted": true}
-		h.local.mu.Lock()
-		delete(h.local.coupons, id)
-		h.local.mu.Unlock()
+		if err := h.local.remove(kindCoupon, id); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, deleted)
 	default:
 		h.methodNotAllowed(w, r, "GET, POST, DELETE")
@@ -169,9 +306,10 @@ func (h *Handler) handlePromotionCodes(w http.ResponseWriter, r *http.Request) {
 			"created":  now.Unix(),
 			"livemode": false,
 		}
-		h.local.mu.Lock()
-		h.local.promotionCodes[id] = promo
-		h.local.mu.Unlock()
+		if err := h.local.save(kindPromotionCode, id, promo); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, cloneEvidence(promo))
 	case http.MethodGet:
 		h.local.mu.Lock()
@@ -244,9 +382,10 @@ func (h *Handler) handleTaxRates(w http.ResponseWriter, r *http.Request) {
 			"created":              now.Unix(),
 			"livemode":             false,
 		}
-		h.local.mu.Lock()
-		h.local.taxRates[id] = taxRate
-		h.local.mu.Unlock()
+		if err := h.local.save(kindTaxRate, id, taxRate); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, cloneEvidence(taxRate))
 	case http.MethodGet:
 		h.local.mu.Lock()
@@ -311,8 +450,12 @@ func (h *Handler) handleTaxRate(w http.ResponseWriter, r *http.Request) {
 			}
 			current["metadata"] = nonNilMap(merged)
 		}
-		h.local.taxRates[id] = current
+		err = h.local.saveLocked(kindTaxRate, id, current)
 		h.local.mu.Unlock()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, cloneEvidence(current))
 	default:
 		h.methodNotAllowed(w, r, "GET, POST")
@@ -360,9 +503,10 @@ func (h *Handler) handleCustomerTaxIDs(w http.ResponseWriter, r *http.Request, c
 					"verified_name":    nil,
 				},
 			}
-			h.local.mu.Lock()
-			h.local.taxIDs[id] = taxIDObj
-			h.local.mu.Unlock()
+			if err := h.local.save(kindTaxID, id, taxIDObj); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 			writeJSON(w, http.StatusOK, cloneEvidence(taxIDObj))
 		case http.MethodGet:
 			h.local.mu.Lock()
@@ -394,9 +538,10 @@ func (h *Handler) handleCustomerTaxIDs(w http.ResponseWriter, r *http.Request, c
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, cloneEvidence(item))
 	case http.MethodDelete:
-		h.local.mu.Lock()
-		delete(h.local.taxIDs, taxID)
-		h.local.mu.Unlock()
+		if err := h.local.remove(kindTaxID, taxID); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, stripeDeleted(taxID, "tax_id"))
 	default:
 		h.methodNotAllowed(w, r, "GET, DELETE")
@@ -495,9 +640,10 @@ func (h *Handler) handleSubscriptionSchedules(w http.ResponseWriter, r *http.Req
 			"created":  now.Unix(),
 			"livemode": false,
 		}
-		h.local.mu.Lock()
-		h.local.schedules[id] = schedule
-		h.local.mu.Unlock()
+		if err := h.local.save(kindSchedule, id, schedule); err != nil {
+			writeError(w, http.StatusInternalServerError, err)
+			return
+		}
 		writeJSON(w, http.StatusOK, cloneEvidence(schedule))
 	case http.MethodGet:
 		h.local.mu.Lock()
@@ -544,9 +690,10 @@ func (h *Handler) handleSubscriptionSchedule(w http.ResponseWriter, r *http.Requ
 		h.notFound(w, r)
 		return
 	}
-	h.local.mu.Lock()
-	h.local.schedules[id] = schedule
-	h.local.mu.Unlock()
+	if err := h.local.save(kindSchedule, id, schedule); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	writeJSON(w, http.StatusOK, cloneEvidence(schedule))
 }
 
@@ -581,9 +728,8 @@ func (h *Handler) applyDueSubscriptionSchedules(r *http.Request, clockID string,
 			continue
 		}
 		schedule["status"] = "completed"
-		h.local.mu.Lock()
-		h.local.schedules[fmt.Sprint(schedule["id"])] = schedule
-		h.local.mu.Unlock()
+		// Best effort: this runs inside a clock advance, which has no response to fail.
+		_ = h.local.save(kindSchedule, fmt.Sprint(schedule["id"]), schedule)
 		h.emitSubscriptionWebhook(r, "customer.subscription.updated", subscription, webhooks.SourceAPI)
 		updated = append(updated, subscription)
 	}
@@ -710,10 +856,10 @@ func (h *Handler) handleTestHelperCustomer(w http.ResponseWriter, r *http.Reques
 		"created":    now.Unix(),
 		"livemode":   false,
 	}
-	h.local.mu.Lock()
-	h.local.cashBalances[customerID] += amount
-	h.local.cashTxs[customerID] = append(h.local.cashTxs[customerID], tx)
-	h.local.mu.Unlock()
+	if err := h.local.addCash(customerID, amount, tx); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	settled, _ := h.billing.SettleBankTransferPaymentIntents(r.Context(), customerID)
 	for _, intent := range settled {
 		h.emitPaymentIntentWebhook(r, "payment_intent.succeeded", intent)
@@ -834,9 +980,10 @@ func (h *Handler) handleDispute(w http.ResponseWriter, r *http.Request) {
 				"submission_count": 1,
 				"past_due":         false,
 			}
-			h.local.mu.Lock()
-			h.local.disputes[id] = dispute
-			h.local.mu.Unlock()
+			if err := h.local.save(kindDispute, id, dispute); err != nil {
+				writeError(w, http.StatusInternalServerError, err)
+				return
+			}
 			h.emitGenericWebhook(r, "charge.dispute.updated", id, dispute, webhooks.SourceAPI)
 		}
 		writeJSON(w, http.StatusOK, cloneEvidence(dispute))
@@ -848,9 +995,10 @@ func (h *Handler) handleDispute(w http.ResponseWriter, r *http.Request) {
 	}
 	dispute["status"] = "won"
 	dispute["closed_at"] = time.Now().UTC().Unix()
-	h.local.mu.Lock()
-	h.local.disputes[id] = dispute
-	h.local.mu.Unlock()
+	if err := h.local.save(kindDispute, id, dispute); err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
 	h.emitGenericWebhook(r, "charge.dispute.closed", id, dispute, webhooks.SourceAPI)
 	writeJSON(w, http.StatusOK, cloneEvidence(dispute))
 }
@@ -874,9 +1022,8 @@ func (h *Handler) createDispute(r *http.Request, chargeID string, amount int64, 
 		"created":  now.Unix(),
 		"livemode": false,
 	}
-	h.local.mu.Lock()
-	h.local.disputes[fmt.Sprint(dispute["id"])] = dispute
-	h.local.mu.Unlock()
+	// Best effort: the caller returns the dispute, not an error.
+	_ = h.local.save(kindDispute, fmt.Sprint(dispute["id"]), dispute)
 	h.emitGenericWebhook(r, "charge.dispute.created", chargeID, dispute, webhooks.SourceAPI)
 	return cloneEvidence(dispute)
 }

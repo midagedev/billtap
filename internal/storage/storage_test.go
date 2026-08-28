@@ -3,7 +3,9 @@ package storage
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -22,8 +24,20 @@ func TestSQLiteMigrationsRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("MigrationVersions returned error: %v", err)
 	}
-	if len(versions) != 22 || versions[0] != 1 || versions[1] != 2 || versions[2] != 3 || versions[3] != 4 || versions[4] != 5 || versions[5] != 6 || versions[6] != 7 || versions[7] != 8 || versions[8] != 9 || versions[9] != 10 || versions[10] != 11 || versions[11] != 12 || versions[12] != 13 || versions[13] != 14 || versions[14] != 15 || versions[15] != 16 || versions[16] != 17 || versions[17] != 18 || versions[18] != 19 || versions[19] != 20 || versions[20] != 21 || versions[21] != 22 {
-		t.Fatalf("versions = %#v, want [1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22]", versions)
+	// Expect every embedded migration, numbered 1..N with no gap. Spelling the list
+	// out by hand meant editing this test on every migration, and a gap — the failure
+	// that actually matters, since a skipped number means a file never ran — read the
+	// same as "the count moved".
+	files, err := fs.ReadDir(migrations, "migrations")
+	if err != nil {
+		t.Fatalf("read migrations: %v", err)
+	}
+	want := make([]int, 0, len(files))
+	for i := range files {
+		want = append(want, i+1)
+	}
+	if !slices.Equal(versions, want) {
+		t.Fatalf("versions = %#v, want %#v", versions, want)
 	}
 }
 
@@ -338,5 +352,51 @@ func TestRecordTimelineIsIdempotentForRepeatedEventIDs(t *testing.T) {
 	}
 	if matching != 1 {
 		t.Fatalf("timeline holds %d copies of %s, want exactly 1", matching, entry.ID)
+	}
+}
+
+func TestLocalEvidenceRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store, err := OpenSQLite(ctx, filepath.Join(t.TempDir(), "billtap.db"))
+	if err != nil {
+		t.Fatalf("OpenSQLite returned error: %v", err)
+	}
+	defer store.Close()
+
+	if err := store.SaveLocalEvidence(ctx, "tax_rate", "txr_1", `{"id":"txr_1"}`); err != nil {
+		t.Fatalf("SaveLocalEvidence: %v", err)
+	}
+	// Same key twice must update, not fail on the primary key.
+	if err := store.SaveLocalEvidence(ctx, "tax_rate", "txr_1", `{"id":"txr_1","active":false}`); err != nil {
+		t.Fatalf("SaveLocalEvidence (update): %v", err)
+	}
+	if err := store.SaveLocalEvidence(ctx, "coupon", "txr_1", `{"id":"txr_1","object":"coupon"}`); err != nil {
+		t.Fatalf("SaveLocalEvidence (other kind, same id): %v", err)
+	}
+
+	all, err := store.LoadLocalEvidence(ctx)
+	if err != nil {
+		t.Fatalf("LoadLocalEvidence: %v", err)
+	}
+	if got := all["tax_rate"]["txr_1"]; got != `{"id":"txr_1","active":false}` {
+		t.Fatalf("tax_rate row = %q, want the updated document", got)
+	}
+	if _, ok := all["coupon"]["txr_1"]; !ok {
+		t.Fatal("an id shared across kinds must not collide")
+	}
+
+	if err := store.DeleteLocalEvidence(ctx, "tax_rate", "txr_1"); err != nil {
+		t.Fatalf("DeleteLocalEvidence: %v", err)
+	}
+	// Deleting what is already gone is not an error.
+	if err := store.DeleteLocalEvidence(ctx, "tax_rate", "txr_1"); err != nil {
+		t.Fatalf("DeleteLocalEvidence (absent): %v", err)
+	}
+	all, err = store.LoadLocalEvidence(ctx)
+	if err != nil {
+		t.Fatalf("LoadLocalEvidence after delete: %v", err)
+	}
+	if _, ok := all["tax_rate"]["txr_1"]; ok {
+		t.Fatal("deleted row came back")
 	}
 }
