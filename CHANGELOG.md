@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Local evidence objects — coupons, promotion codes, subscription schedules,
+  disputes, tax rates, tax IDs and customer cash balances — are now stored in
+  the run's own database instead of process memory. They were the only objects
+  that did not survive a restart, so a restarted server kept answering with the
+  rest of its data while every lookup that needed one of them failed: a
+  subscription whose `default_tax_rates` referenced a tax rate created before
+  the restart returned a `resource_missing` error, with nothing in the
+  surviving data to suggest why. Runs backed by memory stay ephemeral, which
+  is what they were always for. Idempotency keys remain in memory on purpose —
+  losing them on restart is the Stripe-like behaviour.
+- `TestSQLiteMigrationsRun` now derives the expected versions from the embedded
+  migration files rather than a hand-written list, so it no longer needs an edit
+  per migration and it fails on a gap or a duplicated number.
 - `POST /v1/invoices/{id}/void` moves an `open` invoice to `void`, records
   `billtap_voided_at`, and emits `invoice.voided`. Other statuses return
   `invalid_request_error` with `status must be open`.

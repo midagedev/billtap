@@ -7509,6 +7509,11 @@ func newTestHandlerWithOptions(t *testing.T, opts Options) http.Handler {
 	webhookService := webhooks.NewService(store)
 	opts.Webhooks = webhookService
 	opts.Diagnostics = diagnostics.NewService(store)
+	if opts.LocalEvidence == nil {
+		// Wire it by default so the whole suite runs against the persisted path,
+		// which is what the server does.
+		opts.LocalEvidence = store
+	}
 	// After t.TempDir(): LIFO runs wait+close before TempDir removal.
 	webhookstest.RegisterStoreCleanup(t, webhookService, store)
 	return New(opts)

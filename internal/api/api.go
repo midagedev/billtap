@@ -31,6 +31,9 @@ type Options struct {
 	Webhooks      *webhooks.Service
 	Diagnostics   *diagnostics.Service
 	PublicBaseURL string
+	// LocalEvidence persists coupons, promotion codes, schedules, disputes, tax
+	// rates, tax IDs and cash balances. Nil keeps them in memory only.
+	LocalEvidence LocalEvidenceRepository
 }
 
 type Handler struct {
@@ -63,7 +66,7 @@ func New(opts Options) http.Handler {
 		publicBase:  strings.TrimRight(opts.PublicBaseURL, "/"),
 		mux:         http.NewServeMux(),
 		idem:        newIdempotencyStore(),
-		local:       newLocalEvidenceStore(),
+		local:       newLocalEvidenceStore(opts.LocalEvidence),
 		compat:      stripecompat.DefaultRegistry(),
 		knownRoutes: stripecompat.DefaultRouteCatalog(),
 		validation:  stripecompat.DefaultValidationCatalog(),
@@ -4825,9 +4828,9 @@ func (h *Handler) applyFixtureDisputes(r *http.Request, pack fixtures.Pack) ([]m
 	out := make([]map[string]any, 0, len(pack.Disputes))
 	for _, fixture := range pack.Disputes {
 		dispute := disputeFixturePayload(fixture)
-		h.local.mu.Lock()
-		h.local.disputes[fmt.Sprint(dispute["id"])] = dispute
-		h.local.mu.Unlock()
+		if err := h.local.save(kindDispute, fmt.Sprint(dispute["id"]), dispute); err != nil {
+			return nil, err
+		}
 		out = append(out, cloneEvidence(dispute))
 		h.emitGenericWebhook(r, "charge.dispute.created", fmt.Sprint(dispute["id"]), dispute, webhooks.SourceFixture)
 		if fmt.Sprint(dispute["status"]) != "needs_response" {
@@ -4886,9 +4889,9 @@ func (h *Handler) applyFixtureTaxRates(pack fixtures.Pack) ([]map[string]any, er
 	out := make([]map[string]any, 0, len(pack.TaxRates))
 	for _, fixture := range pack.TaxRates {
 		taxRate := taxRateFixturePayload(fixture)
-		h.local.mu.Lock()
-		h.local.taxRates[fmt.Sprint(taxRate["id"])] = taxRate
-		h.local.mu.Unlock()
+		if err := h.local.save(kindTaxRate, fmt.Sprint(taxRate["id"]), taxRate); err != nil {
+			return nil, err
+		}
 		out = append(out, cloneEvidence(taxRate))
 	}
 	return out, nil
@@ -4936,9 +4939,9 @@ func (h *Handler) applyFixtureCoupons(pack fixtures.Pack) ([]map[string]any, err
 	out := make([]map[string]any, 0, len(pack.Coupons))
 	for _, fixture := range pack.Coupons {
 		coupon := couponFixturePayload(fixture)
-		h.local.mu.Lock()
-		h.local.coupons[fmt.Sprint(coupon["id"])] = coupon
-		h.local.mu.Unlock()
+		if err := h.local.save(kindCoupon, fmt.Sprint(coupon["id"]), coupon); err != nil {
+			return nil, err
+		}
 		out = append(out, cloneEvidence(coupon))
 	}
 	return out, nil
@@ -5007,9 +5010,9 @@ func (h *Handler) applyFixturePromotionCodes(pack fixtures.Pack) ([]map[string]a
 		if err != nil {
 			return nil, err
 		}
-		h.local.mu.Lock()
-		h.local.promotionCodes[fmt.Sprint(promo["id"])] = promo
-		h.local.mu.Unlock()
+		if err := h.local.save(kindPromotionCode, fmt.Sprint(promo["id"]), promo); err != nil {
+			return nil, err
+		}
 		out = append(out, cloneEvidence(promo))
 	}
 	return out, nil
