@@ -63,7 +63,7 @@ The concrete expansion target is defined in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`:
 
 - reach at least `90.0%` OpenAPI operation coverage at `L1+`
-- move from the current `175 / 587` baseline to at least `529 / 587`
+- move from the current `187 / 587` baseline to at least `529 / 587`
 - keep P0/P1 billing-lab families on deeper `L3-L6` gates where behavior
   matters
 - use broad `L1-L2` validation/fixture coverage for safe low-state and
@@ -277,9 +277,9 @@ questions quickly.
   "generated_at": "2026-08-29T00:00:00Z",
   "summary": {
     "total_operations": 587,
-    "implemented_operations": 175,
-    "inventory_only_operations": 412,
-    "implemented_percent": 29.8,
+    "implemented_operations": 187,
+    "inventory_only_operations": 400,
+    "implemented_percent": 31.9,
     "families": [
       {
         "family": "connect",

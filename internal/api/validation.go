@@ -51,6 +51,7 @@ var (
 	schedulePhaseParamRE        = regexp.MustCompile(`^phases\[\d+\]\[(start_date|end_date|iterations|items|plans)\].*$`)
 	invoicePreviewItemParamRE   = regexp.MustCompile(`^((subscription_details|subscriptionDetails)\[items\]\[\d+\]\[(id|price|price_id|quantity)\]|(subscription_items|items)\[\d+\]\[(id|price|price_id|quantity)\])$`)
 	invoicePaymentSettingsRE    = regexp.MustCompile(`^payment_settings(\[[^\]]+\])+$`)
+	portalFeatureParamRE        = regexp.MustCompile(`^features\[(customer_update|invoice_history|payment_method_update|subscription_cancel|subscription_update)\]\[(enabled|mode|proration_behavior|cancellation_reason|allowed_updates|default_allowed_updates)\](\[\d*\])?$`)
 )
 
 var stripePaymentMethodTypes = []string{
@@ -1523,6 +1524,95 @@ func validateBillingPortalSessionCreate(p params) error {
 		return missingParam("flow_data[after_completion][redirect][return_url]")
 	}
 	return nil
+}
+
+func validateBillingPortalConfigurationCreate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"business_profile[headline]",
+			"business_profile[privacy_policy_url]",
+			"business_profile[terms_of_service_url]",
+			"default_return_url",
+			"login_page[logo_url]",
+		},
+		AllowedRegex: []*regexp.Regexp{portalFeatureParamRE},
+		EnumParams: map[string][]string{
+			"features[subscription_cancel][mode]":               {"at_period_end", "immediately"},
+			"features[subscription_cancel][proration_behavior]": {"always_invoice", "create_prorations", "none"},
+			"features[subscription_update][proration_behavior]": {"always_invoice", "create_prorations", "none"},
+		},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	return validatePortalFeatureUpdateLists(p)
+}
+
+func validateBillingPortalConfigurationUpdate(p params) error {
+	if err := p.validate(paramSpec{
+		Allowed: []string{
+			"active",
+			"business_profile[headline]",
+			"business_profile[privacy_policy_url]",
+			"business_profile[terms_of_service_url]",
+			"default_return_url",
+			"login_page[logo_url]",
+		},
+		AllowedRegex: []*regexp.Regexp{portalFeatureParamRE},
+		BoolParams:   []string{"active"},
+		EnumParams: map[string][]string{
+			"features[subscription_cancel][mode]":               {"at_period_end", "immediately"},
+			"features[subscription_cancel][proration_behavior]": {"always_invoice", "create_prorations", "none"},
+			"features[subscription_update][proration_behavior]": {"always_invoice", "create_prorations", "none"},
+		},
+		AllowMetadata: true,
+	}); err != nil {
+		return err
+	}
+	return validatePortalFeatureUpdateLists(p)
+}
+
+func validatePortalFeatureUpdateLists(p params) error {
+	for _, allowed := range p.list("features[customer_update][allowed_updates]") {
+		if allowed != "email" && allowed != "name" {
+			return invalidParam("features[customer_update][allowed_updates]", "Invalid allowed_updates value. Allowed values are email, name.")
+		}
+	}
+	for _, allowed := range p.list("features[subscription_update][default_allowed_updates]") {
+		switch allowed {
+		case "price", "quantity":
+		default:
+			return invalidParam("features[subscription_update][default_allowed_updates]", "Invalid default_allowed_updates value. Allowed values are price, quantity.")
+		}
+	}
+	return nil
+}
+
+func validateSubscriptionItemList(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"ending_before", "expand", "limit", "starting_after", "subscription"},
+		Int64Params: []string{"limit"},
+		Positive:    []string{"limit"},
+	})
+}
+
+func validateSubscriptionItemUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed: []string{
+			"price",
+			"price_id",
+			"quantity",
+			"proration_behavior",
+			"proration_date",
+		},
+		AllowedRegex: []*regexp.Regexp{taxRatesParamRE},
+		EnumParams: map[string][]string{
+			"proration_behavior": {"always_invoice", "create_prorations", "none"},
+		},
+		Int64Params:   []string{"quantity"},
+		Positive:      []string{"quantity"},
+		AllowMetadata: true,
+	})
 }
 
 func validatePaymentMethodList(p params) error {

@@ -3260,7 +3260,26 @@ func ClearDiscountMetadata(metadata map[string]string) map[string]string {
 	if metadata == nil {
 		return metadata
 	}
-	for _, key := range []string{
+	for _, key := range DiscountMetadataKeys() {
+		delete(metadata, key)
+	}
+	return metadata
+}
+
+// ZeroDiscountMetadata returns a metadata patch that clears the local discount
+// keys. PatchSubscription merges metadata and deletes keys whose patch value is
+// the empty string, so subscription patches need zeroed keys rather than a
+// copy with the keys removed.
+func ZeroDiscountMetadata() map[string]string {
+	patch := map[string]string{}
+	for _, key := range DiscountMetadataKeys() {
+		patch[key] = ""
+	}
+	return patch
+}
+
+func DiscountMetadataKeys() []string {
+	return []string{
 		MetadataDiscountCouponID,
 		MetadataDiscountPromotionCodeID,
 		MetadataDiscountPercentOff,
@@ -3269,10 +3288,7 @@ func ClearDiscountMetadata(metadata map[string]string) map[string]string {
 		MetadataDiscountDuration,
 		MetadataDiscountCreated,
 		MetadataDiscountAppliesTo,
-	} {
-		delete(metadata, key)
 	}
-	return metadata
 }
 
 func DiscountsFromMetadata(metadata map[string]string) []Discount {

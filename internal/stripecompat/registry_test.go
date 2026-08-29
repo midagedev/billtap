@@ -8,8 +8,8 @@ import (
 func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	registry := DefaultRegistry()
 	claims := registry.Claims()
-	if len(claims) != 181 {
-		t.Fatalf("default claims = %d, want 181", len(claims))
+	if len(claims) != 193 {
+		t.Fatalf("default claims = %d, want 193", len(claims))
 	}
 
 	checkout, ok := registry.Lookup(http.MethodPost, "/v1/checkout/sessions")
@@ -102,6 +102,22 @@ func TestDefaultRegistryContainsCurrentPublicClaims(t *testing.T) {
 	portal, ok := registry.Lookup(http.MethodPost, "/v1/billing_portal/sessions")
 	if !ok || portal.Level != "L3" || len(portal.WebhookEvents) < 2 {
 		t.Fatalf("portal claim = %#v ok=%t, want webhook-backed L3 portal session", portal, ok)
+	}
+	portalConfiguration, ok := registry.Lookup(http.MethodPost, "/v1/billing_portal/configurations/bpc_123")
+	if !ok || portalConfiguration.Level != "L3" || !portalConfiguration.Stateful {
+		t.Fatalf("portal configuration claim = %#v ok=%t, want L3 stateful", portalConfiguration, ok)
+	}
+	invoiceVoid, ok := registry.Lookup(http.MethodPost, "/v1/invoices/in_123/void")
+	if !ok || invoiceVoid.Level != "L3" || len(invoiceVoid.WebhookEvents) != 1 {
+		t.Fatalf("invoice void claim = %#v ok=%t, want L3 with invoice.voided", invoiceVoid, ok)
+	}
+	itemUpdate, ok := registry.Lookup(http.MethodPost, "/v1/subscription_items/si_123")
+	if !ok || itemUpdate.Level != "L3" || !itemUpdate.Stateful {
+		t.Fatalf("subscription item update claim = %#v ok=%t, want L3 stateful", itemUpdate, ok)
+	}
+	nestedDiscount, ok := registry.Lookup(http.MethodDelete, "/v1/customers/cus_123/subscriptions/sub_123/discount")
+	if !ok || nestedDiscount.Level != "L3" || !nestedDiscount.Stateful {
+		t.Fatalf("nested customer subscription discount claim = %#v ok=%t, want L3 stateful", nestedDiscount, ok)
 	}
 	schedule, ok := registry.Lookup(http.MethodPost, "/v1/subscription_schedules/sub_sched_123/release")
 	if !ok || schedule.Level != "L2" || !schedule.Stateful {

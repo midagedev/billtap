@@ -11,7 +11,7 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `175 / 587` operations, `29.8%`, using Stripe OpenAPI
+- **Current baseline:** `187 / 587` operations, `31.9%`, using Stripe OpenAPI
   `2026-04-22.dahlia` (stripe/openapi tag `v2261`), re-measured on 2026-08-29.
 - **Minimum target count:** `529 / 587` operations at `L1` or higher.
 - **Remaining inventory-only budget:** at most `58 / 587` operations at `L0`.
@@ -58,9 +58,9 @@ Latest measured baseline from the Stripe OpenAPI `2026-04-22.dahlia` snapshot
 | Priority | Family | Total | Implemented | Coverage | 90% target count | First target |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | P0 | webhooks | 7 | 7 | 100.0% | 7 | Expand connected-account routing, thin event fixtures, and replay evidence. |
-| P0 | checkout | 6 | 3 | 50.0% | 6 | Close checkout route gaps and SDK smoke. |
-| P0 | billing | 39 | 24 | 61.5% | 36 | Add renewal, trial, dunning, subscription schedule, coupon, and credit-note scenarios. |
-| P0 | billing_portal | 5 | 1 | 20.0% | 5 | Add portal configurations and session retrieval fixtures. |
+| P0 | checkout | 6 | 4 | 66.7% | 6 | Close checkout session update/line_items routes and SDK smoke. |
+| P0 | billing | 39 | 31 | 79.5% | 36 | Add renewal, trial, dunning, subscription schedule, coupon, and credit-note scenarios. |
+| P0 | billing_portal | 5 | 5 | 100.0% | 5 | Deepen portal configuration fixtures and hosted portal rendering evidence. |
 | P1 | catalog | 54 | 27 | 50.0% | 49 | Add coupon, promotion code, tax-rate, and product/price search validation. |
 | P1 | customers | 31 | 12 | 38.7% | 28 | Add OpenAPI-backed validation, search/list parity, and payment source fixtures. |
 | P1 | payments | 41 | 22 | 53.7% | 37 | Add PaymentIntent and SetupIntent create/confirm/capture/cancel state machines. |
@@ -128,8 +128,16 @@ payment-method attach/detach.
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
 coverage must come from T3-T9. The planned T3-T9 delta is intentionally larger
-than the `+354` operations needed to move the current `175 / 587` baseline to
+than the `+342` operations needed to move the current `187 / 587` baseline to
 the `529 / 587` target.
+
+The P0 portal/items wave on 2026-08-29 raised the generated inventory from
+`175 / 587` (`29.8%`) to `187 / 587` (`31.9%`): billing portal configurations
+create/list/retrieve/update, subscription item list/retrieve/update, nested
+customer subscription discount retrieve/delete, and claims for the
+already-tested invoice `void`/`mark_uncollectible` and checkout `expire`
+routes. billing_portal closed to `5 / 5`, billing moved to `31 / 39`, and
+checkout to `4 / 6`.
 
 The tax and invoice-depth waves landed between the 2026-05-12 and 2026-08-29
 measurements raised the generated inventory from `160 / 587` (`27.3%`) to

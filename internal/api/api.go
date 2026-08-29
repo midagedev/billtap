@@ -113,6 +113,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/checkout/sessions", h.handleCheckoutSessions)
 	h.mux.HandleFunc("/v1/checkout/sessions/", h.handleCheckoutSession)
 	h.mux.HandleFunc("/v1/billing_portal/sessions", h.handleBillingPortalSessions)
+	h.mux.HandleFunc("/v1/billing_portal/configurations", h.handleBillingPortalConfigurations)
+	h.mux.HandleFunc("/v1/billing_portal/configurations/", h.handleBillingPortalConfiguration)
 	h.mux.HandleFunc("/v1/subscriptions", h.handleSubscriptions)
 	h.mux.HandleFunc("/v1/subscriptions/search", h.handleSubscriptionSearch)
 	h.mux.HandleFunc("/v1/subscriptions/", h.handleSubscription)
@@ -210,25 +212,7 @@ func (h *Handler) methodNotAllowed(w http.ResponseWriter, r *http.Request, allow
 	methodNotAllowed(w, allow)
 }
 
-func implementedWithoutCompatClaim(method string, path string) bool {
-	if method != http.MethodPost {
-		return false
-	}
-	if strings.HasPrefix(path, "/v1/invoices/") && (strings.HasSuffix(path, "/void") || strings.HasSuffix(path, "/mark_uncollectible")) {
-		parts := strings.Split(strings.TrimPrefix(path, "/v1/invoices/"), "/")
-		return len(parts) == 2 && parts[0] != ""
-	}
-	if strings.HasPrefix(path, "/v1/checkout/sessions/") && strings.HasSuffix(path, "/expire") {
-		id := strings.TrimSuffix(strings.TrimPrefix(path, "/v1/checkout/sessions/"), "/expire")
-		return id != "" && !strings.Contains(id, "/")
-	}
-	return false
-}
-
 func (h *Handler) writeKnownUnsupportedRoute(w http.ResponseWriter, r *http.Request) bool {
-	if implementedWithoutCompatClaim(r.Method, r.URL.Path) {
-		return false
-	}
 	route, ok := h.knownRoutes.Lookup(r.Method, r.URL.Path)
 	if !ok {
 		return false
@@ -473,6 +457,15 @@ func (h *Handler) handleCustomerSubscription(w http.ResponseWriter, r *http.Requ
 	}
 	if hasNested {
 		if nested == "discount" {
+			subscription, err := h.billing.GetSubscription(r.Context(), subscriptionID)
+			if err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			if subscription.CustomerID != customerID {
+				writeResult(w, nil, billing.ErrNotFound)
+				return
+			}
 			h.handleSubscriptionDiscount(w, r, subscriptionID)
 			return
 		}
@@ -2353,8 +2346,32 @@ func (h *Handler) handleSubscriptionResume(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) handleSubscriptionItems(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		p := params{values: firstValues(r.URL.Query())}
+		if err := validateSubscriptionItemList(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		subscriptions, err := h.billing.ListSubscriptions(r.Context())
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		filter := strings.TrimSpace(r.URL.Query().Get("subscription"))
+		data := make([]map[string]any, 0)
+		for _, subscription := range subscriptions {
+			if filter != "" && subscription.ID != filter {
+				continue
+			}
+			for idx, item := range subscription.Items {
+				data = append(data, h.stripeSubscriptionItem(r, subscription, item, idx))
+			}
+		}
+		writeJSON(w, http.StatusOK, stripeListFromRequest(r, data))
+		return
+	}
 	if r.Method != http.MethodPost {
-		h.methodNotAllowed(w, r, "POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 		return
 	}
 	p, err := parseParams(r)
@@ -2455,10 +2472,117 @@ func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request)
 		h.notFound(w, r)
 		return
 	}
-	if r.Method != http.MethodDelete {
-		h.methodNotAllowed(w, r, "DELETE")
+	switch r.Method {
+	case http.MethodGet:
+		subscription, idx, found, err := h.findSubscriptionItem(r, id)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		if !found {
+			writeResult(w, nil, billing.ErrNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, h.stripeSubscriptionItem(r, subscription, subscription.Items[idx], idx))
+	case http.MethodPost:
+		h.handleSubscriptionItemUpdate(w, r, id)
+	case http.MethodDelete:
+		h.handleSubscriptionItemDelete(w, r, id)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
+	}
+}
+
+func (h *Handler) handleSubscriptionItemUpdate(w http.ResponseWriter, r *http.Request, id string) {
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := validateSubscriptionItemUpdate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	subscription, idx, found, err := h.findSubscriptionItem(r, id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if !found {
+		writeResult(w, nil, billing.ErrNotFound)
+		return
+	}
+	// Resolve item tax_rates before mutation (evidence only; totals use subscription rates).
+	var itemTaxRates []billing.AppliedTaxRate
+	if p.hasDefaultTaxRatesParam("tax_rates") {
+		itemTaxRates, err = h.appliedTaxRatesFromParams(p, "tax_rates")
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+	}
+	item := subscription.Items[idx]
+	if priceID := p.first("price", "price_id"); priceID != "" {
+		if err := validatePriceExists(h.billing.GetPrice(r.Context(), priceID)); err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		item.PriceID = priceID
+	}
+	if p.has("quantity") {
+		item.Quantity = p.int64Default("quantity", item.Quantity)
+	}
+	items := append([]billing.LineItem{}, subscription.Items...)
+	items[idx] = item
+
+	prorationBehavior := p.string("proration_behavior")
+	var updated billing.Subscription
+	if prorationBehavior == "always_invoice" || prorationBehavior == "create_prorations" {
+		prorationDate := time.Time{}
+		if raw := p.string("proration_date"); raw != "" {
+			if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
+				prorationDate = time.Unix(seconds, 0).UTC()
+			}
+		}
+		result, err := h.billing.UpdateSubscriptionItemsWithProration(r.Context(), billing.SubscriptionProrationRequest{
+			SubscriptionID:     subscription.ID,
+			NewItems:           items,
+			ProrationBehavior:  prorationBehavior,
+			ProrationDate:      prorationDate,
+			BillingCycleAnchor: "",
+		})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		if result.Invoice != nil && result.Invoice.ID != "" {
+			h.emitRenewalWebhooks(r, result.PaymentResult, "subscription_update")
+		} else {
+			h.emitSubscriptionWebhook(r, "customer.subscription.updated", result.Subscription, webhooks.SourceAPI)
+		}
+		updated = result.Subscription
+	} else {
+		// none / unspecified: item replacement only (legacy path; no proration invoice).
+		updated, err = h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{
+			Items:        items,
+			ReplaceItems: true,
+		})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+	}
+	itemResp := h.stripeSubscriptionItem(r, updated, updated.Items[idx], idx)
+	if p.hasDefaultTaxRatesParam("tax_rates") {
+		itemResp["tax_rates"] = h.stripeTaxRateObjects(itemTaxRates)
+	}
+	if meta := p.metadata(); len(meta) > 0 {
+		itemResp["metadata"] = meta
+	}
+	writeJSON(w, http.StatusOK, itemResp)
+}
+
+func (h *Handler) handleSubscriptionItemDelete(w http.ResponseWriter, r *http.Request, id string) {
 	p, err := parseParamsAllowingDeleteBody(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)

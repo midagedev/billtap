@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+- Added billing portal configurations: `GET/POST
+  /v1/billing_portal/configurations` and `GET/POST
+  /v1/billing_portal/configurations/{id}` store local portal-configuration
+  evidence with Stripe-shaped `business_profile`, `default_return_url`,
+  `login_page`, `features[...]`, and `metadata` fields, list filters for
+  `active`/`is_default`, and the first configuration in a run becoming the
+  default. The hosted portal does not render configuration features.
+- `GET /v1/subscription_items` lists resolved items across subscriptions with
+  the `subscription` filter and the standard list envelope, and
+  `GET /v1/subscription_items/{id}` retrieves one item.
+- `POST /v1/subscription_items/{id}` updates an item's `price` and `quantity`
+  (plus metadata and evidence-only `tax_rates`), routing
+  `proration_behavior=always_invoice/create_prorations` through the same
+  proration path as item create so a quantity bump with `always_invoice`
+  issues the prorated `subscription_update` invoice.
+- `GET/DELETE /v1/customers/{id}/subscriptions/{id}/discount` now mirror the
+  top-level subscription discount routes and are customer-scoped: a mismatched
+  customer gets `404`.
+- Fixed subscription discount deletion: `DELETE .../subscriptions/{id}/discount`
+  built a metadata copy with the discount keys removed, but subscription
+  metadata patches merge, so the stored discount survived its own deletion and
+  a following `GET` still returned it. The patch now zeroes the discount keys,
+  which is how merge-mode patches delete.
+- Registered compat claims for already-tested routes: invoice `void`,
+  invoice `mark_uncollectible`, and checkout `expire`. The OpenAPI inventory
+  moves from `175 / 587` (`29.8%`) to `187 / 587` (`31.9%`): billing
+  `31 / 39`, billing_portal `5 / 5`, checkout `4 / 6`.
 - Local evidence objects — coupons, promotion codes, subscription schedules,
   disputes, tax rates, tax IDs and customer cash balances — are now stored in
   the run's own database instead of process memory. They were the only objects
