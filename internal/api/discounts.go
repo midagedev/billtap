@@ -223,7 +223,12 @@ func (h *Handler) handleSubscriptionDiscount(w http.ResponseWriter, r *http.Requ
 	case http.MethodGet:
 		writeJSON(w, http.StatusOK, h.stripeDiscount(discounts[0], subscription.CustomerID, subscription.ID, ""))
 	case http.MethodDelete:
-		metadata := billing.ClearDiscountMetadata(copyStringMap(subscription.Metadata))
+		// PatchSubscription merges metadata; zeroed keys are what actually
+		// remove the discount from the stored subscription.
+		metadata := copyStringMap(subscription.Metadata)
+		for key, value := range billing.ZeroDiscountMetadata() {
+			metadata[key] = value
+		}
 		updated, err := h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{
 			Metadata:        metadata,
 			TimelineSource:  "api",

@@ -113,6 +113,8 @@ func (h *Handler) routes() {
 	h.mux.HandleFunc("/v1/checkout/sessions", h.handleCheckoutSessions)
 	h.mux.HandleFunc("/v1/checkout/sessions/", h.handleCheckoutSession)
 	h.mux.HandleFunc("/v1/billing_portal/sessions", h.handleBillingPortalSessions)
+	h.mux.HandleFunc("/v1/billing_portal/configurations", h.handleBillingPortalConfigurations)
+	h.mux.HandleFunc("/v1/billing_portal/configurations/", h.handleBillingPortalConfiguration)
 	h.mux.HandleFunc("/v1/subscriptions", h.handleSubscriptions)
 	h.mux.HandleFunc("/v1/subscriptions/search", h.handleSubscriptionSearch)
 	h.mux.HandleFunc("/v1/subscriptions/", h.handleSubscription)
@@ -210,25 +212,7 @@ func (h *Handler) methodNotAllowed(w http.ResponseWriter, r *http.Request, allow
 	methodNotAllowed(w, allow)
 }
 
-func implementedWithoutCompatClaim(method string, path string) bool {
-	if method != http.MethodPost {
-		return false
-	}
-	if strings.HasPrefix(path, "/v1/invoices/") && (strings.HasSuffix(path, "/void") || strings.HasSuffix(path, "/mark_uncollectible")) {
-		parts := strings.Split(strings.TrimPrefix(path, "/v1/invoices/"), "/")
-		return len(parts) == 2 && parts[0] != ""
-	}
-	if strings.HasPrefix(path, "/v1/checkout/sessions/") && strings.HasSuffix(path, "/expire") {
-		id := strings.TrimSuffix(strings.TrimPrefix(path, "/v1/checkout/sessions/"), "/expire")
-		return id != "" && !strings.Contains(id, "/")
-	}
-	return false
-}
-
 func (h *Handler) writeKnownUnsupportedRoute(w http.ResponseWriter, r *http.Request) bool {
-	if implementedWithoutCompatClaim(r.Method, r.URL.Path) {
-		return false
-	}
 	route, ok := h.knownRoutes.Lookup(r.Method, r.URL.Path)
 	if !ok {
 		return false
@@ -473,6 +457,15 @@ func (h *Handler) handleCustomerSubscription(w http.ResponseWriter, r *http.Requ
 	}
 	if hasNested {
 		if nested == "discount" {
+			subscription, err := h.billing.GetSubscription(r.Context(), subscriptionID)
+			if err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			if subscription.CustomerID != customerID {
+				writeResult(w, nil, billing.ErrNotFound)
+				return
+			}
 			h.handleSubscriptionDiscount(w, r, subscriptionID)
 			return
 		}
@@ -565,8 +558,14 @@ func (h *Handler) handleProduct(w http.ResponseWriter, r *http.Request) {
 			Metadata:    p.metadata(),
 		})
 		writeResult(w, stripeProduct(product), err)
+	case http.MethodDelete:
+		if err := h.billing.DeleteProduct(r.Context(), id); err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, stripeDeleted(id, "product"))
 	default:
-		h.methodNotAllowed(w, r, "GET, POST")
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
 	}
 }
 
@@ -1689,12 +1688,29 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 		h.expireCheckoutSession(w, r, id)
 		return
 	}
+	if strings.HasSuffix(rest, "/line_items") {
+		id := strings.TrimSuffix(rest, "/line_items")
+		if id == "" || strings.Contains(id, "/") {
+			h.notFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet {
+			h.methodNotAllowed(w, r, "GET")
+			return
+		}
+		h.handleCheckoutSessionLineItems(w, r, id)
+		return
+	}
 	if rest == "" || strings.Contains(rest, "/") {
 		h.notFound(w, r)
 		return
 	}
+	if r.Method == http.MethodPost {
+		h.handleCheckoutSessionUpdate(w, r, rest)
+		return
+	}
 	if r.Method != http.MethodGet {
-		h.methodNotAllowed(w, r, "GET")
+		h.methodNotAllowed(w, r, "GET, POST")
 		return
 	}
 	session, err := h.billing.GetCheckoutSession(r.Context(), rest)
@@ -1708,6 +1724,110 @@ func (h *Handler) handleCheckoutSession(w http.ResponseWriter, r *http.Request) 
 		payload["billtap_return_url"] = rewritten
 	}
 	writeResult(w, payload, err)
+}
+
+// handleCheckoutSessionUpdate implements the bounded POST /v1/checkout/sessions/{id}
+// subset: metadata merge plus line_items[N][quantity] overrides on open sessions.
+func (h *Handler) handleCheckoutSessionUpdate(w http.ResponseWriter, r *http.Request, id string) {
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateCheckoutSessionUpdate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	session, err := h.billing.GetCheckoutSession(r.Context(), id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	items := append([]billing.LineItem{}, session.LineItems...)
+	overridden := false
+	for idx := range items {
+		key := fmt.Sprintf("line_items[%d][quantity]", idx)
+		if !p.has(key) {
+			continue
+		}
+		quantity := p.int64(key)
+		if quantity <= 0 {
+			writeError(w, http.StatusBadRequest, invalidParam(key, "Must be at least 1."))
+			return
+		}
+		items[idx].Quantity = quantity
+		overridden = true
+	}
+	for key := range p.values {
+		matches := checkoutSessionLineItemQuantityRE.FindStringSubmatch(key)
+		if matches == nil {
+			continue
+		}
+		index, parseErr := strconv.Atoi(matches[1])
+		if parseErr != nil || index >= len(items) {
+			writeError(w, http.StatusBadRequest, invalidParam(key, "No such line item on this session."))
+			return
+		}
+	}
+	var itemOverrides []billing.LineItem
+	if overridden {
+		itemOverrides = items
+	}
+	updated, err := h.billing.UpdateCheckoutSessionDetails(r.Context(), id, p.metadata(), itemOverrides)
+	if err == nil {
+		updated.URL = h.absoluteURL(r, updated.URL)
+	}
+	writeResult(w, h.stripeCheckoutSession(r, updated), err)
+}
+
+// handleCheckoutSessionLineItems returns expanded line items for a session
+// (GET /v1/checkout/sessions/{id}/line_items). Line amounts are pre-discount;
+// per-line discount/tax splits are not modeled.
+func (h *Handler) handleCheckoutSessionLineItems(w http.ResponseWriter, r *http.Request, id string) {
+	session, err := h.billing.GetCheckoutSession(r.Context(), id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	data := make([]map[string]any, 0, len(session.LineItems))
+	for idx, item := range session.LineItems {
+		quantity := item.Quantity
+		if quantity <= 0 {
+			quantity = 1
+		}
+		amount := int64(0)
+		currency := "usd"
+		var priceObject map[string]any
+		if price, priceErr := h.billing.GetPrice(r.Context(), item.PriceID); priceErr == nil {
+			amount = price.UnitAmount * quantity
+			currency = price.Currency
+			priceObject = stripePrice(price)
+		} else {
+			priceObject = map[string]any{
+				"id":          item.PriceID,
+				"object":      billing.ObjectPrice,
+				"currency":    currency,
+				"unit_amount": 0,
+				"livemode":    false,
+			}
+		}
+		data = append(data, map[string]any{
+			"id":              fmt.Sprintf("li_%s_%d", session.ID, idx),
+			"object":          "item",
+			"currency":        strings.ToLower(currency),
+			"quantity":        quantity,
+			"amount_subtotal": amount,
+			"amount_total":    amount,
+			"amount_discount": 0,
+			"amount_tax":      0,
+			"description":     nil,
+			"price":           priceObject,
+			"discounts":       []map[string]any{},
+			"taxes":           []map[string]any{},
+			"metadata":        map[string]string{},
+		})
+	}
+	writeJSON(w, http.StatusOK, stripeListFromRequest(r, data))
 }
 
 func (h *Handler) handleBillingPortalSessions(w http.ResponseWriter, r *http.Request) {
@@ -2154,6 +2274,15 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		h.handleSubscriptionResume(w, r, subscriptionID)
 		return
 	}
+	if strings.HasSuffix(id, "/migrate") {
+		subscriptionID := strings.TrimSuffix(id, "/migrate")
+		if subscriptionID == "" || strings.Contains(subscriptionID, "/") {
+			h.notFound(w, r)
+			return
+		}
+		h.handleSubscriptionMigrate(w, r, subscriptionID)
+		return
+	}
 	if id == "" || strings.Contains(id, "/") {
 		h.notFound(w, r)
 		return
@@ -2322,6 +2451,41 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleSubscriptionMigrate records a billing-mode migration request
+// (POST /v1/subscriptions/{id}/migrate) as subscription metadata evidence.
+// Flexible-billing proration recalculation itself is not modeled.
+func (h *Handler) handleSubscriptionMigrate(w http.ResponseWriter, r *http.Request, subscriptionID string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateSubscriptionMigrate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	subscription, err := h.billing.GetSubscription(r.Context(), subscriptionID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	metadata := map[string]string{"billtap_billing_mode": p.string("billing_mode[type]")}
+	if discounts := p.string("billing_mode[flexible][proration_discounts]"); discounts != "" {
+		metadata["billtap_proration_discounts"] = discounts
+	}
+	updated, err := h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{
+		Metadata:        metadata,
+		TimelineAction:  "customer.subscription.migrated",
+		TimelineMessage: "Subscription billing-mode migration recorded",
+		TimelineSource:  "stripe_compat_migrate",
+	})
+	writeResult(w, h.stripeSubscription(r, updated), err)
+}
+
 func (h *Handler) handleSubscriptionResume(w http.ResponseWriter, r *http.Request, subscriptionID string) {
 	if r.Method != http.MethodPost {
 		h.methodNotAllowed(w, r, "POST")
@@ -2353,8 +2517,32 @@ func (h *Handler) handleSubscriptionResume(w http.ResponseWriter, r *http.Reques
 }
 
 func (h *Handler) handleSubscriptionItems(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
+		p := params{values: firstValues(r.URL.Query())}
+		if err := validateSubscriptionItemList(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		subscriptions, err := h.billing.ListSubscriptions(r.Context())
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		filter := strings.TrimSpace(r.URL.Query().Get("subscription"))
+		data := make([]map[string]any, 0)
+		for _, subscription := range subscriptions {
+			if filter != "" && subscription.ID != filter {
+				continue
+			}
+			for idx, item := range subscription.Items {
+				data = append(data, h.stripeSubscriptionItem(r, subscription, item, idx))
+			}
+		}
+		writeJSON(w, http.StatusOK, stripeListFromRequest(r, data))
+		return
+	}
 	if r.Method != http.MethodPost {
-		h.methodNotAllowed(w, r, "POST")
+		h.methodNotAllowed(w, r, "GET, POST")
 		return
 	}
 	p, err := parseParams(r)
@@ -2455,10 +2643,117 @@ func (h *Handler) handleSubscriptionItem(w http.ResponseWriter, r *http.Request)
 		h.notFound(w, r)
 		return
 	}
-	if r.Method != http.MethodDelete {
-		h.methodNotAllowed(w, r, "DELETE")
+	switch r.Method {
+	case http.MethodGet:
+		subscription, idx, found, err := h.findSubscriptionItem(r, id)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		if !found {
+			writeResult(w, nil, billing.ErrNotFound)
+			return
+		}
+		writeJSON(w, http.StatusOK, h.stripeSubscriptionItem(r, subscription, subscription.Items[idx], idx))
+	case http.MethodPost:
+		h.handleSubscriptionItemUpdate(w, r, id)
+	case http.MethodDelete:
+		h.handleSubscriptionItemDelete(w, r, id)
+	default:
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
+	}
+}
+
+func (h *Handler) handleSubscriptionItemUpdate(w http.ResponseWriter, r *http.Request, id string) {
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
 		return
 	}
+	if err := validateSubscriptionItemUpdate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	subscription, idx, found, err := h.findSubscriptionItem(r, id)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	if !found {
+		writeResult(w, nil, billing.ErrNotFound)
+		return
+	}
+	// Resolve item tax_rates before mutation (evidence only; totals use subscription rates).
+	var itemTaxRates []billing.AppliedTaxRate
+	if p.hasDefaultTaxRatesParam("tax_rates") {
+		itemTaxRates, err = h.appliedTaxRatesFromParams(p, "tax_rates")
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+	}
+	item := subscription.Items[idx]
+	if priceID := p.first("price", "price_id"); priceID != "" {
+		if err := validatePriceExists(h.billing.GetPrice(r.Context(), priceID)); err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		item.PriceID = priceID
+	}
+	if p.has("quantity") {
+		item.Quantity = p.int64Default("quantity", item.Quantity)
+	}
+	items := append([]billing.LineItem{}, subscription.Items...)
+	items[idx] = item
+
+	prorationBehavior := p.string("proration_behavior")
+	var updated billing.Subscription
+	if prorationBehavior == "always_invoice" || prorationBehavior == "create_prorations" {
+		prorationDate := time.Time{}
+		if raw := p.string("proration_date"); raw != "" {
+			if seconds, parseErr := strconv.ParseInt(raw, 10, 64); parseErr == nil {
+				prorationDate = time.Unix(seconds, 0).UTC()
+			}
+		}
+		result, err := h.billing.UpdateSubscriptionItemsWithProration(r.Context(), billing.SubscriptionProrationRequest{
+			SubscriptionID:     subscription.ID,
+			NewItems:           items,
+			ProrationBehavior:  prorationBehavior,
+			ProrationDate:      prorationDate,
+			BillingCycleAnchor: "",
+		})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		if result.Invoice != nil && result.Invoice.ID != "" {
+			h.emitRenewalWebhooks(r, result.PaymentResult, "subscription_update")
+		} else {
+			h.emitSubscriptionWebhook(r, "customer.subscription.updated", result.Subscription, webhooks.SourceAPI)
+		}
+		updated = result.Subscription
+	} else {
+		// none / unspecified: item replacement only (legacy path; no proration invoice).
+		updated, err = h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{
+			Items:        items,
+			ReplaceItems: true,
+		})
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+	}
+	itemResp := h.stripeSubscriptionItem(r, updated, updated.Items[idx], idx)
+	if p.hasDefaultTaxRatesParam("tax_rates") {
+		itemResp["tax_rates"] = h.stripeTaxRateObjects(itemTaxRates)
+	}
+	if meta := p.metadata(); len(meta) > 0 {
+		itemResp["metadata"] = meta
+	}
+	writeJSON(w, http.StatusOK, itemResp)
+}
+
+func (h *Handler) handleSubscriptionItemDelete(w http.ResponseWriter, r *http.Request, id string) {
 	p, err := parseParamsAllowingDeleteBody(r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
@@ -3576,12 +3871,157 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, stripeListFromRequest(r, payments), nil)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "attach_payment" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceAttachPayment(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.AttachInvoicePayment(r.Context(), id, p.string("payment_intent"), p.string("payment_record"))
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "lines" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceLineItemUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		var amount *int64
+		if p.has("amount") {
+			value := p.int64("amount")
+			amount = &value
+		}
+		var description *string
+		if p.has("description") {
+			value := p.string("description")
+			description = &value
+		}
+		invoice, err := h.billing.UpdateInvoiceLine(r.Context(), id, parts[2], amount, description, p.metadata())
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "add_lines" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceAddLines(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		lines, err := invoiceLineAdditionsFromParams(p)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.AddInvoiceLines(r.Context(), id, lines)
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "update_lines" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceLineUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		patches := invoiceLinePatchesFromParams(p)
+		if len(patches) == 0 {
+			writeError(w, http.StatusBadRequest, missingParam("line_items[0][id]"))
+			return
+		}
+		var invoice billing.Invoice
+		for _, line := range patches {
+			var err error
+			invoice, err = h.billing.UpdateInvoiceLine(r.Context(), id, line.id, line.amount, line.description, nil)
+			if err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+		}
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), nil)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "remove_lines" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceLineRemove(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		lineIDs := invoiceLineIDsFromParams(p)
+		if len(lineIDs) == 0 {
+			writeError(w, http.StatusBadRequest, missingParam("line_items[0][id]"))
+			return
+		}
+		invoice, err := h.billing.RemoveInvoiceLines(r.Context(), id, lineIDs)
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
 	if len(parts) != 1 {
 		h.notFound(w, r)
 		return
 	}
+	if r.Method == http.MethodPost {
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.UpdateInvoiceDetails(r.Context(), id, invoiceMetadataFromParams(p))
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
+	if r.Method == http.MethodDelete {
+		if err := h.billing.DeleteInvoice(r.Context(), id); err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, stripeDeleted(id, billing.ObjectInvoice))
+		return
+	}
 	if r.Method != http.MethodGet {
-		h.methodNotAllowed(w, r, "GET")
+		h.methodNotAllowed(w, r, "GET, POST, DELETE")
 		return
 	}
 	invoice, err := h.billing.GetInvoice(r.Context(), id)
@@ -3737,6 +4177,31 @@ func (h *Handler) handleCreditNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, action, hasAction := strings.Cut(rest, "/")
+	if hasAction && action == "lines" {
+		if r.Method != http.MethodGet {
+			h.methodNotAllowed(w, r, "GET")
+			return
+		}
+		note, err := h.billing.GetCreditNote(r.Context(), id)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		description := firstNonEmptyString(note.Memo, note.Reason, "Credit note")
+		data := []map[string]any{{
+			"id":          "cnli_" + note.ID,
+			"object":      "credit_note_line_item",
+			"amount":      -note.Amount,
+			"description": description,
+			"credit_note": note.ID,
+			"invoice":     note.InvoiceID,
+			"quantity":    1,
+			"unit_amount": -note.Amount,
+			"livemode":    false,
+		}}
+		writeJSON(w, http.StatusOK, stripeListFromRequest(r, data))
+		return
+	}
 	if hasAction && action == "void" {
 		if r.Method != http.MethodPost {
 			h.methodNotAllowed(w, r, "POST")
@@ -3861,8 +4326,29 @@ func (h *Handler) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hasAction {
+		if r.Method == http.MethodPost {
+			p, err := parseParams(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := validatePaymentIntentUpdate(p); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			metadata := p.metadata()
+			if description := p.string("description"); description != "" {
+				if metadata == nil {
+					metadata = map[string]string{}
+				}
+				metadata["billtap_description"] = description
+			}
+			intent, err := h.billing.UpdatePaymentIntentDetails(r.Context(), id, metadata)
+			writeResult(w, stripePaymentIntent(intent), err)
+			return
+		}
 		if r.Method != http.MethodGet {
-			h.methodNotAllowed(w, r, "GET")
+			h.methodNotAllowed(w, r, "GET, POST")
 			return
 		}
 		paymentIntent, err := h.billing.GetPaymentIntent(r.Context(), id)
@@ -6103,6 +6589,96 @@ func copyPaymentSettingsMetadata(metadata map[string]string, p params) map[strin
 		metadata[key] = value
 	}
 	return metadata
+}
+
+// invoiceLineIndexes collects the line_items[N] indexes present in the params.
+func invoiceLineIndexes(p params) map[int]bool {
+	indexes := map[int]bool{}
+	for key := range p.values {
+		matches := invoiceLineItemParamRE.FindStringSubmatch(key)
+		if matches == nil {
+			continue
+		}
+		if index, err := strconv.Atoi(matches[1]); err == nil {
+			indexes[index] = true
+		}
+	}
+	return indexes
+}
+
+func sortedInvoiceLineIndexes(p params) []int {
+	indexes := invoiceLineIndexes(p)
+	sorted := make([]int, 0, len(indexes))
+	for index := range indexes {
+		sorted = append(sorted, index)
+	}
+	sort.Ints(sorted)
+	return sorted
+}
+
+// invoiceLineAdditionsFromParams builds new draft-invoice lines from
+// line_items[N][amount]/[description]/[currency] form params (add_lines).
+func invoiceLineAdditionsFromParams(p params) ([]billing.InvoiceItem, error) {
+	sorted := sortedInvoiceLineIndexes(p)
+	if len(sorted) == 0 {
+		return nil, missingParam("line_items[0][amount]")
+	}
+	lines := make([]billing.InvoiceItem, 0, len(sorted))
+	for _, index := range sorted {
+		amountKey := fmt.Sprintf("line_items[%d][amount]", index)
+		if !p.has(amountKey) {
+			return nil, missingParam(amountKey)
+		}
+		lines = append(lines, billing.InvoiceItem{
+			Amount:      p.int64(amountKey),
+			Currency:    p.string(fmt.Sprintf("line_items[%d][currency]", index)),
+			Description: p.string(fmt.Sprintf("line_items[%d][description]", index)),
+		})
+	}
+	return lines, nil
+}
+
+type invoiceLinePatch struct {
+	id          string
+	amount      *int64
+	description *string
+}
+
+// invoiceLinePatchesFromParams builds per-line patches keyed by
+// line_items[N][id] with optional amount/description (update_lines).
+func invoiceLinePatchesFromParams(p params) []invoiceLinePatch {
+	patches := make([]invoiceLinePatch, 0)
+	for _, index := range sortedInvoiceLineIndexes(p) {
+		idKey := fmt.Sprintf("line_items[%d][id]", index)
+		if !p.has(idKey) {
+			continue
+		}
+		patch := invoiceLinePatch{id: p.string(idKey)}
+		amountKey := fmt.Sprintf("line_items[%d][amount]", index)
+		if p.has(amountKey) {
+			amount := p.int64(amountKey)
+			patch.amount = &amount
+		}
+		descriptionKey := fmt.Sprintf("line_items[%d][description]", index)
+		if p.has(descriptionKey) {
+			description := p.string(descriptionKey)
+			patch.description = &description
+		}
+		patches = append(patches, patch)
+	}
+	return patches
+}
+
+// invoiceLineIDsFromParams collects line_items[N][id] values (remove_lines).
+func invoiceLineIDsFromParams(p params) []string {
+	ids := make([]string, 0)
+	for _, index := range sortedInvoiceLineIndexes(p) {
+		idKey := fmt.Sprintf("line_items[%d][id]", index)
+		if p.has(idKey) {
+			ids = append(ids, p.string(idKey))
+		}
+	}
+	return ids
 }
 
 func paymentIntentMetadata(p params) map[string]string {

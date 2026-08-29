@@ -17,13 +17,14 @@ import (
 // Evidence kinds. These are the persistence keys, so renaming one orphans the
 // rows already written under the old name.
 const (
-	kindCoupon        = "coupon"
-	kindPromotionCode = "promotion_code"
-	kindSchedule      = "schedule"
-	kindDispute       = "dispute"
-	kindTaxRate       = "tax_rate"
-	kindTaxID         = "tax_id"
-	kindCash          = "cash"
+	kindCoupon              = "coupon"
+	kindPromotionCode       = "promotion_code"
+	kindSchedule            = "schedule"
+	kindDispute             = "dispute"
+	kindTaxRate             = "tax_rate"
+	kindTaxID               = "tax_id"
+	kindCash                = "cash"
+	kindPortalConfiguration = "portal_configuration"
 )
 
 // LocalEvidenceRepository persists evidence objects in the run's own store, so a
@@ -35,31 +36,33 @@ type LocalEvidenceRepository interface {
 }
 
 type localEvidenceStore struct {
-	mu             sync.Mutex
-	repo           LocalEvidenceRepository
-	coupons        map[string]map[string]any
-	promotionCodes map[string]map[string]any
-	schedules      map[string]map[string]any
-	cashBalances   map[string]int64
-	cashTxs        map[string][]map[string]any
-	disputes       map[string]map[string]any
-	taxRates       map[string]map[string]any
-	taxIDs         map[string]map[string]any
+	mu                   sync.Mutex
+	repo                 LocalEvidenceRepository
+	coupons              map[string]map[string]any
+	promotionCodes       map[string]map[string]any
+	schedules            map[string]map[string]any
+	cashBalances         map[string]int64
+	cashTxs              map[string][]map[string]any
+	disputes             map[string]map[string]any
+	taxRates             map[string]map[string]any
+	taxIDs               map[string]map[string]any
+	portalConfigurations map[string]map[string]any
 }
 
 // newLocalEvidenceStore returns an evidence store. A nil repo keeps everything in
 // memory, which is what callers without a store (scorecard runs, unit tests) want.
 func newLocalEvidenceStore(repo LocalEvidenceRepository) *localEvidenceStore {
 	s := &localEvidenceStore{
-		repo:           repo,
-		coupons:        map[string]map[string]any{},
-		promotionCodes: map[string]map[string]any{},
-		schedules:      map[string]map[string]any{},
-		cashBalances:   map[string]int64{},
-		cashTxs:        map[string][]map[string]any{},
-		disputes:       map[string]map[string]any{},
-		taxRates:       map[string]map[string]any{},
-		taxIDs:         map[string]map[string]any{},
+		repo:                 repo,
+		coupons:              map[string]map[string]any{},
+		promotionCodes:       map[string]map[string]any{},
+		schedules:            map[string]map[string]any{},
+		cashBalances:         map[string]int64{},
+		cashTxs:              map[string][]map[string]any{},
+		disputes:             map[string]map[string]any{},
+		taxRates:             map[string]map[string]any{},
+		taxIDs:               map[string]map[string]any{},
+		portalConfigurations: map[string]map[string]any{},
 	}
 	s.restore()
 	return s
@@ -79,6 +82,8 @@ func (s *localEvidenceStore) mapFor(kind string) map[string]map[string]any {
 		return s.taxRates
 	case kindTaxID:
 		return s.taxIDs
+	case kindPortalConfiguration:
+		return s.portalConfigurations
 	}
 	return nil
 }

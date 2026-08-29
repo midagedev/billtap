@@ -1,6 +1,6 @@
 # Stripe Compatibility 90% Target
 
-Status date: 2026-05-12
+Status date: 2026-08-29
 
 Billtap's long-running Stripe API compatibility target is measurable coverage
 of at least 90% of the public Stripe OpenAPI operation inventory, without
@@ -11,8 +11,9 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `160 / 587` operations, `27.3%`, using Stripe OpenAPI
-  `2026-04-22.dahlia` from the local OpenAPI snapshot on 2026-05-12.
+- **Current baseline:** `200 / 587` operations, `34.1%`, using Stripe OpenAPI
+  `2026-04-22.dahlia` (stripe/openapi tag `v2261`), re-measured on 2026-08-29.
+  All four P0 families are at 100%.
 - **Minimum target count:** `529 / 587` operations at `L1` or higher.
 - **Remaining inventory-only budget:** at most `58 / 587` operations at `L0`.
 
@@ -52,20 +53,21 @@ toward the 90% target after it has an explicit tested claim at `L1+`.
 
 ## Baseline By Family
 
-Latest measured baseline from the local Stripe OpenAPI snapshot on 2026-05-12:
+Latest measured baseline from the Stripe OpenAPI `2026-04-22.dahlia` snapshot
+(stripe/openapi tag `v2261`), re-measured on 2026-08-29:
 
 | Priority | Family | Total | Implemented | Coverage | 90% target count | First target |
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | P0 | webhooks | 7 | 7 | 100.0% | 7 | Expand connected-account routing, thin event fixtures, and replay evidence. |
-| P0 | checkout | 6 | 3 | 50.0% | 6 | Close checkout route gaps and SDK smoke. |
-| P0 | billing | 39 | 12 | 30.8% | 36 | Add renewal, trial, dunning, subscription schedule, coupon, and credit-note scenarios. |
-| P0 | billing_portal | 5 | 1 | 20.0% | 5 | Add portal configurations and session retrieval fixtures. |
-| P1 | catalog | 54 | 19 | 35.2% | 49 | Add coupon, promotion code, tax-rate, and product/price search validation. |
-| P1 | customers | 31 | 11 | 35.5% | 28 | Add OpenAPI-backed validation, search/list parity, and payment source fixtures. |
-| P1 | payments | 41 | 15 | 36.6% | 37 | Add PaymentIntent and SetupIntent create/confirm/capture/cancel state machines. |
+| P0 | checkout | 6 | 6 | 100.0% | 6 | Deepen SDK smoke and hosted-page parity evidence. |
+| P0 | billing | 39 | 39 | 100.0% | 36 | Deepen dunning, schedule, and credit-note scenario evidence. |
+| P0 | billing_portal | 5 | 5 | 100.0% | 5 | Deepen portal configuration fixtures and hosted portal rendering evidence. |
+| P1 | catalog | 54 | 28 | 51.9% | 49 | Add coupon, promotion code, tax-rate, and product/price search validation. |
+| P1 | customers | 31 | 12 | 38.7% | 28 | Add OpenAPI-backed validation, search/list parity, and payment source fixtures. |
+| P1 | payments | 41 | 23 | 56.1% | 37 | Add PaymentIntent and SetupIntent create/confirm/capture/cancel state machines. |
 | P1 | connect | 53 | 53 | 100.0% | 48 | Deepen Connect SDK/adoption smoke, connected-account webhook routing, and v2 Core account inventory evidence. |
-| P1 | payment_history | 30 | 13 | 43.3% | 27 | Add charge, refund, balance transaction, dispute, and payment history evidence. |
-| P3 | auxiliary | 321 | 10 | 3.1% | 289 | Keep inventory visible and add schema/fixture smoke only when adoption requires it. |
+| P1 | payment_history | 30 | 14 | 46.7% | 27 | Add charge, refund, balance transaction, dispute, and payment history evidence. |
+| P3 | auxiliary | 321 | 13 | 4.0% | 289 | Keep inventory visible and add schema/fixture smoke only when adoption requires it. |
 
 ## PR Chunk Plan
 
@@ -127,8 +129,39 @@ payment-method attach/detach.
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
 coverage must come from T3-T9. The planned T3-T9 delta is intentionally larger
-than the `+369` operations needed to move the current `160 / 587` baseline to
+than the `+329` operations needed to move the current `200 / 587` baseline to
 the `529 / 587` target.
+
+The billing-completion wave on 2026-08-29 raised the generated inventory from
+`195 / 587` (`33.2%`) to `200 / 587` (`34.1%`): single draft-invoice line
+update, invoice `attach_payment`, subscription `migrate` (billing-mode
+evidence), PaymentIntent metadata/description update, and credit-note lines.
+Billing closes to `39 / 39`, so all four P0 families are at 100%; further
+count growth now comes from P1 families and the auxiliary waves.
+
+The P0 checkout/invoice wave on 2026-08-29 raised the generated inventory from
+`187 / 587` (`31.9%`) to `195 / 587` (`33.2%`): checkout session update and
+line_items listing, draft invoice update/delete and add_lines/update_lines/
+remove_lines, and product deletion. Checkout closes to `6 / 6`, billing moves
+to `36 / 39`, and catalog to `28 / 54`; three of the four P0 families are now
+at 100%.
+
+The P0 portal/items wave on 2026-08-29 raised the generated inventory from
+`175 / 587` (`29.8%`) to `187 / 587` (`31.9%`): billing portal configurations
+create/list/retrieve/update, subscription item list/retrieve/update, nested
+customer subscription discount retrieve/delete, and claims for the
+already-tested invoice `void`/`mark_uncollectible` and checkout `expire`
+routes. billing_portal closed to `5 / 5`, billing moved to `31 / 39`, and
+checkout to `4 / 6`.
+
+The tax and invoice-depth waves landed between the 2026-05-12 and 2026-08-29
+measurements raised the generated inventory from `160 / 587` (`27.3%`) to
+`175 / 587` (`29.8%`): tax-rate create/list/retrieve/update, customer tax-ID
+create/list/retrieve/delete, `POST /v1/invoices/{id}/send`, and invoice-item
+list/create/retrieve plus manual invoice create/finalize/lines claims. Billing
+is now `24 / 39`, catalog `27 / 54`, and auxiliary `13 / 321`; the previous
+baseline table had drifted behind its own summary, so the family rows above
+moved further than these operation deltas alone suggest.
 
 ## Derived Gate Checks
 

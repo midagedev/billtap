@@ -16,9 +16,9 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G9 Release Candidate          | Passed locally | Dockerfile, sample app, public examples, release checklist                                                                                                  |
 | G10 Fixture Integration Smoke | Passed locally | Fixture apply/snapshot/assert APIs support deterministic integration setup                                                                                  |
 | G11 Assertion Ergonomics      | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots                                                                                        |
-| G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 49 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
+| G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 50 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
 | G13 Stripe API Expansion      | In progress    | Roadmap defines compatibility levels and endpoint-family priorities; OpenAPI inventory generator and optional workflow write JSON/Markdown coverage artifacts  |
-| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 160/587 baseline, family thresholds, and chunk plan                             |
+| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 200/587 baseline, family thresholds, and chunk plan                             |
 
 ## Current Public Claim
 
@@ -30,25 +30,27 @@ under Apache-2.0.
 ## Current Compatibility Evidence
 
 - Scorecard version: `l3-public-readiness-v7`
-- Release-blocking scorecard cases: 49
+- Release-blocking scorecard cases: 50
 - Required scorecard release result: `mismatch=0`, `error=0`, `passed=true`
 - Coverage focus: request validation, protocol parameter acceptance,
   idempotency mismatch, deterministic checkout payment-error aliases,
   direct intent state machines, and billing lifecycle retry/renewal mutations
-- OpenAPI operation baseline: `160 / 587`, `27.3%`
+- OpenAPI operation baseline: `200 / 587`, `34.1%`
 - Long-running OpenAPI operation target: at least `529 / 587`, `90.0%`, at
   `L1+` with deeper P0/P1 behavior gates
 
 ## Last Local Code Verification
 
-Verified on 2026-05-12 from branch `simulation-capacity-backlog`:
+Verified on 2026-08-29 from branch `main`:
 
 - `go test ./... -count=1`
-- `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-scorecard-simulation-impl`
-  - result: `imported=49 skipped=1 unsupported=1 mismatch=0 error=0`
-- `go run ./cmd/billtap compatibility inventory --openapi /tmp/stripe-openapi-spec3.json --output-dir /tmp/billtap-inventory-simulation-impl --source stripe-openapi-local`
-  - result: `operations=587 implemented=160 inventory_only=427 schema_validated=587 implemented_percent=27.3`
-- Current branch verification covers Go tests, compatibility scorecard, inventory generation, whitespace checks, and forbidden internal keyword scan.
+- `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
+  - result: `imported=50 skipped=1 unsupported=1 mismatch=0 error=0`
+- `go run ./cmd/billtap compatibility inventory --openapi <stripe-openapi-v2261-spec3.json> --output-dir /tmp/billtap-inventory --source stripe/openapi-v2261-2026-04-22.dahlia`
+  - result: `operations=587 implemented=200 inventory_only=387 schema_validated=587 implemented_percent=34.1`
+- Current branch verification covers Go tests, compatibility scorecard, and
+  inventory generation; `gofmt -l .` is clean. The forbidden internal keyword
+  scan runs in CI with the configured keyword list.
 - Container/image release gates run after merge through the existing release workflow.
 
 Release verification should still be rerun on the final release branch or tag.

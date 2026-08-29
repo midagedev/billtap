@@ -2,6 +2,70 @@
 
 ## Unreleased
 
+- The billing family is now full inventory (`39 / 39` OpenAPI operations):
+  all four P0 families (webhooks, checkout, billing, billing_portal) are at
+  100%.
+- `POST /v1/invoices/{id}/lines/{line_item_id}` updates one draft-invoice line
+  (`amount`, `description`, metadata) with the same totals recomputation as
+  `update_lines`.
+- `POST /v1/invoices/{id}/attach_payment` records an attached PaymentIntent
+  (customer-matched) or payment record on a draft invoice as evidence;
+  collection still runs through `finalize`/`pay`.
+- `POST /v1/subscriptions/{id}/migrate` records
+  `billing_mode[type]=flexible` (plus optional `proration_discounts`) as
+  subscription metadata evidence; flexible-billing proration recalculation is
+  not modeled.
+- `POST /v1/payment_intents/{id}` updates intent metadata and evidenced
+  description; amount, currency, and status stay immutable.
+- `GET /v1/credit_notes/{id}/lines` returns one line derived from the stored
+  credit-note amount and memo/reason.
+- The OpenAPI inventory moves from `195 / 587` (`33.2%`) to `200 / 587`
+  (`34.1%`): billing `39 / 39`, payments `23 / 41`, payment_history `14 / 30`.
+- `GET /v1/checkout/sessions/{id}/line_items` returns the session's line items
+  as expanded Stripe `item` objects (pre-discount amounts; per-line
+  discount/tax splits are not modeled).
+- `POST /v1/checkout/sessions/{id}` updates an open session: metadata merge
+  plus `line_items[N][quantity]` overrides with immutable prices. Non-open
+  sessions, out-of-range indexes, and non-positive quantities are rejected.
+  Checkout sessions are now full inventory: `6 / 6` operations.
+- `POST /v1/invoices/{id}` updates draft invoices (description, `days_until_due`,
+  `default_payment_method`, metadata merge) and `DELETE /v1/invoices/{id}`
+  deletes a draft together with its attached lines and timeline evidence.
+- `POST /v1/invoices/{id}/add_lines`, `update_lines`, and `remove_lines` mutate
+  draft-invoice lines through the invoice-item path, recomputing
+  `subtotal`/`total`/`amount_due` per change.
+- `DELETE /v1/products/{id}` removes local product evidence; existing prices
+  keep referencing the deleted product id.
+- The OpenAPI inventory moves from `187 / 587` (`31.9%`) to `195 / 587`
+  (`33.2%`): checkout closes to `6 / 6`, billing moves to `36 / 39`, and
+  catalog to `28 / 54`.
+- Added billing portal configurations: `GET/POST
+  /v1/billing_portal/configurations` and `GET/POST
+  /v1/billing_portal/configurations/{id}` store local portal-configuration
+  evidence with Stripe-shaped `business_profile`, `default_return_url`,
+  `login_page`, `features[...]`, and `metadata` fields, list filters for
+  `active`/`is_default`, and the first configuration in a run becoming the
+  default. The hosted portal does not render configuration features.
+- `GET /v1/subscription_items` lists resolved items across subscriptions with
+  the `subscription` filter and the standard list envelope, and
+  `GET /v1/subscription_items/{id}` retrieves one item.
+- `POST /v1/subscription_items/{id}` updates an item's `price` and `quantity`
+  (plus metadata and evidence-only `tax_rates`), routing
+  `proration_behavior=always_invoice/create_prorations` through the same
+  proration path as item create so a quantity bump with `always_invoice`
+  issues the prorated `subscription_update` invoice.
+- `GET/DELETE /v1/customers/{id}/subscriptions/{id}/discount` now mirror the
+  top-level subscription discount routes and are customer-scoped: a mismatched
+  customer gets `404`.
+- Fixed subscription discount deletion: `DELETE .../subscriptions/{id}/discount`
+  built a metadata copy with the discount keys removed, but subscription
+  metadata patches merge, so the stored discount survived its own deletion and
+  a following `GET` still returned it. The patch now zeroes the discount keys,
+  which is how merge-mode patches delete.
+- Registered compat claims for already-tested routes: invoice `void`,
+  invoice `mark_uncollectible`, and checkout `expire`. The OpenAPI inventory
+  moves from `175 / 587` (`29.8%`) to `187 / 587` (`31.9%`): billing
+  `31 / 39`, billing_portal `5 / 5`, checkout `4 / 6`.
 - Local evidence objects — coupons, promotion codes, subscription schedules,
   disputes, tax rates, tax IDs and customer cash balances — are now stored in
   the run's own database instead of process memory. They were the only objects
