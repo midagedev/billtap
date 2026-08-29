@@ -52,6 +52,10 @@ var (
 	invoicePreviewItemParamRE   = regexp.MustCompile(`^((subscription_details|subscriptionDetails)\[items\]\[\d+\]\[(id|price|price_id|quantity)\]|(subscription_items|items)\[\d+\]\[(id|price|price_id|quantity)\])$`)
 	invoicePaymentSettingsRE    = regexp.MustCompile(`^payment_settings(\[[^\]]+\])+$`)
 	portalFeatureParamRE        = regexp.MustCompile(`^features\[(customer_update|invoice_history|payment_method_update|subscription_cancel|subscription_update)\]\[(enabled|mode|proration_behavior|cancellation_reason|allowed_updates|default_allowed_updates)\](\[\d*\])?$`)
+	// Session update line items are quantity-only overrides of existing items.
+	checkoutSessionLineItemQuantityRE = regexp.MustCompile(`^line_items\[(\d+)\]\[quantity\]$`)
+	// Draft-invoice line mutation params (add_lines/update_lines/remove_lines).
+	invoiceLineItemParamRE = regexp.MustCompile(`^line_items\[(\d+)\]\[(id|amount|description|currency)\]$`)
 )
 
 var stripePaymentMethodTypes = []string{
@@ -1594,6 +1598,57 @@ func validateSubscriptionItemList(p params) error {
 		Int64Params: []string{"limit"},
 		Positive:    []string{"limit"},
 	})
+}
+
+// validateCheckoutSessionUpdate allows the bounded POST /v1/checkout/sessions/{id}
+// subset: metadata merge and line_items[N][quantity] overrides.
+func validateCheckoutSessionUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"expand"},
+		AllowedRegex:  []*regexp.Regexp{checkoutSessionLineItemQuantityRE},
+		AllowMetadata: true,
+	})
+}
+
+func validateInvoiceUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"description", "days_until_due", "default_payment_method"},
+		AllowMetadata: true,
+	})
+}
+
+func validateInvoiceAddLines(p params) error {
+	return p.validate(paramSpec{
+		AllowedRegex: []*regexp.Regexp{invoiceLineItemParamRE},
+	})
+}
+
+func validateInvoiceLineUpdate(p params) error {
+	if err := p.validate(paramSpec{
+		AllowedRegex: []*regexp.Regexp{invoiceLineItemParamRE},
+	}); err != nil {
+		return err
+	}
+	for index := range invoiceLineIndexes(p) {
+		if !p.has(fmt.Sprintf("line_items[%d][id]", index)) {
+			return missingParam(fmt.Sprintf("line_items[%d][id]", index))
+		}
+	}
+	return nil
+}
+
+func validateInvoiceLineRemove(p params) error {
+	if err := p.validate(paramSpec{
+		AllowedRegex: []*regexp.Regexp{invoiceLineItemParamRE},
+	}); err != nil {
+		return err
+	}
+	for index := range invoiceLineIndexes(p) {
+		if !p.has(fmt.Sprintf("line_items[%d][id]", index)) {
+			return missingParam(fmt.Sprintf("line_items[%d][id]", index))
+		}
+	}
+	return nil
 }
 
 func validateSubscriptionItemUpdate(p params) error {

@@ -36,7 +36,7 @@ Billtap currently has a stateful Stripe-like local subset with:
 - webhook retry, duplicate, delay, out-of-order, replay, historical replay, and
   delivery attempt evidence
 - diagnostic bundles, request traces, timeline evidence, and dashboard views
-- OpenAPI inventory baseline: `187 / 587` implemented operations, `31.9%`
+- OpenAPI inventory baseline: `195 / 587` implemented operations, `33.2%`
 
 ## P0 Regression-Paired Backlog
 

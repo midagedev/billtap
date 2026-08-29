@@ -72,6 +72,7 @@ type Repository interface {
 	GetProduct(context.Context, string) (Product, error)
 	ListProducts(context.Context) ([]Product, error)
 	UpdateProduct(context.Context, string, Product) (Product, error)
+	DeleteProduct(context.Context, string) error
 
 	CreatePrice(context.Context, Price) (Price, error)
 	GetPrice(context.Context, string) (Price, error)
@@ -94,7 +95,10 @@ type Repository interface {
 	ListInvoices(context.Context) ([]Invoice, error)
 	ListInvoicesFiltered(context.Context, InvoiceFilter) ([]Invoice, error)
 	UpdateInvoice(context.Context, Invoice, []TimelineEntry) (Invoice, error)
+	DeleteInvoice(context.Context, string) error
 	CreateInvoiceItem(context.Context, InvoiceItem, Invoice, []TimelineEntry) (InvoiceItem, Invoice, error)
+	UpdateInvoiceItem(context.Context, InvoiceItem, Invoice, []TimelineEntry) (InvoiceItem, Invoice, error)
+	DeleteInvoiceItem(context.Context, string, Invoice, []TimelineEntry) (Invoice, error)
 	AttachInvoiceItems(context.Context, Invoice, []string, []TimelineEntry) (Invoice, error)
 	ListInvoiceItemsFiltered(context.Context, InvoiceItemFilter) ([]InvoiceItem, error)
 	FinalizeInvoice(context.Context, Invoice, PaymentIntent, []TimelineEntry) (Invoice, PaymentIntent, error)
@@ -200,6 +204,15 @@ func (s *Service) ListProducts(ctx context.Context) ([]Product, error) {
 
 func (s *Service) UpdateProduct(ctx context.Context, id string, in Product) (Product, error) {
 	return s.repo.UpdateProduct(ctx, id, in)
+}
+
+// DeleteProduct removes local product evidence (DELETE /v1/products/{id}).
+// Existing prices keep referencing the deleted product id.
+func (s *Service) DeleteProduct(ctx context.Context, id string) error {
+	if strings.TrimSpace(id) == "" {
+		return fmt.Errorf("%w: product is required", ErrInvalidInput)
+	}
+	return s.repo.DeleteProduct(ctx, id)
 }
 
 func (s *Service) CreatePrice(ctx context.Context, in Price) (Price, error) {
@@ -446,6 +459,52 @@ func (s *Service) ExpireCheckoutSession(ctx context.Context, sessionID string) (
 		session.InvoiceID,
 		session.PaymentIntentID,
 		map[string]string{"source": "checkout.session.expire", "status": session.Status},
+		at,
+	)})
+}
+
+// UpdateCheckoutSessionDetails merges metadata and replaces line-item
+// quantities on an open session (POST /v1/checkout/sessions/{id}).
+func (s *Service) UpdateCheckoutSessionDetails(ctx context.Context, sessionID string, metadata map[string]string, items []LineItem) (CheckoutSession, error) {
+	if strings.TrimSpace(sessionID) == "" {
+		return CheckoutSession{}, fmt.Errorf("%w: session is required", ErrInvalidInput)
+	}
+	session, err := s.repo.GetCheckoutSession(ctx, sessionID)
+	if err != nil {
+		return CheckoutSession{}, err
+	}
+	if strings.ToLower(strings.TrimSpace(session.Status)) != "open" {
+		return CheckoutSession{}, fmt.Errorf("%w: status must be open", ErrInvalidInput)
+	}
+	at := s.now()
+	if metadata != nil {
+		session.Metadata = copyMap(session.Metadata)
+		if session.Metadata == nil {
+			session.Metadata = map[string]string{}
+		}
+		for key, value := range metadata {
+			if value == "" {
+				delete(session.Metadata, key)
+			} else {
+				session.Metadata[key] = value
+			}
+		}
+	}
+	if items != nil {
+		session.LineItems = items
+	}
+	return s.repo.UpdateCheckoutSession(ctx, session, []TimelineEntry{billingTimelineEntry(
+		"checkout_session_updated_"+session.ID+"_"+at.Format(time.RFC3339Nano),
+		"checkout.session.updated",
+		"Checkout session updated",
+		ObjectCheckoutSession,
+		session.ID,
+		session.CustomerID,
+		session.ID,
+		session.SubscriptionID,
+		session.InvoiceID,
+		session.PaymentIntentID,
+		map[string]string{"source": "checkout.session.update"},
 		at,
 	)})
 }
@@ -884,6 +943,183 @@ func (s *Service) CreateInvoice(ctx context.Context, in Invoice) (Invoice, error
 		return Invoice{}, err
 	}
 	return s.attachPendingInvoiceItems(ctx, created)
+}
+
+// requireDraftInvoice loads an invoice and rejects anything that already left
+// the draft state; Stripe line/detail edits apply to drafts only.
+func (s *Service) requireDraftInvoice(ctx context.Context, invoiceID string) (Invoice, error) {
+	invoice, err := s.repo.GetInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if invoice.Status != "draft" {
+		return Invoice{}, fmt.Errorf("%w: invoice status must be draft", ErrInvalidInput)
+	}
+	return invoice, nil
+}
+
+// UpdateInvoiceDetails applies the bounded draft-invoice update subset
+// (POST /v1/invoices/{id}): metadata merge plus the evidenced description,
+// days_until_due, and default_payment_method keys.
+func (s *Service) UpdateInvoiceDetails(ctx context.Context, invoiceID string, metadata map[string]string) (Invoice, error) {
+	invoice, err := s.requireDraftInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	at := s.now()
+	if metadata != nil {
+		invoice.Metadata = copyMap(invoice.Metadata)
+		if invoice.Metadata == nil {
+			invoice.Metadata = map[string]string{}
+		}
+		for key, value := range metadata {
+			if value == "" {
+				delete(invoice.Metadata, key)
+			} else {
+				invoice.Metadata[key] = value
+			}
+		}
+	}
+	return s.repo.UpdateInvoice(ctx, invoice, []TimelineEntry{billingTimelineEntry(
+		"invoice_updated_"+invoice.ID+"_"+at.Format(time.RFC3339Nano),
+		"invoice.updated",
+		"Invoice updated",
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoice.update"},
+		at,
+	)})
+}
+
+// DeleteInvoice removes a draft invoice together with its attached lines and
+// timeline evidence (DELETE /v1/invoices/{id}).
+func (s *Service) DeleteInvoice(ctx context.Context, invoiceID string) error {
+	if _, err := s.requireDraftInvoice(ctx, invoiceID); err != nil {
+		return err
+	}
+	return s.repo.DeleteInvoice(ctx, invoiceID)
+}
+
+// AddInvoiceLines attaches new lines to a draft invoice
+// (POST /v1/invoices/{id}/add_lines), reusing the invoice-item path so
+// subtotal/total/amount_due and timeline evidence stay consistent.
+func (s *Service) AddInvoiceLines(ctx context.Context, invoiceID string, lines []InvoiceItem) (Invoice, error) {
+	invoice, err := s.requireDraftInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if len(lines) == 0 {
+		return Invoice{}, fmt.Errorf("%w: line_items are required", ErrInvalidInput)
+	}
+	for _, line := range lines {
+		if line.Amount == 0 {
+			return Invoice{}, fmt.Errorf("%w: line_items amount is required", ErrInvalidInput)
+		}
+		line.CustomerID = invoice.CustomerID
+		line.InvoiceID = invoice.ID
+		line.Currency = firstNonEmpty(strings.TrimSpace(line.Currency), invoice.Currency)
+		_, updated, err := s.CreateInvoiceItem(ctx, line)
+		if err != nil {
+			return Invoice{}, err
+		}
+		invoice = updated
+	}
+	return invoice, nil
+}
+
+// findInvoiceLine locates one attached line on a draft invoice.
+func (s *Service) findInvoiceLine(ctx context.Context, invoice Invoice, lineID string) (InvoiceItem, error) {
+	items, err := s.repo.ListInvoiceItemsFiltered(ctx, InvoiceItemFilter{InvoiceID: invoice.ID})
+	if err != nil {
+		return InvoiceItem{}, err
+	}
+	for _, item := range items {
+		if item.ID == lineID {
+			return item, nil
+		}
+	}
+	return InvoiceItem{}, ErrNotFound
+}
+
+// UpdateInvoiceLine patches one attached draft-invoice line
+// (POST /v1/invoices/{id}/update_lines): amount and description updates
+// recompute subtotal/total/amount_due.
+func (s *Service) UpdateInvoiceLine(ctx context.Context, invoiceID string, lineID string, amount *int64, description *string) (Invoice, error) {
+	invoice, err := s.requireDraftInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	item, err := s.findInvoiceLine(ctx, invoice, lineID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	at := s.now()
+	if amount != nil && *amount != item.Amount {
+		addInvoiceItemAmount(&invoice, *amount-item.Amount, item.Currency)
+		item.Amount = *amount
+	}
+	if description != nil {
+		item.Description = *description
+	}
+	_, updated, err := s.repo.UpdateInvoiceItem(ctx, item, invoice, []TimelineEntry{billingTimelineEntry(
+		"invoiceline_updated_"+item.ID+"_"+at.Format(time.RFC3339Nano),
+		"invoice.updated",
+		"Invoice line updated",
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoice.update_lines", "line": item.ID},
+		at,
+	)})
+	return updated, err
+}
+
+// RemoveInvoiceLines detaches lines from a draft invoice
+// (POST /v1/invoices/{id}/remove_lines), recomputing totals per removed line.
+func (s *Service) RemoveInvoiceLines(ctx context.Context, invoiceID string, lineIDs []string) (Invoice, error) {
+	invoice, err := s.requireDraftInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if len(lineIDs) == 0 {
+		return Invoice{}, fmt.Errorf("%w: line_items are required", ErrInvalidInput)
+	}
+	for _, lineID := range lineIDs {
+		item, err := s.findInvoiceLine(ctx, invoice, lineID)
+		if err != nil {
+			return Invoice{}, err
+		}
+		at := s.now()
+		addInvoiceItemAmount(&invoice, -item.Amount, item.Currency)
+		updated, err := s.repo.DeleteInvoiceItem(ctx, item.ID, invoice, []TimelineEntry{billingTimelineEntry(
+			"invoiceline_removed_"+item.ID+"_"+at.Format(time.RFC3339Nano),
+			"invoice.updated",
+			"Invoice line removed",
+			ObjectInvoice,
+			invoice.ID,
+			invoice.CustomerID,
+			"",
+			invoice.SubscriptionID,
+			invoice.ID,
+			invoice.PaymentIntentID,
+			map[string]string{"source": "invoice.remove_lines", "line": item.ID},
+			at,
+		)})
+		if err != nil {
+			return Invoice{}, err
+		}
+		invoice = updated
+	}
+	return invoice, nil
 }
 
 func (s *Service) ListInvoices(ctx context.Context) ([]Invoice, error) {

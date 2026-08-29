@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- `GET /v1/checkout/sessions/{id}/line_items` returns the session's line items
+  as expanded Stripe `item` objects (pre-discount amounts; per-line
+  discount/tax splits are not modeled).
+- `POST /v1/checkout/sessions/{id}` updates an open session: metadata merge
+  plus `line_items[N][quantity]` overrides with immutable prices. Non-open
+  sessions, out-of-range indexes, and non-positive quantities are rejected.
+  Checkout sessions are now full inventory: `6 / 6` operations.
+- `POST /v1/invoices/{id}` updates draft invoices (description, `days_until_due`,
+  `default_payment_method`, metadata merge) and `DELETE /v1/invoices/{id}`
+  deletes a draft together with its attached lines and timeline evidence.
+- `POST /v1/invoices/{id}/add_lines`, `update_lines`, and `remove_lines` mutate
+  draft-invoice lines through the invoice-item path, recomputing
+  `subtotal`/`total`/`amount_due` per change.
+- `DELETE /v1/products/{id}` removes local product evidence; existing prices
+  keep referencing the deleted product id.
+- The OpenAPI inventory moves from `187 / 587` (`31.9%`) to `195 / 587`
+  (`33.2%`): checkout closes to `6 / 6`, billing moves to `36 / 39`, and
+  catalog to `28 / 54`.
 - Added billing portal configurations: `GET/POST
   /v1/billing_portal/configurations` and `GET/POST
   /v1/billing_portal/configurations/{id}` store local portal-configuration

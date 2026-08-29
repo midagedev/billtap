@@ -164,6 +164,7 @@ func DefaultClaims() []Claim {
 	}
 	add(http.MethodGet, "/v1/customers/search", Claim{Level: "L3", Stateful: true, Risks: []string{"supports a measured customer search subset for id, email, name, and metadata equality clauses joined by AND"}})
 	add(http.MethodGet, "/v1/products/search", Claim{Level: "L2", Risks: []string{"metadata equality filters only; no Stripe Search Query Language parity"}})
+	add(http.MethodDelete, "/v1/products/{id}", Claim{Level: "L3", Stateful: true, Risks: []string{"removes local product evidence; existing prices keep referencing the deleted product id"}})
 	add(http.MethodGet, "/v1/prices/search", Claim{Level: "L3", Stateful: true, Risks: []string{"supports a measured prices search subset for active, type, lookup_key, and metadata equality clauses joined by AND"}})
 
 	for _, method := range []string{http.MethodGet, http.MethodPost} {
@@ -210,6 +211,8 @@ func DefaultClaims() []Claim {
 	add(http.MethodGet, "/v1/checkout/sessions", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription and payment modes only (setup unsupported)"}})
 	add(http.MethodGet, "/v1/checkout/sessions/{id}", Claim{Level: "L4", Stateful: true, SDKSmoke: []string{"stripe-node"}, Risks: []string{"subscription and payment modes only (setup unsupported)"}})
 	add(http.MethodPost, "/v1/checkout/sessions/{id}/expire", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"checkout.session.expired"}, Risks: []string{"expires open sessions only; non-open sessions are rejected and payment recovery is not modeled"}})
+	add(http.MethodGet, "/v1/checkout/sessions/{id}/line_items", Claim{Level: "L3", Stateful: true, Risks: []string{"line amounts are pre-discount; per-line discount and tax splits are not modeled"}})
+	add(http.MethodPost, "/v1/checkout/sessions/{id}", Claim{Level: "L3", Stateful: true, Risks: []string{"open sessions only; metadata merge plus line_items[N][quantity] overrides with immutable prices; other Stripe update params are rejected"}})
 	add(http.MethodPost, "/v1/billing_portal/sessions", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted", "payment_method.attached", "customer.updated"}, Risks: []string{"hosted portal is a local stub; portal configuration rendering and full Stripe-hosted portal behavior are not modeled"}})
 	portalConfigurationRisk := []string{"local portal configuration evidence only; the hosted portal does not render configuration features"}
 	add(http.MethodGet, "/v1/billing_portal/configurations", Claim{Level: "L2", Stateful: true, Risks: portalConfigurationRisk})
@@ -272,6 +275,11 @@ func DefaultClaims() []Claim {
 	add(http.MethodPost, "/v1/invoices/{id}/pay", Claim{Level: "L3", Stateful: true, ScorecardCases: []string{"invoices.pay.failed_invoice_succeeds", "invoices.pay.failed_invoice_declines_again", "invoices.one_time_invoice_flow.succeeds"}, WebhookEvents: []string{"payment_intent.succeeded", "payment_intent.payment_failed", "payment_intent.requires_action", "invoice.payment_succeeded", "invoice.payment_failed", "invoice.paid", "customer.subscription.updated"}, Risks: []string{"local retry/payment mutation only; send, void, collection, and dunning automation are not modeled"}})
 	add(http.MethodPost, "/v1/invoices/{id}/void", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"invoice.voided"}, Risks: []string{"moves open invoices to void with local evidence only; unvoiding is not modeled"}})
 	add(http.MethodPost, "/v1/invoices/{id}/mark_uncollectible", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"invoice.marked_uncollectible"}, Risks: []string{"moves open invoices to uncollectible with local evidence only; reopening is not modeled"}})
+	add(http.MethodPost, "/v1/invoices/{id}", Claim{Level: "L3", Stateful: true, Risks: []string{"draft invoices only; bounded subset (description, days_until_due, default_payment_method, metadata merge)"}})
+	add(http.MethodDelete, "/v1/invoices/{id}", Claim{Level: "L3", Stateful: true, Risks: []string{"draft invoices only; removes attached lines and timeline evidence with the invoice"}})
+	add(http.MethodPost, "/v1/invoices/{id}/add_lines", Claim{Level: "L3", Stateful: true, Risks: []string{"draft invoices only; amount/description/currency lines through the invoice-item path; price_data and tax lines are not modeled"}})
+	add(http.MethodPost, "/v1/invoices/{id}/update_lines", Claim{Level: "L3", Stateful: true, Risks: []string{"draft invoices only; amount/description updates recompute subtotal/total/amount_due"}})
+	add(http.MethodPost, "/v1/invoices/{id}/remove_lines", Claim{Level: "L3", Stateful: true, Risks: []string{"draft invoices only; removing every line leaves a zero-amount draft"}})
 	add(http.MethodGet, "/v1/invoices/{id}/lines", Claim{Level: "L2", Stateful: true, Risks: []string{"returns local invoice items for manual one-time invoices only"}})
 	add(http.MethodGet, "/v1/invoices/{id}/payments", Claim{Level: "L2", Stateful: true, Risks: []string{"returns local invoice payment evidence only"}})
 	add(http.MethodPost, "/v1/invoices/create_preview", Claim{Level: "L3", Stateful: true, Risks: []string{"local next-period upcoming when no item overrides (with pending create_prorations + default_tax_rates/automatic_tax); item overrides keep subscription-update proration; pending invoice items and full multi-item Stripe parity are not modeled"}})

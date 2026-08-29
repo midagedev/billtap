@@ -129,6 +129,23 @@ func (s *SQLiteStore) UpdateProduct(ctx context.Context, id string, in billing.P
 	return s.GetProduct(ctx, id)
 }
 
+// DeleteProduct removes local product evidence. Prices keep referencing the
+// deleted product id, matching Stripe's product-deletion behavior.
+func (s *SQLiteStore) DeleteProduct(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM products WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return billing.ErrNotFound
+	}
+	return nil
+}
+
 func (s *SQLiteStore) CreatePrice(ctx context.Context, p billing.Price) (billing.Price, error) {
 	if p.CreatedAt.IsZero() {
 		p.CreatedAt = time.Now().UTC()
@@ -479,7 +496,7 @@ func (s *SQLiteStore) UpdateCheckoutSession(ctx context.Context, cs billing.Chec
 		return billing.CheckoutSession{}, err
 	}
 	defer tx.Rollback()
-	result, err := tx.ExecContext(ctx, `UPDATE checkout_sessions SET status = ?, metadata = ? WHERE id = ?`, cs.Status, encodeMap(cs.Metadata), cs.ID)
+	result, err := tx.ExecContext(ctx, `UPDATE checkout_sessions SET status = ?, metadata = ?, line_items = ? WHERE id = ?`, cs.Status, encodeMap(cs.Metadata), encodeLineItems(cs.LineItems), cs.ID)
 	if err != nil {
 		return billing.CheckoutSession{}, err
 	}
@@ -867,6 +884,117 @@ func (s *SQLiteStore) CreateInvoiceItem(ctx context.Context, item billing.Invoic
 		return billing.InvoiceItem{}, billing.Invoice{}, err
 	}
 	return createdItem, updatedInvoice, nil
+}
+
+// UpdateInvoiceItem saves an edited draft-invoice line together with the
+// recomputed invoice totals in one transaction.
+func (s *SQLiteStore) UpdateInvoiceItem(ctx context.Context, item billing.InvoiceItem, invoice billing.Invoice, timeline []billing.TimelineEntry) (billing.InvoiceItem, billing.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.InvoiceItem{}, billing.Invoice{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `UPDATE invoice_items SET amount = ?, description = ?, metadata = ? WHERE id = ?`, item.Amount, item.Description, encodeMap(item.Metadata), item.ID)
+	if err != nil {
+		return billing.InvoiceItem{}, billing.Invoice{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return billing.InvoiceItem{}, billing.Invoice{}, err
+	}
+	if changed == 0 {
+		return billing.InvoiceItem{}, billing.Invoice{}, billing.ErrNotFound
+	}
+	if invoice.ID != "" {
+		if err := updateInvoiceTx(ctx, tx, invoice); err != nil {
+			return billing.InvoiceItem{}, billing.Invoice{}, err
+		}
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.InvoiceItem{}, billing.Invoice{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.InvoiceItem{}, billing.Invoice{}, err
+	}
+	updatedItem, err := s.GetInvoiceItem(ctx, item.ID)
+	if err != nil {
+		return billing.InvoiceItem{}, billing.Invoice{}, err
+	}
+	if invoice.ID == "" {
+		return updatedItem, billing.Invoice{}, nil
+	}
+	updatedInvoice, err := s.GetInvoice(ctx, invoice.ID)
+	if err != nil {
+		return billing.InvoiceItem{}, billing.Invoice{}, err
+	}
+	return updatedItem, updatedInvoice, nil
+}
+
+// DeleteInvoiceItem removes one attached invoice line and saves the recomputed
+// invoice totals in the same transaction.
+func (s *SQLiteStore) DeleteInvoiceItem(ctx context.Context, itemID string, invoice billing.Invoice, timeline []billing.TimelineEntry) (billing.Invoice, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.Invoice{}, err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `DELETE FROM invoice_items WHERE id = ?`, itemID)
+	if err != nil {
+		return billing.Invoice{}, err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return billing.Invoice{}, err
+	}
+	if changed == 0 {
+		return billing.Invoice{}, billing.ErrNotFound
+	}
+	if invoice.ID != "" {
+		if err := updateInvoiceTx(ctx, tx, invoice); err != nil {
+			return billing.Invoice{}, err
+		}
+	}
+	for _, entry := range timeline {
+		if err := s.insertTimeline(ctx, tx, entry); err != nil {
+			return billing.Invoice{}, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.Invoice{}, err
+	}
+	if invoice.ID == "" {
+		return billing.Invoice{}, nil
+	}
+	return s.GetInvoice(ctx, invoice.ID)
+}
+
+// DeleteInvoice removes a draft invoice together with its attached lines and
+// timeline evidence. Children go first so invoice foreign keys stay satisfied.
+func (s *SQLiteStore) DeleteInvoice(ctx context.Context, id string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var exists int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(1) FROM invoices WHERE id = ?`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if exists == 0 {
+		return billing.ErrNotFound
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM invoice_items WHERE invoice_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM timeline_entries WHERE invoice_id = ?`, id); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM invoices WHERE id = ?`, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *SQLiteStore) AttachInvoiceItems(ctx context.Context, invoice billing.Invoice, itemIDs []string, timeline []billing.TimelineEntry) (billing.Invoice, error) {
