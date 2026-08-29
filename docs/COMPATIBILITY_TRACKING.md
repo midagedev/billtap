@@ -1,6 +1,6 @@
 # Compatibility Tracking
 
-Status date: 2026-05-12
+Status date: 2026-08-29
 
 This document defines how Billtap tracks Stripe API compatibility as a
 measurable, long-running body of work. The public claim is the generated
@@ -22,6 +22,10 @@ The command writes:
 
 - `stripe-api-inventory.json`: machine-readable source for agents and CI.
 - `stripe-api-inventory.md`: reviewable compatibility table for humans.
+
+The current baseline was measured against Stripe OpenAPI `2026-04-22.dahlia`
+(stripe/openapi tag `v2261`); use the same pinned tag when regenerating so
+family deltas stay comparable across PRs.
 
 The runtime also carries a generated known-route catalog from the same public
 Stripe OpenAPI lane. That catalog is diagnostic-only: matching a route there
@@ -84,7 +88,7 @@ The long-running expansion goal is at least 90% OpenAPI operation coverage at
 The concrete target and chunk plan live in
 `docs/STRIPE_COMPATIBILITY_90_TARGET.md`. In short:
 
-- current baseline: `160 / 587`, `27.3%`
+- current baseline: `175 / 587`, `29.8%`
 - target: at least `529 / 587`, `90.0%`
 - maximum remaining `L0`: `58 / 587`
 - P0/P1 billing-lab flows still need deeper `L3-L6` evidence, not just broad

@@ -1,6 +1,6 @@
 # Simulation Capacity Backlog
 
-Status date: 2026-05-12
+Status date: 2026-08-29
 
 This backlog turns production-regression learnings into public, product-neutral
 Billtap capability work. It is intentionally broader than the current
@@ -26,8 +26,8 @@ these public capability rows in their own private docs.
 Billtap currently has a stateful Stripe-like local subset with:
 
 - customers, products, prices, customer/product/price/subscription/invoice/
-  payment-intent search, coupons, promotion codes, checkout sessions,
-  subscriptions, subscription schedules, invoices, invoice preview,
+  payment-intent search, coupons, promotion codes, tax rates, checkout
+  sessions, subscriptions, subscription schedules, invoices, invoice preview,
   payment intents, setup intents, payment methods, refunds, credit notes,
   disputes, cash balance, test clocks, Connect evidence, webhook endpoints, and
   events
@@ -36,7 +36,7 @@ Billtap currently has a stateful Stripe-like local subset with:
 - webhook retry, duplicate, delay, out-of-order, replay, historical replay, and
   delivery attempt evidence
 - diagnostic bundles, request traces, timeline evidence, and dashboard views
-- OpenAPI inventory baseline: `160 / 587` implemented operations, `27.3%`
+- OpenAPI inventory baseline: `175 / 587` implemented operations, `29.8%`
 
 ## P0 Regression-Paired Backlog
 

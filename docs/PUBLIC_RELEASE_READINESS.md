@@ -1,6 +1,6 @@
 # Public Release Readiness
 
-Status date: 2026-05-12
+Status date: 2026-08-29
 
 Billtap has a clear community-facing strength: it is a stateful local billing
 lab for deterministic subscription, fixture, scenario, and webhook reliability
@@ -84,10 +84,10 @@ The scorecard evidence should state:
 - imported/skipped/unsupported/mismatch/error counts
 - whether `passed` is `true`
 
-Current scorecard evidence on 2026-05-12:
+Current scorecard evidence on 2026-08-29:
 
 - Scorecard version: `l3-public-readiness-v7`
-- Scorecard result: `imported=49 skipped=1 unsupported=1 mismatch=0 error=0`
+- Scorecard result: `imported=50 skipped=1 unsupported=1 mismatch=0 error=0`
 - Apache-2.0 `LICENSE`, `NOTICE`, `package.json`, and `package-lock.json`
   metadata are aligned.
 

@@ -19,7 +19,7 @@ behavior outside the published contract.
 
 | Surface | What it is for |
 | --- | --- |
-| Stripe-like API | Local customers, products, prices, coupons, promotion codes, checkout sessions, subscriptions, schedules, invoices, payment intents, cash balance, refunds, credit notes, disputes, test clocks, webhook endpoints, and events for supported billing flows. |
+| Stripe-like API | Local customers, products, prices, coupons, promotion codes, tax rates, checkout sessions, subscriptions, schedules, invoices, payment intents, cash balance, refunds, credit notes, disputes, test clocks, webhook endpoints, and events for supported billing flows. |
 | Hosted checkout | Browser-visible sandbox checkout for exercising app integration and deterministic payment outcomes. |
 | Billing portal | Local customer portal for plan changes, seats, cancellation, resume, and payment-method update flows. |
 | Developer dashboard | Billing objects, timeline, webhook delivery attempts, app responses, and debug bundle export in one place. |
@@ -327,13 +327,13 @@ curl -fsS "http://localhost:8080/api/diagnostics?limit=100" \
 | --- | --- | --- |
 | Runtime | Go server with SQLite local default | In-memory storage exists for tests |
 | Frontend | React checkout, portal, and dashboard apps | Built with Vite into `dist/app` |
-| Stripe-like API | Practical local subset | Customers, catalog, checkout, portal sessions, subscriptions, schedules, invoices, payment intents, cash balance, refunds, credit notes, disputes, test clocks, webhook endpoints, events, search/list projections used by tests |
+| Stripe-like API | Practical local subset | Customers, catalog, checkout, portal sessions, subscriptions, schedules, invoices, payment intents, cash balance, refunds, credit notes, disputes, tax rates, test clocks, webhook endpoints, events, search/list projections used by tests |
 | Webhooks | Signed delivery with reliability controls | Retry, duplicate, delay, out-of-order, grouped replay, endpoint attempts, delivery evidence, redaction |
 | Scenarios | YAML runner | Local clock, app assertions, JSON/Markdown reports, exit-code policy |
 | Fixtures | Apply/snapshot/assert APIs | JSON/YAML input, fixture metadata isolation, structured pass/fail reports |
 | SaaS profile | Generic workspace billing profile | Plans, seats, members, export quota, extra export, payment history, support bundle, platform/connect-style webhook evidence |
 | Release state | Source plus GHCR image | Local Docker image builds and GHCR image workflow; no package/Homebrew/signed binary yet |
-| Stripe API inventory | `160 / 587` operations, `27.3%` L1+ | OpenAPI route inventory is schema-visible for all `587` operations; implemented coverage is tracked in `docs/STRIPE_COMPATIBILITY_90_TARGET.md` |
+| Stripe API inventory | `175 / 587` operations, `29.8%` L1+ | OpenAPI route inventory is schema-visible for all `587` operations; implemented coverage is tracked in `docs/STRIPE_COMPATIBILITY_90_TARGET.md` |
 
 Detailed compatibility matrix: `docs/COMPATIBILITY.md`.
 
