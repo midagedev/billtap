@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+- The billing family is now full inventory (`39 / 39` OpenAPI operations):
+  all four P0 families (webhooks, checkout, billing, billing_portal) are at
+  100%.
+- `POST /v1/invoices/{id}/lines/{line_item_id}` updates one draft-invoice line
+  (`amount`, `description`, metadata) with the same totals recomputation as
+  `update_lines`.
+- `POST /v1/invoices/{id}/attach_payment` records an attached PaymentIntent
+  (customer-matched) or payment record on a draft invoice as evidence;
+  collection still runs through `finalize`/`pay`.
+- `POST /v1/subscriptions/{id}/migrate` records
+  `billing_mode[type]=flexible` (plus optional `proration_discounts`) as
+  subscription metadata evidence; flexible-billing proration recalculation is
+  not modeled.
+- `POST /v1/payment_intents/{id}` updates intent metadata and evidenced
+  description; amount, currency, and status stay immutable.
+- `GET /v1/credit_notes/{id}/lines` returns one line derived from the stored
+  credit-note amount and memo/reason.
+- The OpenAPI inventory moves from `195 / 587` (`33.2%`) to `200 / 587`
+  (`34.1%`): billing `39 / 39`, payments `23 / 41`, payment_history `14 / 30`.
 - `GET /v1/checkout/sessions/{id}/line_items` returns the session's line items
   as expanded Stripe `item` objects (pre-discount amounts; per-line
   discount/tax splits are not modeled).

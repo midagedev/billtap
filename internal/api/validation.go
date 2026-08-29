@@ -56,6 +56,8 @@ var (
 	checkoutSessionLineItemQuantityRE = regexp.MustCompile(`^line_items\[(\d+)\]\[quantity\]$`)
 	// Draft-invoice line mutation params (add_lines/update_lines/remove_lines).
 	invoiceLineItemParamRE = regexp.MustCompile(`^line_items\[(\d+)\]\[(id|amount|description|currency)\]$`)
+	// Subscription migrate billing_mode params.
+	subscriptionMigrateParamRE = regexp.MustCompile(`^billing_mode\[(type|flexible)\](\[proration_discounts\])?$`)
 )
 
 var stripePaymentMethodTypes = []string{
@@ -1613,6 +1615,38 @@ func validateCheckoutSessionUpdate(p params) error {
 func validateInvoiceUpdate(p params) error {
 	return p.validate(paramSpec{
 		Allowed:       []string{"description", "days_until_due", "default_payment_method"},
+		AllowMetadata: true,
+	})
+}
+
+func validateInvoiceAttachPayment(p params) error {
+	return p.validate(paramSpec{
+		Allowed:     []string{"payment_intent", "payment_record"},
+		RequiredAny: [][]string{{"payment_intent", "payment_record"}},
+	})
+}
+
+func validateInvoiceLineItemUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"amount", "description"},
+		AllowMetadata: true,
+	})
+}
+
+func validateSubscriptionMigrate(p params) error {
+	return p.validate(paramSpec{
+		AllowedRegex: []*regexp.Regexp{subscriptionMigrateParamRE},
+		Required:     []string{"billing_mode[type]"},
+		EnumParams: map[string][]string{
+			"billing_mode[type]":                          {"flexible"},
+			"billing_mode[flexible][proration_discounts]": {"included", "itemized"},
+		},
+	})
+}
+
+func validatePaymentIntentUpdate(p params) error {
+	return p.validate(paramSpec{
+		Allowed:       []string{"description"},
 		AllowMetadata: true,
 	})
 }

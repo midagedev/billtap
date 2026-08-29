@@ -333,7 +333,7 @@ curl -fsS "http://localhost:8080/api/diagnostics?limit=100" \
 | Fixtures | Apply/snapshot/assert APIs | JSON/YAML input, fixture metadata isolation, structured pass/fail reports |
 | SaaS profile | Generic workspace billing profile | Plans, seats, members, export quota, extra export, payment history, support bundle, platform/connect-style webhook evidence |
 | Release state | Source plus GHCR image | Local Docker image builds and GHCR image workflow; no package/Homebrew/signed binary yet |
-| Stripe API inventory | `195 / 587` operations, `33.2%` L1+ | OpenAPI route inventory is schema-visible for all `587` operations; implemented coverage is tracked in `docs/STRIPE_COMPATIBILITY_90_TARGET.md` |
+| Stripe API inventory | `200 / 587` operations, `34.1%` L1+ | OpenAPI route inventory is schema-visible for all `587` operations; implemented coverage is tracked in `docs/STRIPE_COMPATIBILITY_90_TARGET.md` |
 
 Detailed compatibility matrix: `docs/COMPATIBILITY.md`.
 

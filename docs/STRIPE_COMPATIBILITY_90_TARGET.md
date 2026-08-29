@@ -11,8 +11,9 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `195 / 587` operations, `33.2%`, using Stripe OpenAPI
+- **Current baseline:** `200 / 587` operations, `34.1%`, using Stripe OpenAPI
   `2026-04-22.dahlia` (stripe/openapi tag `v2261`), re-measured on 2026-08-29.
+  All four P0 families are at 100%.
 - **Minimum target count:** `529 / 587` operations at `L1` or higher.
 - **Remaining inventory-only budget:** at most `58 / 587` operations at `L0`.
 
@@ -59,13 +60,13 @@ Latest measured baseline from the Stripe OpenAPI `2026-04-22.dahlia` snapshot
 | --- | --- | ---: | ---: | ---: | ---: | --- |
 | P0 | webhooks | 7 | 7 | 100.0% | 7 | Expand connected-account routing, thin event fixtures, and replay evidence. |
 | P0 | checkout | 6 | 6 | 100.0% | 6 | Deepen SDK smoke and hosted-page parity evidence. |
-| P0 | billing | 39 | 36 | 92.3% | 36 | Close the remaining invoice adjunct routes (`attach_payment`, single-line update, `migrate`). |
+| P0 | billing | 39 | 39 | 100.0% | 36 | Deepen dunning, schedule, and credit-note scenario evidence. |
 | P0 | billing_portal | 5 | 5 | 100.0% | 5 | Deepen portal configuration fixtures and hosted portal rendering evidence. |
 | P1 | catalog | 54 | 28 | 51.9% | 49 | Add coupon, promotion code, tax-rate, and product/price search validation. |
 | P1 | customers | 31 | 12 | 38.7% | 28 | Add OpenAPI-backed validation, search/list parity, and payment source fixtures. |
-| P1 | payments | 41 | 22 | 53.7% | 37 | Add PaymentIntent and SetupIntent create/confirm/capture/cancel state machines. |
+| P1 | payments | 41 | 23 | 56.1% | 37 | Add PaymentIntent and SetupIntent create/confirm/capture/cancel state machines. |
 | P1 | connect | 53 | 53 | 100.0% | 48 | Deepen Connect SDK/adoption smoke, connected-account webhook routing, and v2 Core account inventory evidence. |
-| P1 | payment_history | 30 | 13 | 43.3% | 27 | Add charge, refund, balance transaction, dispute, and payment history evidence. |
+| P1 | payment_history | 30 | 14 | 46.7% | 27 | Add charge, refund, balance transaction, dispute, and payment history evidence. |
 | P3 | auxiliary | 321 | 13 | 4.0% | 289 | Keep inventory visible and add schema/fixture smoke only when adoption requires it. |
 
 ## PR Chunk Plan
@@ -128,8 +129,15 @@ payment-method attach/detach.
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
 coverage must come from T3-T9. The planned T3-T9 delta is intentionally larger
-than the `+334` operations needed to move the current `195 / 587` baseline to
+than the `+329` operations needed to move the current `200 / 587` baseline to
 the `529 / 587` target.
+
+The billing-completion wave on 2026-08-29 raised the generated inventory from
+`195 / 587` (`33.2%`) to `200 / 587` (`34.1%`): single draft-invoice line
+update, invoice `attach_payment`, subscription `migrate` (billing-mode
+evidence), PaymentIntent metadata/description update, and credit-note lines.
+Billing closes to `39 / 39`, so all four P0 families are at 100%; further
+count growth now comes from P1 families and the auxiliary waves.
 
 The P0 checkout/invoice wave on 2026-08-29 raised the generated inventory from
 `187 / 587` (`31.9%`) to `195 / 587` (`33.2%`): checkout session update and

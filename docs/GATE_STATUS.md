@@ -18,7 +18,7 @@ This is the public gate snapshot. Internal adoption evidence and raw handoff not
 | G11 Assertion Ergonomics      | Passed locally | Structured pass/fail fixture assertions and fixture-scoped snapshots                                                                                        |
 | G12 Public Release Readiness  | Passed locally | Public claims are tied to tests/scorecard cases; scorecard corpus has 50 release-blocking cases; Apache-2.0 `LICENSE` and `NOTICE` are present              |
 | G13 Stripe API Expansion      | In progress    | Roadmap defines compatibility levels and endpoint-family priorities; OpenAPI inventory generator and optional workflow write JSON/Markdown coverage artifacts  |
-| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 195/587 baseline, family thresholds, and chunk plan                             |
+| G14 Stripe API 90% Program    | In progress    | `docs/STRIPE_COMPATIBILITY_90_TARGET.md` defines 90% L1+ target, current 200/587 baseline, family thresholds, and chunk plan                             |
 
 ## Current Public Claim
 
@@ -35,7 +35,7 @@ under Apache-2.0.
 - Coverage focus: request validation, protocol parameter acceptance,
   idempotency mismatch, deterministic checkout payment-error aliases,
   direct intent state machines, and billing lifecycle retry/renewal mutations
-- OpenAPI operation baseline: `195 / 587`, `33.2%`
+- OpenAPI operation baseline: `200 / 587`, `34.1%`
 - Long-running OpenAPI operation target: at least `529 / 587`, `90.0%`, at
   `L1+` with deeper P0/P1 behavior gates
 
@@ -47,7 +47,7 @@ Verified on 2026-08-29 from branch `main`:
 - `go run ./cmd/billtap compatibility scorecard --output-dir /tmp/billtap-compatibility`
   - result: `imported=50 skipped=1 unsupported=1 mismatch=0 error=0`
 - `go run ./cmd/billtap compatibility inventory --openapi <stripe-openapi-v2261-spec3.json> --output-dir /tmp/billtap-inventory --source stripe/openapi-v2261-2026-04-22.dahlia`
-  - result: `operations=587 implemented=195 inventory_only=392 schema_validated=587 implemented_percent=33.2`
+  - result: `operations=587 implemented=200 inventory_only=387 schema_validated=587 implemented_percent=34.1`
 - Current branch verification covers Go tests, compatibility scorecard, and
   inventory generation; `gofmt -l .` is clean. The forbidden internal keyword
   scan runs in CI with the configured keyword list.

@@ -2274,6 +2274,15 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 		h.handleSubscriptionResume(w, r, subscriptionID)
 		return
 	}
+	if strings.HasSuffix(id, "/migrate") {
+		subscriptionID := strings.TrimSuffix(id, "/migrate")
+		if subscriptionID == "" || strings.Contains(subscriptionID, "/") {
+			h.notFound(w, r)
+			return
+		}
+		h.handleSubscriptionMigrate(w, r, subscriptionID)
+		return
+	}
 	if id == "" || strings.Contains(id, "/") {
 		h.notFound(w, r)
 		return
@@ -2440,6 +2449,41 @@ func (h *Handler) handleSubscription(w http.ResponseWriter, r *http.Request) {
 	default:
 		h.methodNotAllowed(w, r, "GET, POST, DELETE")
 	}
+}
+
+// handleSubscriptionMigrate records a billing-mode migration request
+// (POST /v1/subscriptions/{id}/migrate) as subscription metadata evidence.
+// Flexible-billing proration recalculation itself is not modeled.
+func (h *Handler) handleSubscriptionMigrate(w http.ResponseWriter, r *http.Request, subscriptionID string) {
+	if r.Method != http.MethodPost {
+		h.methodNotAllowed(w, r, "POST")
+		return
+	}
+	p, err := parseParams(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := validateSubscriptionMigrate(p); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	subscription, err := h.billing.GetSubscription(r.Context(), subscriptionID)
+	if err != nil {
+		writeResult(w, nil, err)
+		return
+	}
+	metadata := map[string]string{"billtap_billing_mode": p.string("billing_mode[type]")}
+	if discounts := p.string("billing_mode[flexible][proration_discounts]"); discounts != "" {
+		metadata["billtap_proration_discounts"] = discounts
+	}
+	updated, err := h.billing.PatchSubscription(r.Context(), subscription.ID, billing.SubscriptionPatch{
+		Metadata:        metadata,
+		TimelineAction:  "customer.subscription.migrated",
+		TimelineMessage: "Subscription billing-mode migration recorded",
+		TimelineSource:  "stripe_compat_migrate",
+	})
+	writeResult(w, h.stripeSubscription(r, updated), err)
 }
 
 func (h *Handler) handleSubscriptionResume(w http.ResponseWriter, r *http.Request, subscriptionID string) {
@@ -3827,6 +3871,52 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 		writeResult(w, stripeListFromRequest(r, payments), nil)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "attach_payment" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceAttachPayment(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		invoice, err := h.billing.AttachInvoicePayment(r.Context(), id, p.string("payment_intent"), p.string("payment_record"))
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "lines" {
+		if r.Method != http.MethodPost {
+			h.methodNotAllowed(w, r, "POST")
+			return
+		}
+		p, err := parseParams(r)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		if err := validateInvoiceLineItemUpdate(p); err != nil {
+			writeError(w, http.StatusBadRequest, err)
+			return
+		}
+		var amount *int64
+		if p.has("amount") {
+			value := p.int64("amount")
+			amount = &value
+		}
+		var description *string
+		if p.has("description") {
+			value := p.string("description")
+			description = &value
+		}
+		invoice, err := h.billing.UpdateInvoiceLine(r.Context(), id, parts[2], amount, description, p.metadata())
+		writeResult(w, h.stripeInvoice(r.Context(), invoice), err)
+		return
+	}
 	if len(parts) == 2 && parts[1] == "add_lines" {
 		if r.Method != http.MethodPost {
 			h.methodNotAllowed(w, r, "POST")
@@ -3872,7 +3962,7 @@ func (h *Handler) handleInvoice(w http.ResponseWriter, r *http.Request) {
 		var invoice billing.Invoice
 		for _, line := range patches {
 			var err error
-			invoice, err = h.billing.UpdateInvoiceLine(r.Context(), id, line.id, line.amount, line.description)
+			invoice, err = h.billing.UpdateInvoiceLine(r.Context(), id, line.id, line.amount, line.description, nil)
 			if err != nil {
 				writeResult(w, nil, err)
 				return
@@ -4087,6 +4177,31 @@ func (h *Handler) handleCreditNote(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id, action, hasAction := strings.Cut(rest, "/")
+	if hasAction && action == "lines" {
+		if r.Method != http.MethodGet {
+			h.methodNotAllowed(w, r, "GET")
+			return
+		}
+		note, err := h.billing.GetCreditNote(r.Context(), id)
+		if err != nil {
+			writeResult(w, nil, err)
+			return
+		}
+		description := firstNonEmptyString(note.Memo, note.Reason, "Credit note")
+		data := []map[string]any{{
+			"id":          "cnli_" + note.ID,
+			"object":      "credit_note_line_item",
+			"amount":      -note.Amount,
+			"description": description,
+			"credit_note": note.ID,
+			"invoice":     note.InvoiceID,
+			"quantity":    1,
+			"unit_amount": -note.Amount,
+			"livemode":    false,
+		}}
+		writeJSON(w, http.StatusOK, stripeListFromRequest(r, data))
+		return
+	}
 	if hasAction && action == "void" {
 		if r.Method != http.MethodPost {
 			h.methodNotAllowed(w, r, "POST")
@@ -4211,8 +4326,29 @@ func (h *Handler) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !hasAction {
+		if r.Method == http.MethodPost {
+			p, err := parseParams(r)
+			if err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			if err := validatePaymentIntentUpdate(p); err != nil {
+				writeError(w, http.StatusBadRequest, err)
+				return
+			}
+			metadata := p.metadata()
+			if description := p.string("description"); description != "" {
+				if metadata == nil {
+					metadata = map[string]string{}
+				}
+				metadata["billtap_description"] = description
+			}
+			intent, err := h.billing.UpdatePaymentIntentDetails(r.Context(), id, metadata)
+			writeResult(w, stripePaymentIntent(intent), err)
+			return
+		}
 		if r.Method != http.MethodGet {
-			h.methodNotAllowed(w, r, "GET")
+			h.methodNotAllowed(w, r, "GET, POST")
 			return
 		}
 		paymentIntent, err := h.billing.GetPaymentIntent(r.Context(), id)

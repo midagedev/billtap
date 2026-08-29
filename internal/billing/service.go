@@ -1047,9 +1047,10 @@ func (s *Service) findInvoiceLine(ctx context.Context, invoice Invoice, lineID s
 }
 
 // UpdateInvoiceLine patches one attached draft-invoice line
-// (POST /v1/invoices/{id}/update_lines): amount and description updates
-// recompute subtotal/total/amount_due.
-func (s *Service) UpdateInvoiceLine(ctx context.Context, invoiceID string, lineID string, amount *int64, description *string) (Invoice, error) {
+// (POST /v1/invoices/{id}/update_lines and /lines/{line_item_id}):
+// amount, description, and metadata updates recompute
+// subtotal/total/amount_due.
+func (s *Service) UpdateInvoiceLine(ctx context.Context, invoiceID string, lineID string, amount *int64, description *string, metadata map[string]string) (Invoice, error) {
 	invoice, err := s.requireDraftInvoice(ctx, invoiceID)
 	if err != nil {
 		return Invoice{}, err
@@ -1066,6 +1067,19 @@ func (s *Service) UpdateInvoiceLine(ctx context.Context, invoiceID string, lineI
 	if description != nil {
 		item.Description = *description
 	}
+	if metadata != nil {
+		item.Metadata = copyMap(item.Metadata)
+		if item.Metadata == nil {
+			item.Metadata = map[string]string{}
+		}
+		for key, value := range metadata {
+			if value == "" {
+				delete(item.Metadata, key)
+			} else {
+				item.Metadata[key] = value
+			}
+		}
+	}
 	_, updated, err := s.repo.UpdateInvoiceItem(ctx, item, invoice, []TimelineEntry{billingTimelineEntry(
 		"invoiceline_updated_"+item.ID+"_"+at.Format(time.RFC3339Nano),
 		"invoice.updated",
@@ -1081,6 +1095,74 @@ func (s *Service) UpdateInvoiceLine(ctx context.Context, invoiceID string, lineI
 		at,
 	)})
 	return updated, err
+}
+
+// AttachInvoicePayment records a PaymentIntent (or payment record) attachment
+// on a draft invoice (POST /v1/invoices/{id}/attach_payment) as evidence;
+// collection itself still runs through finalize/pay.
+func (s *Service) AttachInvoicePayment(ctx context.Context, invoiceID string, paymentIntentID string, paymentRecord string) (Invoice, error) {
+	invoice, err := s.requireDraftInvoice(ctx, invoiceID)
+	if err != nil {
+		return Invoice{}, err
+	}
+	if strings.TrimSpace(paymentIntentID) != "" {
+		intent, err := s.repo.GetPaymentIntent(ctx, paymentIntentID)
+		if err != nil {
+			return Invoice{}, err
+		}
+		if intent.CustomerID != invoice.CustomerID {
+			return Invoice{}, fmt.Errorf("%w: payment intent customer must match invoice customer", ErrInvalidInput)
+		}
+	}
+	at := s.now()
+	invoice.Metadata = copyMap(invoice.Metadata)
+	if invoice.Metadata == nil {
+		invoice.Metadata = map[string]string{}
+	}
+	if strings.TrimSpace(paymentIntentID) != "" {
+		invoice.Metadata["billtap_attached_payment_intent"] = strings.TrimSpace(paymentIntentID)
+	}
+	if strings.TrimSpace(paymentRecord) != "" {
+		invoice.Metadata["billtap_attached_payment_record"] = strings.TrimSpace(paymentRecord)
+	}
+	return s.repo.UpdateInvoice(ctx, invoice, []TimelineEntry{billingTimelineEntry(
+		"invoice_payment_attached_"+invoice.ID+"_"+at.Format(time.RFC3339Nano),
+		"invoice.updated",
+		"Invoice payment attached",
+		ObjectInvoice,
+		invoice.ID,
+		invoice.CustomerID,
+		"",
+		invoice.SubscriptionID,
+		invoice.ID,
+		invoice.PaymentIntentID,
+		map[string]string{"source": "invoice.attach_payment"},
+		at,
+	)})
+}
+
+// UpdatePaymentIntentDetails merges metadata on a PaymentIntent
+// (POST /v1/payment_intents/{id}); amount and status stay immutable.
+func (s *Service) UpdatePaymentIntentDetails(ctx context.Context, intentID string, metadata map[string]string) (PaymentIntent, error) {
+	intent, err := s.repo.GetPaymentIntent(ctx, intentID)
+	if err != nil {
+		return PaymentIntent{}, err
+	}
+	if metadata == nil {
+		return intent, nil
+	}
+	intent.Metadata = copyMap(intent.Metadata)
+	if intent.Metadata == nil {
+		intent.Metadata = map[string]string{}
+	}
+	for key, value := range metadata {
+		if value == "" {
+			delete(intent.Metadata, key)
+		} else {
+			intent.Metadata[key] = value
+		}
+	}
+	return s.repo.UpdatePaymentIntent(ctx, intent, nil)
 }
 
 // RemoveInvoiceLines detaches lines from a draft invoice
