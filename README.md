@@ -1,5 +1,9 @@
 # Billtap
 
+[![CI](https://github.com/midagedev/billtap/actions/workflows/ci.yml/badge.svg)](https://github.com/midagedev/billtap/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![GHCR image](https://img.shields.io/badge/ghcr-billtap-2496ED?logo=docker&logoColor=white)](https://github.com/midagedev/billtap/pkgs/container/billtap)
+
 Full-stack Stripe-style billing sandbox for local development, CI scenarios,
 and controlled staging checks.
 
