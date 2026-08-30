@@ -495,21 +495,31 @@ func (s *Service) upsertTestClock(ctx context.Context, fixture TestClockFixture)
 	if strings.TrimSpace(fixture.ID) != "" {
 		current, err := s.billing.GetTestClock(ctx, fixture.ID)
 		if err == nil {
-			changed := false
-			if !frozenTime.Equal(current.FrozenTime) {
-				current.FrozenTime = frozenTime
-				changed = true
+			if current.FrozenTime.After(frozenTime) {
+				// Advances are forward-only, and a clock that already ran past
+				// the fixture's time has consumed the pack's premise (e.g. a
+				// trial that already activated). Recreate the clock at the
+				// declared time so re-applying a pack restores that premise;
+				// references are detached, not deleted, and re-attach on seed.
+				if err := s.billing.DeleteTestClock(ctx, current.ID); err != nil {
+					return billing.TestClock{}, err
+				}
+			} else {
+				changed := false
+				if !frozenTime.Equal(current.FrozenTime) {
+					current.FrozenTime = frozenTime
+					changed = true
+				}
+				if strings.TrimSpace(fixture.Name) != "" {
+					current.Name = strings.TrimSpace(fixture.Name)
+					changed = true
+				}
+				if changed {
+					return s.billing.UpdateTestClock(ctx, current)
+				}
+				return current, nil
 			}
-			if strings.TrimSpace(fixture.Name) != "" {
-				current.Name = strings.TrimSpace(fixture.Name)
-				changed = true
-			}
-			if changed {
-				return s.billing.UpdateTestClock(ctx, current)
-			}
-			return current, nil
-		}
-		if !errors.Is(err, billing.ErrNotFound) {
+		} else if !errors.Is(err, billing.ErrNotFound) {
 			return billing.TestClock{}, err
 		}
 	}

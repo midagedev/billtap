@@ -652,6 +652,13 @@ func (h *Handler) handlePrice(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err)
 			return
 		}
+		// transfer_lookup_key moves an in-use lookup key onto this price.
+		if p.boolDefault("transfer_lookup_key", false) {
+			if _, err := h.billing.TransferPriceLookupKey(r.Context(), id, p.first("lookup_key", "lookupKey")); err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+		}
 		price, err := h.billing.UpdatePrice(r.Context(), id, billing.Price{
 			ProductID:              p.first("product", "product_id"),
 			Currency:               p.string("currency"),
@@ -4553,8 +4560,16 @@ func (h *Handler) handleTestClock(w http.ResponseWriter, r *http.Request) {
 	}
 	id, action, hasAction := strings.Cut(rest, "/")
 	if !hasAction {
+		if r.Method == http.MethodDelete {
+			if err := h.billing.DeleteTestClock(r.Context(), id); err != nil {
+				writeResult(w, nil, err)
+				return
+			}
+			writeJSON(w, http.StatusOK, stripeDeleted(id, "test_clock"))
+			return
+		}
 		if r.Method != http.MethodGet {
-			h.methodNotAllowed(w, r, "GET")
+			h.methodNotAllowed(w, r, "GET, DELETE")
 			return
 		}
 		clock, err := h.billing.GetTestClock(r.Context(), id)
