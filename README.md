@@ -1,21 +1,25 @@
 # Billtap
 
 [![CI](https://github.com/midagedev/billtap/actions/workflows/ci.yml/badge.svg)](https://github.com/midagedev/billtap/actions/workflows/ci.yml)
+[![Stripe API coverage](https://img.shields.io/badge/Stripe%20API-200%20%2F%20587%20ops-635FF7?logo=stripe&logoColor=white)](docs/COMPATIBILITY.md)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
 [![GHCR image](https://img.shields.io/badge/ghcr-billtap-2496ED?logo=docker&logoColor=white)](https://github.com/midagedev/billtap/pkgs/container/billtap)
 
-Full-stack Stripe-style billing sandbox for local development, CI scenarios,
-and controlled staging checks.
+Billtap is a local Stripe API emulator for billing teams. Point your Stripe
+SDK's base URL at it and your app runs against a deterministic billing stack
+on localhost — real subscription state transitions, invoices, hosted checkout
+and portal pages, and signed webhooks you can retry, duplicate, delay, and
+replay — with zero test branches in your product code.
 
-Billtap gives subscription teams a local billing lab: a Go server, practical
-Stripe-like API subset, React checkout/portal/dashboard surfaces, signed webhook
-delivery controls, YAML scenario runs, fixture apply/snapshot/assert APIs, and
-diagnostic bundles that explain what happened when a billing test failed.
+Under the hood it is a full-stack billing lab: a Go server speaking a
+practical Stripe subset, React checkout/portal/dashboard surfaces, YAML
+scenario runs, fixture apply/snapshot/assert APIs, and diagnostic bundles
+that explain what happened when a billing test failed.
 
-It is **not** a payment processor. Billtap's goal is practical Stripe
-compatibility for the documented local-test subset: use it as the fast
-deterministic lane, then keep Stripe testmode or the real provider sandbox for
-behavior outside the published contract.
+It is **not** a payment processor. Billtap targets practical compatibility
+with a documented Stripe subset: run it as the fast deterministic lane, and
+keep Stripe testmode or your provider sandbox for behavior outside the
+published contract.
 
 ![Billtap dashboard showing billing objects, timeline, webhook attempts, and debug bundle export](docs/assets/dashboard-screenshot.png)
 
@@ -31,46 +35,7 @@ behavior outside the published contract.
 | Fixtures and scenarios | JSON/YAML setup, structured assertions, SaaS workspace profiles, and CI-readable reports. |
 | Diagnostics | Request traces and bundles that help agents distinguish app misconfiguration, unsupported API calls, webhook failures, and wrong local state. |
 
-## Testing Model
-
-```mermaid
-flowchart LR
-  App["Your app / e2e tests"] --> Billtap["Billtap local billing lab"]
-  Billtap --> API["Stripe-like API"]
-  Billtap --> UI["Checkout + portal UI"]
-  Billtap --> Webhooks["Signed webhook delivery"]
-  Billtap --> Evidence["Dashboard + traces + debug bundles"]
-  App --> Stripe["Stripe testmode / provider sandbox"]
-  Stripe -. "provider-specific parity lane" .-> App
-```
-
-Use two lanes instead of forcing one tool to satisfy every billing test:
-
-- **Default lane:** Billtap-backed local development, isolated e2e tests, CI
-  regression scenarios, fixture setup, and webhook reliability tests.
-- **Fallback lane:** Stripe testmode or the real provider sandbox for
-  provider-specific behavior, hosted-provider parity, settlement, risk, tax,
-  invoice rendering, and final compatibility checks.
-
-For the exact supported surface, see `docs/COMPATIBILITY.md`. Anything outside
-that contract should be treated as unsupported until it has fixture-backed tests
-and documentation. Known but unimplemented Stripe OpenAPI routes return a
-Stripe-shaped `unsupported_endpoint` error so test agents can identify coverage
-gaps instead of mistaking them for app bugs.
-
-## Good Fit / Bad Fit
-
-| Use Billtap when... | Use a provider sandbox when... |
-| --- | --- |
-| You need deterministic subscription billing tests in local dev or CI. | You need full Stripe API behavior or hosted Stripe Dashboard parity. |
-| You need to validate webhook idempotency, retries, duplicate delivery, delays, or replay. | You are proving settlement, risk, tax, invoice rendering, account, payout, or real dispute behavior. |
-| You want fixture-driven setup with easy snapshot/assert APIs. | You need live provider validation for a newly adopted endpoint. |
-| You need a local checkout/portal/dashboard loop for app integration work. | You are handling real card data, live credentials, or production payment paths. |
-
 ## Quick Start
-
-Current distribution state: source plus a GitHub Container Registry image.
-No package, Homebrew formula, or signed binary release is published yet.
 
 Requirements:
 
@@ -78,7 +43,7 @@ Requirements:
 - Node.js 20+ and npm; currently verified with Node 24.14.0 and npm 11.9.0
 - Docker, optional for image smoke checks
 
-Build and run locally:
+Build and run:
 
 ```bash
 npm ci
@@ -86,11 +51,18 @@ npm run build
 go run ./cmd/billtap
 ```
 
-Open:
+Point your Stripe SDK at it — one config line, no code branches:
 
-```text
-http://localhost:8080
+```js
+const stripe = new Stripe("sk_test_billtap", {
+  host: "localhost",
+  port: 8080,
+  protocol: "http",
+});
 ```
+
+Every `/v1/...` call now runs against the local billing graph. Open
+`http://localhost:8080` for the dashboard, checkout, and portal.
 
 Run a scenario with the sample app assertion endpoint:
 
@@ -132,6 +104,42 @@ Image tags:
 - `ghcr.io/midagedev/billtap:<version>`: release tag builds such as `0.1.0`
 
 Images are published for `linux/amd64` and `linux/arm64`.
+
+## Testing Model
+
+```mermaid
+flowchart LR
+  App["Your app / e2e tests"] --> Billtap["Billtap local billing lab"]
+  Billtap --> API["Stripe-like API"]
+  Billtap --> UI["Checkout + portal UI"]
+  Billtap --> Webhooks["Signed webhook delivery"]
+  Billtap --> Evidence["Dashboard + traces + debug bundles"]
+  App --> Stripe["Stripe testmode / provider sandbox"]
+  Stripe -. "provider-specific parity lane" .-> App
+```
+
+Use two lanes instead of forcing one tool to satisfy every billing test:
+
+- **Default lane:** Billtap-backed local development, isolated e2e tests, CI
+  regression scenarios, fixture setup, and webhook reliability tests.
+- **Fallback lane:** Stripe testmode or the real provider sandbox for
+  provider-specific behavior, hosted-provider parity, settlement, risk, tax,
+  invoice rendering, and final compatibility checks.
+
+For the exact supported surface, see `docs/COMPATIBILITY.md`. Anything outside
+that contract should be treated as unsupported until it has fixture-backed tests
+and documentation. Known but unimplemented Stripe OpenAPI routes return a
+Stripe-shaped `unsupported_endpoint` error so test agents can identify coverage
+gaps instead of mistaking them for app bugs.
+
+## Good Fit / Bad Fit
+
+| Use Billtap when... | Use a provider sandbox when... |
+| --- | --- |
+| You need deterministic subscription billing tests in local dev or CI. | You need full Stripe API behavior or hosted Stripe Dashboard parity. |
+| You need to validate webhook idempotency, retries, duplicate delivery, delays, or replay. | You are proving settlement, risk, tax, invoice rendering, account, payout, or real dispute behavior. |
+| You want fixture-driven setup with easy snapshot/assert APIs. | You need live provider validation for a newly adopted endpoint. |
+| You need a local checkout/portal/dashboard loop for app integration work. | You are handling real card data, live credentials, or production payment paths. |
 
 ## Reverse Proxy Base Path
 
@@ -262,8 +270,8 @@ scheme/host/port for the run's origin, keeping path and query:
 
 - The stored session is untouched: `GET /v1/checkout/sessions/{id}` keeps
   `success_url` exactly as created and exposes the rewritten link as the
-  extension field `billtap_return_url` (also returned beside the session in
-  the completion response). Portal responses keep `return_url` as provided and
+  extension field `billtap_return_url` (also returned beside the session in the
+  completion response). Portal responses keep `return_url` as provided and
   embed the rewritten target only in the hosted `url` query.
 - Only `localhost` and `127.0.0.1` hosts are rewritten; external domains are
   never touched. Runs without a `public_base_url` keep redirects unchanged.
@@ -276,6 +284,7 @@ go run ./cmd/billtap seed --run-id suite-a --pack seed/sample-basic.yml
 
 When the fixture pack has a top-level `runId`, that value is used for the run
 scope and fixture metadata.
+
 ## Fixture And Assertion APIs
 
 Billtap includes local integration-test helpers:
