@@ -78,6 +78,7 @@ type Repository interface {
 	GetPrice(context.Context, string) (Price, error)
 	ListPrices(context.Context) ([]Price, error)
 	UpdatePrice(context.Context, string, Price) (Price, error)
+	TransferPriceLookupKey(context.Context, string, string) (Price, error)
 
 	CreateCheckoutSession(context.Context, CheckoutSession) (CheckoutSession, error)
 	GetCheckoutSession(context.Context, string) (CheckoutSession, error)
@@ -118,6 +119,7 @@ type Repository interface {
 	GetTestClock(context.Context, string) (TestClock, error)
 	ListTestClocks(context.Context) ([]TestClock, error)
 	UpdateTestClock(context.Context, TestClock) (TestClock, error)
+	DeleteTestClock(context.Context, string) error
 	CreateRefund(context.Context, Refund, []TimelineEntry) (Refund, error)
 	GetRefund(context.Context, string) (Refund, error)
 	ListRefundsFiltered(context.Context, RefundFilter) ([]Refund, error)
@@ -251,6 +253,20 @@ func (s *Service) ListPrices(ctx context.Context) ([]Price, error) {
 
 func (s *Service) UpdatePrice(ctx context.Context, id string, in Price) (Price, error) {
 	return s.repo.UpdatePrice(ctx, id, in)
+}
+
+// TransferPriceLookupKey moves a lookup key onto the target price
+// (POST /v1/prices/{id} with transfer_lookup_key=true): every other price
+// holding the key loses it, matching Stripe's transfer behavior.
+func (s *Service) TransferPriceLookupKey(ctx context.Context, id string, lookupKey string) (Price, error) {
+	if strings.TrimSpace(id) == "" {
+		return Price{}, fmt.Errorf("%w: price is required", ErrInvalidInput)
+	}
+	lookupKey = strings.TrimSpace(lookupKey)
+	if lookupKey == "" {
+		return Price{}, fmt.Errorf("%w: lookup_key is required", ErrInvalidInput)
+	}
+	return s.repo.TransferPriceLookupKey(ctx, id, lookupKey)
 }
 
 func (s *Service) CreateAccount(ctx context.Context, in Account) (Account, error) {
@@ -1738,6 +1754,62 @@ func (s *Service) UpdateTestClock(ctx context.Context, clock TestClock) (TestClo
 		clock.Status = "ready"
 	}
 	return s.repo.UpdateTestClock(ctx, clock)
+}
+
+// DeleteTestClock removes a test clock and detaches it from the customers and
+// subscriptions that referenced it (DELETE /v1/test_helpers/test_clocks/{id}).
+// Stripe deletes attached objects with the clock; Billtap keeps them detached
+// so a fixture pack can re-seed against a fresh clock reusing the same id.
+func (s *Service) DeleteTestClock(ctx context.Context, clockID string) error {
+	clockID = strings.TrimSpace(clockID)
+	if clockID == "" {
+		return fmt.Errorf("%w: clock is required", ErrInvalidInput)
+	}
+	if _, err := s.repo.GetTestClock(ctx, clockID); err != nil {
+		return err
+	}
+	customers, err := s.repo.ListCustomers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, customer := range customers {
+		if !customerReferencesClock(customer.Metadata, clockID) {
+			continue
+		}
+		metadata := copyMap(customer.Metadata)
+		delete(metadata, "test_clock")
+		delete(metadata, "testClock")
+		if _, err := s.repo.UpdateCustomer(ctx, customer.ID, Customer{Metadata: metadata}); err != nil {
+			return err
+		}
+	}
+	subscriptions, err := s.repo.ListSubscriptions(ctx)
+	if err != nil {
+		return err
+	}
+	for _, subscription := range subscriptions {
+		if !customerReferencesClock(subscription.Metadata, clockID) {
+			continue
+		}
+		subscription.Metadata = copyMap(subscription.Metadata)
+		delete(subscription.Metadata, "test_clock")
+		delete(subscription.Metadata, "testClock")
+		if _, err := s.repo.UpdateSubscription(ctx, subscription, nil); err != nil {
+			return err
+		}
+	}
+	return s.repo.DeleteTestClock(ctx, clockID)
+}
+
+// customerReferencesClock reports whether metadata pins the given test clock
+// under either metadata key the runtime accepts.
+func customerReferencesClock(metadata map[string]string, clockID string) bool {
+	for _, key := range []string{"test_clock", "testClock"} {
+		if strings.TrimSpace(metadata[key]) == clockID {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Service) AdvanceTestClock(ctx context.Context, clockID string, frozenTime time.Time) (TestClock, ClockAdvanceResult, error) {

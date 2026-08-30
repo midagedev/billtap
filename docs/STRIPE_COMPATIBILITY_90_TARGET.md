@@ -11,7 +11,7 @@ claiming that every operation has deep payment-processing behavior.
 The 90% target is based on generated `stripe-api-inventory.json`:
 
 - **Overall target:** `summary.implemented_percent >= 90.0`.
-- **Current baseline:** `200 / 587` operations, `34.1%`, using Stripe OpenAPI
+- **Current baseline:** `201 / 587` operations, `34.2%`, using Stripe OpenAPI
   `2026-04-22.dahlia` (stripe/openapi tag `v2261`), re-measured on 2026-08-29.
   All four P0 families are at 100%.
 - **Minimum target count:** `529 / 587` operations at `L1` or higher.
@@ -67,7 +67,7 @@ Latest measured baseline from the Stripe OpenAPI `2026-04-22.dahlia` snapshot
 | P1 | payments | 41 | 23 | 56.1% | 37 | Add PaymentIntent and SetupIntent create/confirm/capture/cancel state machines. |
 | P1 | connect | 53 | 53 | 100.0% | 48 | Deepen Connect SDK/adoption smoke, connected-account webhook routing, and v2 Core account inventory evidence. |
 | P1 | payment_history | 30 | 14 | 46.7% | 27 | Add charge, refund, balance transaction, dispute, and payment history evidence. |
-| P3 | auxiliary | 321 | 13 | 4.0% | 289 | Keep inventory visible and add schema/fixture smoke only when adoption requires it. |
+| P3 | auxiliary | 321 | 14 | 4.4% | 289 | Keep inventory visible and add schema/fixture smoke only when adoption requires it. |
 
 ## PR Chunk Plan
 
@@ -129,7 +129,7 @@ payment-method attach/detach.
 T10 also does not increase `summary.implemented_operations` by itself. It
 raises confidence and levels for already counted operations; new operation
 coverage must come from T3-T9. The planned T3-T9 delta is intentionally larger
-than the `+329` operations needed to move the current `200 / 587` baseline to
+than the `+328` operations needed to move the current `201 / 587` baseline to
 the `529 / 587` target.
 
 The billing-completion wave on 2026-08-29 raised the generated inventory from

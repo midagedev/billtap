@@ -217,6 +217,29 @@ func (s *SQLiteStore) UpdatePrice(ctx context.Context, id string, in billing.Pri
 	return s.GetPrice(ctx, id)
 }
 
+// TransferPriceLookupKey clears the lookup key from every other price and
+// pins it on the target in one transaction.
+func (s *SQLiteStore) TransferPriceLookupKey(ctx context.Context, id string, lookupKey string) (billing.Price, error) {
+	if _, err := s.GetPrice(ctx, id); err != nil {
+		return billing.Price{}, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return billing.Price{}, err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `UPDATE prices SET lookup_key = '', updated_at = CURRENT_TIMESTAMP WHERE lookup_key = ? AND id <> ?`, lookupKey, id); err != nil {
+		return billing.Price{}, err
+	}
+	if _, err := tx.ExecContext(ctx, `UPDATE prices SET lookup_key = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, lookupKey, id); err != nil {
+		return billing.Price{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return billing.Price{}, err
+	}
+	return s.GetPrice(ctx, id)
+}
+
 func (s *SQLiteStore) CreateAccount(ctx context.Context, account billing.Account) (billing.Account, error) {
 	if account.CreatedAt.IsZero() {
 		account.CreatedAt = time.Now().UTC()
@@ -1417,6 +1440,21 @@ func (s *SQLiteStore) UpdateTestClock(ctx context.Context, clock billing.TestClo
 		return billing.TestClock{}, billing.ErrNotFound
 	}
 	return s.GetTestClock(ctx, clock.ID)
+}
+
+func (s *SQLiteStore) DeleteTestClock(ctx context.Context, id string) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM test_clocks WHERE id = ?`, id)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 0 {
+		return billing.ErrNotFound
+	}
+	return nil
 }
 
 func (s *SQLiteStore) CreateRefund(ctx context.Context, refund billing.Refund, timeline []billing.TimelineEntry) (billing.Refund, error) {

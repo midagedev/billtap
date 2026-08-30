@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- `DELETE /v1/test_helpers/test_clocks/{id}` removes a test clock and detaches
+  it from the customers and subscriptions that referenced it (Stripe deletes
+  attached objects; Billtap keeps them detached so fixture packs can re-seed
+  against a recreated clock reusing the same id).
+- Re-applying a fixture pack now restores a clock that ran past the pack's
+  declared `frozen_time`: the clock is recreated at the declared time before
+  subscriptions re-seed, so a consumed premise — for example a trial that
+  already activated — comes back instead of surviving until the database is
+  rebuilt. Backwards advance stays rejected.
+- Discount objects now serialize a Stripe SDK 31 `source` sub-object
+  (`source.type` plus `source.coupon` or `source.promotion_code`) alongside the
+  legacy top-level `coupon`, so SDK 31 clients can read the discount origin.
+- `POST /v1/prices/{id}` accepts `transfer_lookup_key`: moving a lookup key
+  that another price holds clears it there first, matching Stripe's transfer
+  behavior. Without the flag, updates keep the existing set-in-place semantics.
+- The OpenAPI inventory moves from `200 / 587` (`34.1%`) to `201 / 587`
+  (`34.2%`).
 - The billing family is now full inventory (`39 / 39` OpenAPI operations):
   all four P0 families (webhooks, checkout, billing, billing_portal) are at
   100%.

@@ -337,6 +337,7 @@ func DefaultClaims() []Claim {
 	add(http.MethodGet, "/v1/test_helpers/test_clocks", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted", "invoice.created", "invoice.paid", "invoice.payment_failed"}, Risks: []string{"deterministic local clock subset; not full Stripe test-clock attachment semantics"}})
 	add(http.MethodPost, "/v1/test_helpers/test_clocks", Claim{Level: "L3", Stateful: true, Risks: []string{"deterministic local clock subset; not full Stripe test-clock attachment semantics"}})
 	add(http.MethodGet, "/v1/test_helpers/test_clocks/{id}", Claim{Level: "L3", Stateful: true})
+	add(http.MethodDelete, "/v1/test_helpers/test_clocks/{id}", Claim{Level: "L3", Stateful: true, Risks: []string{"detaches referenced customers and subscriptions instead of deleting them (Stripe deletes attached objects); fixture packs re-seed against a recreated clock with the same id"}})
 	add(http.MethodPost, "/v1/test_helpers/test_clocks/{id}/advance", Claim{Level: "L3", Stateful: true, WebhookEvents: []string{"customer.subscription.updated", "customer.subscription.deleted", "invoice.created", "invoice.paid", "invoice.payment_failed"}})
 	add(http.MethodGet, "/v1/customers/{id}/cash_balance", Claim{Level: "L2", Stateful: true, Risks: []string{"local customer cash-balance evidence only"}})
 	add(http.MethodPost, "/v1/customers/{id}/cash_balance", Claim{Level: "L2", Stateful: true, Risks: []string{"local customer cash-balance evidence only"}})
