@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 func TestCountInvoicesTaxTotalSubtotalFilters(t *testing.T) {

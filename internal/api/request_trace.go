@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hckim/billtap/internal/diagnostics"
-	"github.com/hckim/billtap/internal/security"
+	"github.com/midagedev/billtap/internal/diagnostics"
+	"github.com/midagedev/billtap/internal/security"
 )
 
 func (h *Handler) serveWithRequestTrace(w http.ResponseWriter, r *http.Request) {

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 // Seat add/remove via POST|DELETE /v1/subscription_items with proration_behavior.

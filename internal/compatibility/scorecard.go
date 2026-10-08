@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hckim/billtap/internal/api"
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/storage"
-	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/api"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/storage"
+	"github.com/midagedev/billtap/internal/webhooks"
 )
 
 const (

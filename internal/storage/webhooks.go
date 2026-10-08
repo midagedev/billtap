@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/webhooks"
 )
 
 var _ webhooks.Repository = (*SQLiteStore)(nil)

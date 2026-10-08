@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hckim/billtap/internal/config"
-	"github.com/hckim/billtap/internal/storage"
+	"github.com/midagedev/billtap/internal/config"
+	"github.com/midagedev/billtap/internal/storage"
 )
 
 // newRunServer builds a SQLite-backed server whose configured DatabaseURL

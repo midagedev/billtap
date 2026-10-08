@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/fixtures"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/fixtures"
 )
 
 // upcomingPreviewFields covers next-period upcoming / create_preview assertions.

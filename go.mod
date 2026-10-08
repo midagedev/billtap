@@ -1,4 +1,4 @@
-module github.com/hckim/billtap
+module github.com/midagedev/billtap
 
 go 1.25.0
 

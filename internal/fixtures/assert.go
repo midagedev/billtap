@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 func evaluateExpectation(snapshot Snapshot, expectation Expectation) AssertionResult {

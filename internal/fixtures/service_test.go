@@ -3,7 +3,7 @@ package fixtures
 import (
 	"testing"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 func TestFixtureOutcomeStatusOverridesSuccessfulOutcome(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/storage"
-	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/storage"
+	"github.com/midagedev/billtap/internal/webhooks"
 )
 
 func TestRunnerResolvesReferencesAndCheckoutAliases(t *testing.T) {

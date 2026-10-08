@@ -4,7 +4,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 // SDK 31 moved a discount's origin into source.{coupon,promotion_code}; the

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 var (

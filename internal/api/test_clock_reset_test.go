@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/fixtures"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/fixtures"
 )
 
 func TestTestClockDeleteDetachesReferences(t *testing.T) {
