@@ -7,8 +7,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/webhooks"
 )
 
 func (h *Handler) discountsFromParamsOrCustomer(r *http.Request, p params, customer billing.Customer) ([]billing.Discount, error) {

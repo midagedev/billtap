@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hckim/billtap/internal/webhooks"
-	"github.com/hckim/billtap/internal/webhooks/webhookstest"
+	"github.com/midagedev/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/webhooks/webhookstest"
 )
 
 func TestWebhookPersistenceAndDeliveryAttempt(t *testing.T) {

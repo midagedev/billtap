@@ -13,14 +13,14 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/compatibility"
-	"github.com/hckim/billtap/internal/config"
-	"github.com/hckim/billtap/internal/fixtures"
-	"github.com/hckim/billtap/internal/scenarios"
-	"github.com/hckim/billtap/internal/server"
-	"github.com/hckim/billtap/internal/storage"
-	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/compatibility"
+	"github.com/midagedev/billtap/internal/config"
+	"github.com/midagedev/billtap/internal/fixtures"
+	"github.com/midagedev/billtap/internal/scenarios"
+	"github.com/midagedev/billtap/internal/server"
+	"github.com/midagedev/billtap/internal/storage"
+	"github.com/midagedev/billtap/internal/webhooks"
 )
 
 func main() {

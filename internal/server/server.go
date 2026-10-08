@@ -11,12 +11,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hckim/billtap/internal/api"
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/config"
-	"github.com/hckim/billtap/internal/diagnostics"
-	"github.com/hckim/billtap/internal/storage"
-	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/api"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/config"
+	"github.com/midagedev/billtap/internal/diagnostics"
+	"github.com/midagedev/billtap/internal/storage"
+	"github.com/midagedev/billtap/internal/webhooks"
 )
 
 type Options struct {

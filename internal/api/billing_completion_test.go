@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"testing"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 func setupDraftInvoiceWithLine(t *testing.T, handler http.Handler) (customer billing.Customer, invoiceID, lineID string) {

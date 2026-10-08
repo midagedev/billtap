@@ -12,8 +12,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/hckim/billtap/internal/config"
-	"github.com/hckim/billtap/internal/storage"
+	"github.com/midagedev/billtap/internal/config"
+	"github.com/midagedev/billtap/internal/storage"
 )
 
 const (

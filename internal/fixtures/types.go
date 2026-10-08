@@ -3,7 +3,7 @@ package fixtures
 import (
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 const (

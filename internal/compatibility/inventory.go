@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hckim/billtap/internal/stripecompat"
+	"github.com/midagedev/billtap/internal/stripecompat"
 )
 
 const InventoryVersion = "stripe-api-inventory-v2"

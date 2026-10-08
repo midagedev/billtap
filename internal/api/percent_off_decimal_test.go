@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 // TestPercentOffDecimalSupport covers stripe-node v22 number percent_off:

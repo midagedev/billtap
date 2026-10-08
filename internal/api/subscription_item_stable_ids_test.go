@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/diagnostics"
-	"github.com/hckim/billtap/internal/storage"
-	"github.com/hckim/billtap/internal/webhooks"
-	"github.com/hckim/billtap/internal/webhooks/webhookstest"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/diagnostics"
+	"github.com/midagedev/billtap/internal/storage"
+	"github.com/midagedev/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/webhooks/webhookstest"
 )
 
 // newTestHandlerWithStore returns handler + raw store for legacy row injection.

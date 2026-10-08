@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/billing"
 )
 
 const invoiceItemColumns = `id, customer_id, invoice_id, amount, currency, description, metadata, created_at, price_id, product_id, quantity, subscription_id`

@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/webhooks"
 )
 
 // Evidence kinds. These are the persistence keys, so renaming one orphans the

@@ -9,10 +9,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/scenarios"
-	"github.com/hckim/billtap/internal/server"
-	"github.com/hckim/billtap/internal/storage"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/scenarios"
+	"github.com/midagedev/billtap/internal/server"
+	"github.com/midagedev/billtap/internal/storage"
 )
 
 func TestParseScenarioRunArgsAllowsFlagsAfterFile(t *testing.T) {

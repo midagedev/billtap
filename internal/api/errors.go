@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/hckim/billtap/internal/billing"
-	"github.com/hckim/billtap/internal/fixtures"
-	"github.com/hckim/billtap/internal/webhooks"
+	"github.com/midagedev/billtap/internal/billing"
+	"github.com/midagedev/billtap/internal/fixtures"
+	"github.com/midagedev/billtap/internal/webhooks"
 )
 
 const (
